@@ -8,19 +8,16 @@ Route::get('/', function () {
     return view('welcome');
 });
 
-// Biometric device routes
-Route::prefix('api')->group(function () {
-    Route::post('/biometric/sync', [BiometricController::class, 'sync']);
-    Route::get('/biometric/time-logs', [BiometricController::class, 'index']);
-});
 
 // Device management routes
 Route::prefix('api')->group(function () {
     Route::get('/devices', [DeviceController::class, 'index']);
     Route::get('/devices/{id}/status', [DeviceController::class, 'status']);
     Route::get('/devices/{id}', [DeviceController::class, 'show']);
-    Route::post('/devices/{id}/power-on', [DeviceController::class, 'powerOn']);
-    Route::post('/devices/{id}/power-off', [DeviceController::class, 'powerOff']);
-    Route::post('/devices/{id}/sync-time', [DeviceController::class, 'syncTime']);
-    Route::post('/devices/{id}/restart', [DeviceController::class, 'restart']);
+    Route::get('/devices/{id}/power-off', [DeviceController::class, 'powerOff']);
+    Route::get('/devices/{id}/sync-time', [DeviceController::class, 'syncTime']);
+    Route::get('/devices/{id}/restart', [DeviceController::class, 'restart']);
 });
+
+// Device push data endpoint (ZKTeco iclock) - catch all paths for debugging
+Route::any('/iclock/{any}', [DeviceController::class, 'handleDevicePush'])->where('any', '.*');

@@ -29,5 +29,19 @@ class DeviceRepository implements DeviceRepositoryInterface
         return $this->model->all();
     }
 
+    public function findByIP(string $ip): ?Devices
+    {
+        return $this->model->where('ip_address', $ip)
+        ->where('is_active', true)
+        ->first();
+    }
+
+    public function markAsConnected(string $ip): void
+    {
+        $this->model->where('ip_address', $ip)
+        ->where('is_active', true)
+        ->update(['last_seen_at' => now()]);
+    }
+
 
 }

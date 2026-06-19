@@ -28,6 +28,12 @@ return [
 
     'env' => env('APP_ENV', 'production'),
 
+    'default_first_in' => env('DEFAULT_FIRST_IN', '08:00:00'),
+    'default_first_out' => env('DEFAULT_FIRST_OUT', '12:00:00'),
+    'default_last_in' => env('DEFAULT_LAST_IN', '13:00:00'),
+    'default_last_out' => env('DEFAULT_LAST_OUT', '17:00:00'),
+
+
     /*
     |--------------------------------------------------------------------------
     | Application Debug Mode

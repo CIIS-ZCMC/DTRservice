@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Contracts\DeviceRepositoryInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Exception;
 use TADPHP\TADFactory;
 
@@ -54,7 +55,10 @@ class DeviceService
             }
             $tad = $this->checkDeviceConnection($device);
             if ($tad) {
-                $onlineDevices[] = $device;
+                $onlineDevices[] = [
+                    'device' => $device,
+                    'device_instance' => $tad,
+                ];
             }
         }
         return $onlineDevices;
@@ -63,13 +67,13 @@ class DeviceService
     /**
      * Check device status
      */
-    public function checkDeviceStatus(int $deviceId): array
+    public function checkDeviceStatus(string $serialNumber): array
     {
-        $device = $this->deviceRepository->findById($deviceId);
+        $device = $this->deviceRepository->findBySn($serialNumber);
         if (!$device) {
             throw new Exception('Device not found');
         }
-       return $response = $this->sendDeviceCommand($device->id, 'status');
+        $response = $this->sendDeviceCommand($device->id, 'status');
         return [
             'device_id' => $device->device_id,
             'status' => $response['status'] ?? 'unknown',
@@ -79,30 +83,9 @@ class DeviceService
     }
 
     /**
-     * Turn on device
-     */
-    public function turnOnDevice(int $deviceId): bool
-    {
-        return DB::transaction(function () use ($deviceId) {
-            $device = $this->deviceRepository->findById($deviceId);
-
-            if (!$device) {
-                throw new Exception('Device not found');
-            }
-
-            // Send power on command to device
-            $response = $this->sendDeviceCommand($device->device_id, 'power_on');
-
-         
-
-            throw new Exception('Failed to turn on device');
-        });
-    }
-
-    /**
      * Turn off device
      */
-    public function turnOffDevice(int $deviceId): bool
+    public function turnOffDevice(int $deviceId)
     {
         return DB::transaction(function () use ($deviceId) {
             $device = $this->deviceRepository->findById($deviceId);
@@ -110,28 +93,35 @@ class DeviceService
             if (!$device) {
                 throw new Exception('Device not found');
             }
-            // Send power off command to device
-            $response = $this->sendDeviceCommand($device->device_id, 'power_off');
-            throw new Exception('Failed to turn off device');
+      
+            try {
+               $this->sendDeviceCommand($device->id, 'power_off');
+            } catch (\Exception $e) {
+                throw new Exception('Failed to turn off device');
+            }
         });
     }
 
     /**
      * Sync device time with server
      */
-    public function syncDeviceTime(int $deviceId): bool
+    public function syncDeviceTime(int $deviceId)
     {
         return DB::transaction(function () use ($deviceId) {
             $device = $this->deviceRepository->findById($deviceId);
             if (!$device) {
                 throw new Exception('Device not found');
             }
-            $serverTime = now()->format('Y-m-d H:i:s');
+           
             // Send time sync command to device
-            $response = $this->sendDeviceCommand($device->device_id, 'sync_time', [
-                'time' => $serverTime,
-            ]);
-            throw new Exception('Failed to sync device time');
+            try {
+                $this->sendDeviceCommand($device->id, 'sync_time', [
+                    'date' => now()->format('Y-m-d'),
+                    'time' =>now()->format('H:i:s'),
+                ]);
+            } catch (\Exception $e) {
+                throw new Exception('Failed to sync device time: ' . $e->getMessage());
+            }
         });
     }
 
@@ -169,15 +159,15 @@ class DeviceService
             if (!$device) {
                 throw new Exception('Device not found');
             }
-
-            // Send restart command to device
-            $response = $this->sendDeviceCommand($device->device_id, 'restart');
-
-        
-            throw new Exception('Failed to restart device');
+            try {
+           $this->sendDeviceCommand($device->id, 'restart');
+            } catch (\Exception $e) {
+                throw new Exception('Failed to restart device: ' . $e->getMessage());
+            }
         });
     }
 
+   
     /**
      * Send command to device via API
      * Replace with actual device API integration
@@ -187,16 +177,22 @@ class DeviceService
         $devices = $this->deviceRepository->getAll();
        
         $device = $devices->find($deviceId);
-        dd($device);
         if (!$device) {
             throw new Exception('Device not found');
         }
-
+        $tad = $this->checkDeviceConnection($device->toArray());
+        if(!$tad) { throw new Exception('Device is offline');}
         
-
+    
         switch ($command) {
             case 'restart':
-                // Handle restart command
+              $tad->restart();
+                break;
+            case 'sync_time':
+              $tad->set_date(['date' => $data['date'], 'time' => $data['time']]);
+                break;
+            case 'power_off':
+              $tad->poweroff();
                 break;
             
             default:
@@ -210,5 +206,8 @@ class DeviceService
             'status' => 'online',
             'message' => 'Command executed successfully',
         ];
+      
+
+     
     }
 }

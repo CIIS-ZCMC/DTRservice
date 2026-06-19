@@ -19,5 +19,10 @@ interface DeviceRepositoryInterface
      */
     public function getAll();
 
-   
+    
+    public function findByIP(string $ip): ?\App\Models\Devices;
+
+    public function markAsConnected(string $ip): void;
 }
+
+

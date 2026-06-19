@@ -2,18 +2,20 @@
 
 namespace App\Http\Controllers;
 
+use App\Contracts\LogsRepositoryInterface;
 use App\Services\DeviceService;
+use App\Services\LogsService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Log;
 
 class DeviceController extends Controller
 {
-    protected DeviceService $deviceService;
-
-    public function __construct(DeviceService $deviceService)
-    {
-        $this->deviceService = $deviceService;
-    }
+    
+    public function __construct( 
+        protected DeviceService $deviceService,
+        protected LogsService $logsService
+        ){}
 
     /**
      * Get all devices
@@ -55,26 +57,6 @@ class DeviceController extends Controller
         }
     }
 
-    /**
-     * Turn on device
-     */
-    public function powerOn(int $id): JsonResponse
-    {
-        try {
-            $this->deviceService->turnOnDevice($id);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Device turned on successfully'
-            ]);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage()
-            ], 500);
-        }
-    }
 
     /**
      * Turn off device
@@ -159,4 +141,18 @@ class DeviceController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Handle request of ZKTeco device | Biometric Device
+     */
+    public function handleDevicePush(Request $request)
+    {
+        try {
+            return $this->logsService->storeLog($request);
+        } catch (\Throwable $th) {
+            Log::channel('device_logs')->error($th->getMessage());
+        }
+    }
+
+    
 }

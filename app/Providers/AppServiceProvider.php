@@ -15,6 +15,16 @@ class AppServiceProvider extends ServiceProvider
             \App\Contracts\DeviceRepositoryInterface::class,
             \App\Repositories\DeviceRepository::class
         );
+
+        $this->app->bind(
+            \App\Contracts\ScheduleRepositoryInterface::class,
+            \App\Repositories\ScheduleRepository::class
+        );
+
+        $this->app->bind(
+            \App\Contracts\LogsRepositoryInterface::class,
+            \App\Repositories\LogsRepository::class
+        );
     }
 
     /**
