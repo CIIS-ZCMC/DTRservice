@@ -22,4 +22,8 @@ class EmployeeProfile extends Model
         return $this->belongsTo(PersonalInformation::class);
     }
 
+    public function employeeSchedules()
+    {
+        return $this->hasMany(EmployeeSchedule::class, 'employee_profile_id');
+    }
 }

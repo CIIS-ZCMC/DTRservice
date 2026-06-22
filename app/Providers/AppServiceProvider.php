@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -25,6 +26,11 @@ class AppServiceProvider extends ServiceProvider
             \App\Contracts\LogsRepositoryInterface::class,
             \App\Repositories\LogsRepository::class
         );
+
+        $this->app->bind(
+            \App\Contracts\TimeRecordRepositoryInterface::class,
+            \App\Repositories\TimeRecordRepository::class
+        );
     }
 
     /**
@@ -32,6 +38,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        Schema::defaultStringLength(191);
     }
 }

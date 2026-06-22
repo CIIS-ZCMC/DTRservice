@@ -21,21 +21,30 @@ class LogsRepository implements LogsRepositoryInterface
      */
     public function createLog(array $data): DeviceLogs
     {
+        try {
+            $device = $this->deviceRepository->findByIP($data['ip_address']);
+            $employee = $this->getEmployeeNameAndStatus((int)$data['biometric_id']);
+            $date_time = $data['dtr_date'] . ' ' . $data['dtr_time'];
 
-    //  'biometric_id',
-    //     'name',
-    //     'dtr_date',
-    //     'date_time',
-    //     'status',
-    //     'is_Shifting',
-    //     'schedule',
-    //     'active',
-    //     'device_name'
-       return DB::transaction(function () use ($data) {
+            $logData = [
+                'biometric_id' => $data['biometric_id'],
+                'dtr_date' => $data['dtr_date'],
+                'name' => $employee['name'] ?? 'Unknown',
+                'date_time' => $date_time,
+                'status' => $data['dtr_type'],
+                'is_Shifting' => 0,
+                'schedule' => null,
+                'active' => 1,
+                'device_name' => $device?->device_name ?? 'Unknown',
+            ];
 
-
-           return DeviceLogs::create($data);
-       });
+            return DB::transaction(function () use ($logData) {
+                return DeviceLogs::create($logData);
+            });
+        } catch (\Exception $e) {
+            Log::error('Error creating log: ' . $e->getMessage());
+            throw $e;
+        }
     }
     
     public function writeToFile(array $data): void
