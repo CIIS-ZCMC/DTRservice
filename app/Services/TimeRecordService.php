@@ -6,6 +6,8 @@ use App\Contracts\TimeRecordRepositoryInterface;
 use App\Traits\TimeFormatter;
 use Carbon\Carbon;
 
+use function Pest\Laravel\json;
+
 class TimeRecordService
 {
     use TimeFormatter;
@@ -29,7 +31,7 @@ class TimeRecordService
             'device_logs' => $deviceLogs,
             'schedule' => $schedule,
             'time_shift' => $timeShift,
-            'is_shifting'=>empty( $timeShift?->second_out) && empty($timeShift?->second_in)
+            'is_shifting' => $timeShift && empty($timeShift->second_out) && empty($timeShift->second_in)
         ];
     }
 
@@ -39,7 +41,6 @@ class TimeRecordService
     public function getEmployeeTimeRecordsRange(int $biometricId, string $dateFrom, string $dateTo): array
     {
         $deviceLogs = $this->timeRecordRepository->getDeviceLogsByBiometricId($biometricId, $dateFrom, $dateTo);
-
         $records = [];
         foreach ($deviceLogs as $log) {
             $date = $log['dtr_date'];
@@ -63,97 +64,106 @@ class TimeRecordService
     public function consolidateDailyTimeRecord(int $biometricId, string $date)
     {
         $timeRecord = $this->getEmployeeTimeRecord($biometricId, $date);
+        $is_next_day = false;
+        $scheduleTimes = [];
+        $schedule = [];
 
-        if($timeRecord['is_shifting']) {
-            return $this->consolidateShiftingTimeRecord($timeRecord);
+        // No schedule/time shift for this date - nothing to consolidate
+        if (empty($timeRecord['time_shift'])) {
+            return;
         }
 
-        $entries = collect($timeRecord['device_logs'])->map(function($row){
-            return Carbon::parse($row['date_time'])->toTimeString();
-        });
+        if ($timeRecord['is_shifting']) {
+            [
+                $entries,
+                $scheduleTimes,
+                $is_next_day
+            ] = $this->consolidateShiftingTimeRecord($timeRecord, $is_next_day);
+        } else {
+            $entries = collect($timeRecord['device_logs'])->map(function ($row) {
+                return Carbon::parse($row['date_time'])->toTimeString();
+            });
 
-        $schedule = isset($timeRecord['schedule']) ? $timeRecord['schedule'] : null;
-        if($schedule) {
-            $timeShift = $timeRecord['time_shift'];
-            $scheduleTimes = [
-                $timeShift->first_in,
-                $timeShift->first_out,
-                $timeShift->second_in,
-                $timeShift->second_out,
-            ];
-
-     $validEntries = $this->getEntriesWithinSchedule($entries->toArray(), $scheduleTimes);
-     $workingHours = $this->ComputeWorkingHours($validEntries['entries'],$scheduleTimes);
-     $formattedEntries = $this->formatEntries($validEntries['entries'],$scheduleTimes);
-     
-    return [
-         'biometric_id' => $biometricId,
-        ...$formattedEntries,
-        'dtr_date'=>$date,
-        'interval_req'=>null,
-        'required_working_hours'=>$workingHours['required_working_minutes'] > 0 ? floor($workingHours['required_working_minutes'] / 60) : 0,
-        'required_working_minutes'=>$workingHours['required_working_minutes'],
-        'total_working_hours'=>$workingHours['actual_working_minutes'] > 0 ? floor($workingHours['actual_working_minutes'] / 60) : 0,
-        'total_working_minutes'=>$workingHours['actual_working_minutes'],
-        'overtime'=>$this->minutesToHoursMinutes($workingHours['overtime_minutes']),
-        'overtime_minutes'=>$workingHours['overtime_minutes'],
-        'undertime'=>$this->minutesToHoursMinutes($workingHours['undertime_minutes']),
-        'undertime_minutes'=>$workingHours['undertime_minutes'],
-        'overall_minutes_rendered'=>$workingHours['actual_working_minutes'],
-        'total_minutes_reg'=>$workingHours['required_working_minutes'],
-        'is_biometric'=>1,
-        'is_time_adjustment'=>0
-    ];
-    
-     // $this->timeRecordRepository->saveDailyTimeRecord([
-    //      'biometric_id',
-    //     'first_in',
-    //     'first_out',
-    //     'second_in',
-    //     'second_out',
-    //     'dtr_date',
-    //     'interval_req',
-    //     'required_working_hours',
-    //     'required_working_minutes',
-    //     'total_working_hours',
-    //     'total_working_minutes',
-    //     'overtime',
-    //     'overtime_minutes',
-    //     'undertime',
-    //     'undertime_minutes',
-    //     'overall_minutes_rendered',
-    //     'total_minutes_reg',
-    //     'is_biometric',
-    //     'is_time_adjustment'
-    // ]);
-    
+            $schedule = isset($timeRecord['schedule']) ? $timeRecord['schedule'] : null;
+            if ($schedule) {
+                $timeShift = $timeRecord['time_shift'];
+                $scheduleTimes = [
+                    $timeShift->first_in,
+                    $timeShift->first_out,
+                    $timeShift->second_in,
+                    $timeShift->second_out,
+                ];
+            }
         }
-        return $schedule;
+
+        // Filter out null values from scheduleTimes
+        $scheduleTimes = array_filter($scheduleTimes, fn($value) => $value !== null);
+
+        $validEntries = $this->getEntriesWithinSchedule($entries->toArray(), $scheduleTimes);
+        $workingHours = $this->ComputeWorkingHours($validEntries['entries'], $scheduleTimes);
+        $formattedEntries = $this->formatEntries($validEntries['entries'], $scheduleTimes, $date, $is_next_day);
+
+        $dtrData = [
+            'biometric_id' => $biometricId,
+            ...$formattedEntries,
+            'dtr_date' => $date,
+            'interval_req' => null,
+            'required_working_hours' => $workingHours['required_working_minutes'] > 0 ? floor($workingHours['required_working_minutes'] / 60) : 0,
+            'required_working_minutes' => $workingHours['required_working_minutes'],
+            'total_working_hours' => $workingHours['actual_working_minutes'] > 0 ? floor($workingHours['actual_working_minutes'] / 60) : 0,
+            'total_working_minutes' => $workingHours['actual_working_minutes'],
+            'overtime' => $this->minutesToHoursMinutes($workingHours['overtime_minutes']),
+            'overtime_minutes' => $workingHours['overtime_minutes'],
+            'undertime' => $this->minutesToHoursMinutes($workingHours['undertime_minutes']),
+            'undertime_minutes' => $workingHours['undertime_minutes'],
+            'overall_minutes_rendered' => $workingHours['actual_working_minutes'],
+            'total_minutes_reg' => $workingHours['required_working_minutes'],
+            'is_biometric' => 1,
+            'is_time_adjustment' => 0
+        ];
+
+        if (empty(array_filter($formattedEntries, fn($value) => $value !== null))) {
+            return;
+        }
+
+        $this->timeRecordRepository->saveDailyTimeRecord($dtrData);
     }
 
-    public function consolidateShiftingTimeRecord(array $timeRecord)
+    public function consolidateShiftingTimeRecord(array $timeRecord, bool &$is_next_day)
     {
-        // TODO: Implement shifting logic
-
         $timeShift = $timeRecord['time_shift'];
+        $date = $timeRecord['date'];
+        $biometricId = $timeRecord['biometric_id'];
+
+        if (!$timeShift) {
+            return [];
+        }
+
         $scheduleTimes = [
             $timeShift->first_in,
             $timeShift->first_out,
         ];
+        $allLogs = $timeRecord['device_logs'];
+        if ($timeShift->first_in >= "17:00:00" && $timeShift->first_in <= "23:59:59") {
+            $nextDay = Carbon::parse($date)->addDay()->format('Y-m-d');
+            $nextDayLogs = $this->timeRecordRepository->getDeviceLogsByBiometricId($biometricId, $nextDay, $nextDay);
+            $allLogs = array_merge($timeRecord['device_logs'], $nextDayLogs);
+            $is_next_day = true;
+        }
+        $entries = collect($allLogs)->map(function ($row) {
+            return Carbon::parse($row['date_time'])->toTimeString();
+        });
 
-        return [
-            'timeRecord'=>$timeRecord['device_logs'],
-            'scheduleTimes'=>$scheduleTimes
-        ];
+        return [$entries, $scheduleTimes, $is_next_day];
     }
 
     public function getEntriesWithinSchedule(array $entries, array $schedule)
     {
         $results = [];
-        $matchedSchedules = []; 
+        $matchedSchedules = [];
         $lastMatchedTime = null;
         $windowHours = 3;
-        $intervalMinutes = 5;
+        $intervalMinutes = 3;
 
         foreach ($entries as $entry) {
             $entryTime = Carbon::parse($entry);
@@ -183,7 +193,7 @@ class TimeRecordService
                             $lastMatchedTime = $entryTime;
                             break;
                         } else {
-                            $reason = 'not within 5 mins from recent - match schedule but invalid';
+                            $reason = 'not within 3 mins from recent - match schedule but invalid';
                         }
                     }
                 }
@@ -206,20 +216,54 @@ class TimeRecordService
 
     public function ComputeWorkingHours(array $entries, array $schedule): array
     {
+        if (empty($schedule)) {
+            return [
+                'required_working_minutes' => 0,
+                'actual_working_minutes' => 0,
+                'overtime_minutes' => 0,
+                'undertime_minutes' => 0,
+                'entries' => $entries,
+                'schedule' => $schedule,
+            ];
+        }
+
+        // Normalize schedule onto a continuous timeline for cross-midnight shifts
+        $base = Carbon::parse($schedule[0])->startOfMinute();
+        $scheduleTimes = [$base->copy()];
+        for ($i = 1; $i < count($schedule); $i++) {
+            $t = Carbon::parse($schedule[$i])->startOfMinute()
+                ->setDate($base->year, $base->month, $base->day);
+            while ($t->lt($scheduleTimes[$i - 1])) {
+                $t->addDay();
+            }
+            $scheduleTimes[$i] = $t;
+        }
+
         // Schedule boundaries (ignore seconds)
-        $schedFirstIn = Carbon::parse($schedule[0])->startOfMinute();
-        $schedFirstOut = Carbon::parse($schedule[1])->startOfMinute();
-        $schedSecondIn = Carbon::parse($schedule[2])->startOfMinute();
-        $schedSecondOut = Carbon::parse($schedule[3])->startOfMinute();
+        $schedFirstIn = $scheduleTimes[0];
+        $schedFirstOut = $scheduleTimes[1];
+        $schedSecondIn = isset($scheduleTimes[2]) ? $scheduleTimes[2] : null;
+        $schedSecondOut = isset($scheduleTimes[3]) ? $scheduleTimes[3] : null;
 
         $requiredFirstShift = abs($schedFirstOut->diffInMinutes($schedFirstIn));
-        $requiredSecondShift = abs($schedSecondOut->diffInMinutes($schedSecondIn));
+        $requiredSecondShift = $schedSecondIn && $schedSecondOut ? abs($schedSecondOut->diffInMinutes($schedSecondIn)) : 0;
         $requiredTotalMinutes = $requiredFirstShift + $requiredSecondShift;
 
-        // Match entries to schedule times in order (ignore seconds)
+        // Normalize entries onto the same continuous timeline
         $matchedEntries = [];
+        $prevEntryTime = $base->copy()->subHours(3);
         for ($i = 0; $i < 4; $i++) {
-            $matchedEntries[$i] = isset($entries[$i]) ? Carbon::parse($entries[$i])->startOfMinute() : null;
+            if (isset($entries[$i])) {
+                $entryTime = Carbon::parse($entries[$i])->startOfMinute()
+                    ->setDate($base->year, $base->month, $base->day);
+                while ($entryTime->lt($prevEntryTime)) {
+                    $entryTime->addDay();
+                }
+                $matchedEntries[$i] = $entryTime;
+                $prevEntryTime = $entryTime->copy();
+            } else {
+                $matchedEntries[$i] = null;
+            }
         }
 
         // Regular worked minutes - clamp each segment to schedule boundaries
@@ -265,7 +309,7 @@ class TimeRecordService
         ];
     }
 
-    public function formatEntries(array $entries, array $schedule)
+    public function formatEntries(array $entries, array $schedule, string $date = null, bool $isNextDay = false)
     {
 
 
@@ -276,8 +320,12 @@ class TimeRecordService
             'second_out' => null,
         ];
 
-        if(count($schedule) < 4) {
-            return $this->formatEntriesOfShifter($entries, $schedule);
+        if (empty($schedule)) {
+            return $slots;
+        }
+
+        if (count($schedule) < 4) {
+            return $this->formatEntriesOfShifter($entries, $schedule, $date ?? now()->format('Y-m-d'), $isNextDay);
         }
 
         $slotKeys = ['first_in', 'first_out', 'second_in', 'second_out'];
@@ -361,7 +409,7 @@ class TimeRecordService
         return $slots;
     }
 
-    public function formatEntriesOfShifter(array $entries, array $schedule)
+    public function formatEntriesOfShifter(array $entries, array $schedule, string $date, bool $isNextDay = false)
     {
         $slotCount = count($schedule);
         $slotKeys = ['first_in', 'first_out', 'second_in', 'second_out'];
@@ -375,11 +423,10 @@ class TimeRecordService
         $windowMinutes = 180; // 3 hours
 
         // Normalize schedule onto a continuous timeline
-        $base = Carbon::parse($schedule[0])->startOfMinute();
+        $base = Carbon::parse($schedule[0])->startOfMinute()->setDateFrom(Carbon::parse($date));
         $scheduleTimes = [$base->copy()];
         for ($i = 1; $i < $slotCount; $i++) {
-            $t = Carbon::parse($schedule[$i])->startOfMinute()
-                ->setDate($base->year, $base->month, $base->day);
+            $t = Carbon::parse($schedule[$i])->startOfMinute()->setDateFrom(Carbon::parse($date));
             while ($t->lt($scheduleTimes[$i - 1])) {
                 $t->addDay();
             }
@@ -391,8 +438,7 @@ class TimeRecordService
         $prevEntryTime = $base->copy()->subMinutes($windowMinutes);
 
         foreach ($entries as $entry) {
-            $entryTime = Carbon::parse($entry)->startOfMinute()
-                ->setDate($base->year, $base->month, $base->day);
+            $entryTime = Carbon::parse($entry)->startOfMinute()->setDateFrom(Carbon::parse($date));
             while ($entryTime->lt($prevEntryTime)) {
                 $entryTime->addDay();
             }
@@ -434,7 +480,8 @@ class TimeRecordService
                 }
 
                 if ($targetIndex < $slotCount) {
-                    $slots[$slotKeys[$targetIndex]] = $entry;
+                    // Return full datetime string instead of just time
+                    $slots[$slotKeys[$targetIndex]] = $entryTime->toDateTimeString();
                     $pointer = $targetIndex + 1;
                 }
             }
@@ -442,8 +489,8 @@ class TimeRecordService
             $isFirst = false;
         }
 
+
+
         return $slots;
     }
-
-    
 }

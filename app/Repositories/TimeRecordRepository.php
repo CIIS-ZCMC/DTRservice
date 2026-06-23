@@ -9,6 +9,7 @@ use App\Models\DTR;
 use App\Models\Schedule;
 use App\Models\TimeShifts;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class TimeRecordRepository implements TimeRecordRepositoryInterface
 {
@@ -68,13 +69,27 @@ class TimeRecordRepository implements TimeRecordRepositoryInterface
     {
         try {
             return DB::transaction(function () use ($data) {
-                return DTR::create($data);
+                return DTR::UpdateOrCreate([
+                    'biometric_id' => $data['biometric_id'],
+                    'dtr_date' => $data['dtr_date']
+                ], $data);
             });
         } catch (\Exception $e) {
-            // Handle error
-            throw $e;
+           Log::error('Error saving daily time record: ' . $e->getMessage());
         }
 
+    }
+
+    /**
+     * Get all employees with device logs in date range
+     */
+    public function getEmployeesWithDeviceLogs(string $dateFrom, string $dateTo): array
+    {
+        return DeviceLogs::where('dtr_date', '>=', $dateFrom)
+            ->where('dtr_date', '<=', $dateTo)
+            ->distinct()
+            ->pluck('biometric_id')
+            ->toArray();
     }
 
 

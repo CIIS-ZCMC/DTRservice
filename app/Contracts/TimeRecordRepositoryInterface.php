@@ -23,4 +23,9 @@ interface TimeRecordRepositoryInterface
      * Save daily time record
      */
     public function saveDailyTimeRecord(array $data);
+
+    /**
+     * Get all employees with device logs in date range
+     */
+    public function getEmployeesWithDeviceLogs(string $dateFrom, string $dateTo): array;
 }

@@ -25,6 +25,7 @@ class LogsService
 
         $this->deviceRepository->markAsConnected($clientIp);
         if(!empty($rawBody)) {
+          
             // Parse tab-separated format: biometric_id\tdate_time\tdtr_type\t...
             $parts = preg_split('/\t/', trim($rawBody));
 
@@ -34,6 +35,19 @@ class LogsService
             }
 
             $biometric_id = $parts[0];
+
+            // Validate biometric_id is numeric
+            if (!is_numeric($biometric_id)) {
+                Log::channel('device_logs')->error('Invalid biometric_id (must be numeric)', ['biometric_id' => $biometric_id, 'body' => $rawBody]);
+                return "OK";
+            }
+
+            // Validate that the second part is a valid datetime
+            if (!strtotime($parts[1])) {
+                Log::channel('device_logs')->error('Invalid datetime format', ['datetime' => $parts[1], 'body' => $rawBody]);
+                return "OK";
+            }
+
             $dateTime = \Carbon\Carbon::parse($parts[1]);
             $dtr_type = $parts[2];
 

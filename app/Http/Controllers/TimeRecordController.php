@@ -56,7 +56,6 @@ class TimeRecordController extends Controller
     public function computeDTR(int $biometricId, string $date): JsonResponse
     {
         $record = $this->timeRecordService->consolidateDailyTimeRecord($biometricId, $date);
-
         return response()->json([
             'success' => true,
             'data' => $record,
