@@ -26,4 +26,11 @@ class EmployeeProfile extends Model
     {
         return $this->hasMany(EmployeeSchedule::class, 'employee_profile_id');
     }
+
+      public function assignArea()
+    {
+        return $this->hasOne(AssignArea::class)->latest();
+    }
+
+
 }

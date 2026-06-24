@@ -55,7 +55,7 @@ class DeviceRepository implements DeviceRepositoryInterface
             if ($lastSeen === null) {
                 $status = 'offline';
             } else {
-                $status = $lastSeen->diffInMinutes(now()) <= 3 ? 'online' : 'offline';
+                $status = $lastSeen->diffInMinutes(now()) <= 2 ? 'online' : 'offline';
             }
 
             $deviceArray['connection_status'] = $status;

@@ -7,4 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 class PersonalInformation extends Model
 {
      protected $table = "personal_informations";
+     
+     public function contact()
+    {
+        return $this->hasOne(Contact::class);
+    }
 }
