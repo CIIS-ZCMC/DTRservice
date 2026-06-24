@@ -43,5 +43,26 @@ class DeviceRepository implements DeviceRepositoryInterface
         ->update(['last_seen_at' => now()]);
     }
 
+    public function getAllWithStatus(): array
+    {
+        $devices = $this->model->all();
+        $result = [];
+
+        foreach ($devices as $device) {
+            $deviceArray = $device->toArray();
+            $lastSeen = $device->last_seen_at;
+
+            if ($lastSeen === null) {
+                $status = 'offline';
+            } else {
+                $status = $lastSeen->diffInMinutes(now()) <= 3 ? 'online' : 'offline';
+            }
+
+            $deviceArray['connection_status'] = $status;
+            $result[] = $deviceArray;
+        }
+
+        return $result;
+    }
 
 }

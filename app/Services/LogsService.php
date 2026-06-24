@@ -25,7 +25,9 @@ class LogsService
 
         $this->deviceRepository->markAsConnected($clientIp);
         if(!empty($rawBody)) {
-          
+
+
+        try {
             // Parse tab-separated format: biometric_id\tdate_time\tdtr_type\t...
             $parts = preg_split('/\t/', trim($rawBody));
 
@@ -68,8 +70,16 @@ class LogsService
             //Write to structured log table Daily
             $this->logsRepository->writeStructuredLog($logData);
 
+        } catch (\Throwable $th) {
+            Log::channel('device_logs')->error('Error processing device log', ['error' => $th->getMessage()]);
+            return response("ERROR", 500)
+                ->header('Content-Type', 'text/plain');
         }
-        return "OK";
+          
+         
+        }
+      return response("OK", 200)
+                ->header('Content-Type', 'text/plain');
     }
 
 

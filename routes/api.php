@@ -11,6 +11,7 @@ Route::get('/user', function (Request $request) {
 
 // Device management routes
 Route::get('/devices', [DeviceController::class, 'index']);
+Route::get('/devices/all', [DeviceController::class, 'getAllWithStatus']);
 Route::get('/devices/{id}/status', [DeviceController::class, 'status']);
 Route::get('/devices/{id}', [DeviceController::class, 'show']);
 Route::get('/devices/{id}/power-off', [DeviceController::class, 'powerOff']);

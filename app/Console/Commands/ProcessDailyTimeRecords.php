@@ -59,43 +59,43 @@ class ProcessDailyTimeRecords extends Command
         }
     }
 
-    private function processSingleDate(TimeRecordService $timeRecordService, ?int $biometricId, string $date): int
-    {
-        // if (!$biometricId) {
-        //     $this->error('Biometric ID is required for single date processing');
-        //     return 1;
-        // }
+    // private function processSingleDate(TimeRecordService $timeRecordService, ?int $biometricId, string $date): int
+    // {
+    //     // if (!$biometricId) {
+    //     //     $this->error('Biometric ID is required for single date processing');
+    //     //     return 1;
+    //     // }
 
-        // $this->info("Processing DTR for biometric ID: {$biometricId}, date: {$date}");
+    //     // $this->info("Processing DTR for biometric ID: {$biometricId}, date: {$date}");
 
-        // $timeRecordService->consolidateDailyTimeRecord($biometricId, $date);
+    //     // $timeRecordService->consolidateDailyTimeRecord($biometricId, $date);
 
-        // $this->info("Successfully processed DTR for {$date}");
-        // return 0;
-    }
+    //     // $this->info("Successfully processed DTR for {$date}");
+    //     // return 0;
+    // }
 
-    private function processDateRange(TimeRecordService $timeRecordService, ?int $biometricId, string $dateFrom, string $dateTo): int
-    {
-        // $this->info("Processing DTR from {$dateFrom} to {$dateTo}");
+    // private function processDateRange(TimeRecordService $timeRecordService, ?int $biometricId, string $dateFrom, string $dateTo): int
+    // {
+    //     // $this->info("Processing DTR from {$dateFrom} to {$dateTo}");
 
-        // if ($biometricId) {
-        //     $this->info("For biometric ID: {$biometricId}");
-        //     $records = $timeRecordService->getEmployeeTimeRecordsRange($biometricId, $dateFrom, $dateTo);
-        //     $this->info("Found " . count($records) . " records");
+    //     // if ($biometricId) {
+    //     //     $this->info("For biometric ID: {$biometricId}");
+    //     //     $records = $timeRecordService->getEmployeeTimeRecordsRange($biometricId, $dateFrom, $dateTo);
+    //     //     $this->info("Found " . count($records) . " records");
 
-        //     $this->newLine();
-        //     $this->withProgressBar($records, function ($record) use ($timeRecordService, $biometricId) {
-        //         $timeRecordService->consolidateDailyTimeRecord($biometricId, $record['date']);
-        //     });
-        //     $this->newLine();
-        // } else {
-        //     $this->info("Processing all employees");
-        //     return $this->processAllEmployees($timeRecordService, $dateFrom, $dateTo);
-        // }
+    //     //     $this->newLine();
+    //     //     $this->withProgressBar($records, function ($record) use ($timeRecordService, $biometricId) {
+    //     //         $timeRecordService->consolidateDailyTimeRecord($biometricId, $record['date']);
+    //     //     });
+    //     //     $this->newLine();
+    //     // } else {
+    //     //     $this->info("Processing all employees");
+    //     //     return $this->processAllEmployees($timeRecordService, $dateFrom, $dateTo);
+    //     // }
 
-        // $this->info("Successfully processed DTR range from {$dateFrom} to {$dateTo}");
-        // return 0;
-    }
+    //     // $this->info("Successfully processed DTR range from {$dateFrom} to {$dateTo}");
+    //     // return 0;
+    // }
 
     private function processAllEmployees(TimeRecordRepositoryInterface $timeRecordRepository): int
     {

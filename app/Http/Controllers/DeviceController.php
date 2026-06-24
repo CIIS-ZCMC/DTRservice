@@ -37,23 +37,21 @@ class DeviceController extends Controller
     }
 
     /**
-     * Get device status
+     * Get all devices with connection status
      */
-    public function status(int $id): JsonResponse
+    public function getAllWithStatus(): JsonResponse
     {
         try {
-            $status = $this->deviceService->checkDeviceStatus($id);
-
+            $devices = $this->deviceService->getAllDevicesWithStatus();
             return response()->json([
                 'success' => true,
-                'data' => $status
+                'data' => $devices
             ]);
-
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage()
-            ], 404);
+            ], 500);
         }
     }
 

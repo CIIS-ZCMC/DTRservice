@@ -40,6 +40,14 @@ class DeviceService
     }
 
     /**
+     * Get all devices with connection status
+     */
+    public function getAllDevicesWithStatus(): array
+    {
+        return $this->deviceRepository->getAllWithStatus();
+    }
+
+    /**
      * Get all Online devices
      */
     public function getOnlineDevices(): array
@@ -67,20 +75,20 @@ class DeviceService
     /**
      * Check device status
      */
-    public function checkDeviceStatus(string $serialNumber): array
-    {
-        $device = $this->deviceRepository->findBySn($serialNumber);
-        if (!$device) {
-            throw new Exception('Device not found');
-        }
-        $response = $this->sendDeviceCommand($device->id, 'status');
-        return [
-            'device_id' => $device->device_id,
-            'status' => $response['status'] ?? 'unknown',
-            'last_seen' => $device->updated_at,
-            'ip_address' => $device->ip_address ?? null,
-        ];
-    }
+    // public function checkDeviceStatus(string $serialNumber): array
+    // {
+    //     $device = $this->deviceRepository->findBySn($serialNumber);
+    //     if (!$device) {
+    //         throw new Exception('Device not found');
+    //     }
+    //     $response = $this->sendDeviceCommand($device->id, 'status');
+    //     return [
+    //         'device_id' => $device->device_id,
+    //         'status' => $response['status'] ?? 'unknown',
+    //         'last_seen' => $device->updated_at,
+    //         'ip_address' => $device->ip_address ?? null,
+    //     ];
+    // }
 
     /**
      * Turn off device
