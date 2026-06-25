@@ -24,62 +24,99 @@ class LogsService
         $rawBody = $request->getContent();
 
         $this->deviceRepository->markAsConnected($clientIp);
-        if(!empty($rawBody)) {
+      
 
+        if (!empty($rawBody)) {
+            // Device may push multiple records in a single request, separated by newlines.
+            // Process each line individually so past/unsaved logs are not skipped.
+            $lines = preg_split('/\r\n|\r|\n/', trim($rawBody));
 
-        try {
-            // Parse tab-separated format: biometric_id\tdate_time\tdtr_type\t...
-            $parts = preg_split('/\t/', trim($rawBody));
+            foreach ($lines as $line) {
+                $line = trim($line);
 
-            if (count($parts) < 3) {
-                Log::channel('device_logs')->error('Invalid device data format', ['body' => $rawBody]);
-                return "OK";
+                if ($line === '') {
+                    continue;
+                }
+
+                try {
+                    $this->processLogLine($line, $clientIp);
+                } catch (\Throwable $th) {
+                    Log::channel('device_logs')->error('Error processing device log line', [
+                        'error' => $th->getMessage(),
+                        'line' => $line,
+                    ]);
+                    // Return error to trigger device retry
+                    return response("ERROR", 500)
+                        ->header('Content-Type', 'text/plain');
+                }
             }
+        }
 
+        return response("OK", 200)
+            ->header('Content-Type', 'text/plain');
+    }
+
+    /**
+     * Parse and persist a single device log line.
+     */
+    private function processLogLine(string $line, string $clientIp): void
+    {
+        // Parse tab-separated format.
+        $parts = preg_split('/\t/', $line);
+
+        if (count($parts) < 3) {
+            Log::channel('device_logs')->error('Invalid device data format', ['line' => $line]);
+            return;
+        }
+
+        // Two formats are sent by the device:
+        // - ATTLOG: biometric_id \t datetime \t status \t ...
+        // - OPLOG:  "OPLOG <op>" \t biometric_id \t datetime \t param \t ...
+        if (stripos($parts[0], 'OPLOG') === 0) {
+            if (count($parts) < 4) {
+                Log::channel('device_logs')->error('Invalid OPLOG data format', ['line' => $line]);
+                return;
+            }
+            $biometric_id = $parts[1];
+            $datetime = $parts[2];
+            $dtr_type = $parts[3] ?? '255';
+        } else {
             $biometric_id = $parts[0];
-
-            // Validate biometric_id is numeric
-            if (!is_numeric($biometric_id)) {
-                Log::channel('device_logs')->error('Invalid biometric_id (must be numeric)', ['biometric_id' => $biometric_id, 'body' => $rawBody]);
-                return "OK";
-            }
-
-            // Validate that the second part is a valid datetime
-            if (!strtotime($parts[1])) {
-                Log::channel('device_logs')->error('Invalid datetime format', ['datetime' => $parts[1], 'body' => $rawBody]);
-                return "OK";
-            }
-
-            $dateTime = \Carbon\Carbon::parse($parts[1]);
+            $datetime = $parts[1];
             $dtr_type = $parts[2];
-
-            $logData = [
-                'biometric_id' => $biometric_id,
-                'dtr_date' => $dateTime->format('Y-m-d'),
-                'dtr_time' => $dateTime->format('H:i:s'),
-                'dtr_type' => $dtr_type,
-                'ip_address' => $clientIp
-            ];
-
-            //Write to DB
-            $this->logsRepository->createLog($logData);
-
-            //Write to File
-            $this->logsRepository->writeToFile($logData);
-
-            //Write to structured log table Daily
-            $this->logsRepository->writeStructuredLog($logData);
-
-        } catch (\Throwable $th) {
-            Log::channel('device_logs')->error('Error processing device log', ['error' => $th->getMessage()]);
-            return response("ERROR", 500)
-                ->header('Content-Type', 'text/plain');
         }
-          
-         
+
+        // Validate biometric_id is numeric
+        if (!is_numeric($biometric_id)) {
+            Log::channel('device_logs')->error('Invalid biometric_id (must be numeric)', ['biometric_id' => $biometric_id, 'line' => $line]);
+            return;
         }
-      return response("OK", 200)
-                ->header('Content-Type', 'text/plain');
+
+        // Validate that the datetime part is valid
+        if (!strtotime($datetime)) {
+            Log::channel('device_logs')->error('Invalid datetime format', ['datetime' => $datetime, 'line' => $line]);
+            return;
+        }
+
+        $dateTime = \Carbon\Carbon::parse($datetime);
+
+
+        $logData = [
+            'biometric_id' => $biometric_id,
+            'dtr_date' => $dateTime->format('Y-m-d'),
+            'dtr_time' => $dateTime->format('H:i:s'),
+            'dtr_type' => $dtr_type,
+            'ip_address' => $clientIp
+        ];
+
+        //Write to DB
+        $this->logsRepository->createLog($logData);
+
+        //Write to File
+        $this->logsRepository->writeToFile($logData);
+
+        //Write to structured log table Daily
+        $this->logsRepository->writeStructuredLog($logData);
     }
 
 
