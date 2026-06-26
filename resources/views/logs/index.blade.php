@@ -20,15 +20,15 @@
         .log-default { color: #e5e7eb; background: rgba(55, 65, 81, 0.3); border-left: 3px solid #4b5563; }
         
         .scrollbar-thin::-webkit-scrollbar {
-            width: 6px;
-            height: 6px;
+            width: 8px;
+            height: 8px;
         }
         .scrollbar-thin::-webkit-scrollbar-track {
             background: #1f2937;
         }
         .scrollbar-thin::-webkit-scrollbar-thumb {
             background: #4b5563;
-            border-radius: 3px;
+            border-radius: 4px;
         }
         .scrollbar-thin::-webkit-scrollbar-thumb:hover {
             background: #6b7280;
@@ -222,9 +222,6 @@
                 html += `<div class="log-line ${colorClass} px-3 py-1.5 mb-1 rounded whitespace-pre-wrap">${escapeHtml(line)}</div>`;
             });
             container.innerHTML = html;
-            
-            // Auto-scroll to bottom
-            container.scrollTop = container.scrollHeight;
         }
 
         async function fetchLogs() {
