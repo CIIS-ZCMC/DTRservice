@@ -74,7 +74,7 @@ class LogsService
         // - OPLOG:  "OPLOG <op>" \t biometric_id \t datetime \t param \t ...
         if (stripos($parts[0], 'OPLOG') === 0) {
             if (count($parts) < 4) {
-                Log::channel('device_logs')->error('Invalid OPLOG data format', ['line' => $line]);
+                Log::channel('device_logs')->error('Invalid OPLOG data format', ['line' => $line, 'parts' => $parts]);
                 return;
             }
             $biometric_id = $parts[1];
@@ -92,14 +92,32 @@ class LogsService
             return;
         }
 
+        // Skip system/device operation events (biometric_id 0 is not a real user).
+        // These come from OPLOG operation logs (e.g. config changes) and are not attendance.
+        if ((int)$biometric_id <= 0) {
+            Log::channel('device_logs')->info('Skipped system operation log (no real user)', ['line' => $line]);
+            return;
+        }
+
         // Validate that the datetime part is valid
         if (!strtotime($datetime)) {
             Log::channel('device_logs')->error('Invalid datetime format', ['datetime' => $datetime, 'line' => $line]);
             return;
         }
 
-        $dateTime = \Carbon\Carbon::parse($datetime);
+        // Validate dtr_type/status is a small numeric code (not an IP/garbage).
+        // Malformed lines must be skipped so they don't truncate the status column
+        // or cause the device to retry the same bad data indefinitely.
+        if (!is_numeric($dtr_type) || (int)$dtr_type < 0 || (int)$dtr_type > 255) {
+            Log::channel('device_logs')->error('Invalid dtr_type (status), skipping line', [
+                'dtr_type' => $dtr_type,
+                'line' => $line,
+                'parts' => $parts,
+            ]);
+            return;
+        }
 
+        $dateTime = \Carbon\Carbon::parse($datetime);
 
         $logData = [
             'biometric_id' => $biometric_id,
