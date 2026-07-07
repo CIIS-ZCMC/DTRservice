@@ -23,5 +23,5 @@ interface LogsRepositoryInterface
     
     public function writeToFile(array $data): void;
 
-    public function writeStructuredLog(array $data): void;
+    public function writeStructuredLog(array $data, ?string $rawLine = null): void;
     }

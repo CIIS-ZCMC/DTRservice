@@ -72,11 +72,13 @@ class LogsService
         // Two formats are sent by the device:
         // - ATTLOG: biometric_id \t datetime \t status \t ...
         // - OPLOG:  "OPLOG <op>" \t biometric_id \t datetime \t param \t ...
+        $isOplog = false;
         if (stripos($parts[0], 'OPLOG') === 0) {
             if (count($parts) < 4) {
                 Log::channel('device_logs')->error('Invalid OPLOG data format', ['line' => $line, 'parts' => $parts]);
                 return;
             }
+            $isOplog = true;
             $biometric_id = $parts[1];
             $datetime = $parts[2];
             $dtr_type = $parts[3] ?? '255';
@@ -117,6 +119,31 @@ class LogsService
             return;
         }
 
+        // Standard ZKTeco attendance status codes:
+        // 0=Check-In, 1=Check-Out, 2=Break-Out, 3=Break-In, 4=OT-In, 5=OT-Out
+        // OPLOG entries use parts[3] as an operation parameter, not attendance status.
+        // Only accept standard attendance codes for OPLOG to prevent invalid data.
+        $validAttendanceCodes = [0, 1, 2, 3, 4, 5];
+        if ($isOplog && !in_array((int)$dtr_type, $validAttendanceCodes)) {
+            Log::channel('device_logs')->warning('OPLOG with non-attendance status code, skipping line', [
+                'dtr_type' => $dtr_type,
+                'biometric_id' => $biometric_id,
+                'line' => $line,
+                'parts' => $parts,
+            ]);
+            return;
+        }
+
+        // Log entries with unusual (non-standard) status codes for ATTLOG
+        if (!$isOplog && !in_array((int)$dtr_type, $validAttendanceCodes)) {
+            Log::channel('device_logs')->warning('Unusual dtr_type (status) code for ATTLOG', [
+                'dtr_type' => $dtr_type,
+                'biometric_id' => $biometric_id,
+                'line' => $line,
+                'parts' => $parts,
+            ]);
+        }
+
         $dateTime = \Carbon\Carbon::parse($datetime);
 
         $logData = [
@@ -134,7 +161,7 @@ class LogsService
         $this->logsRepository->writeToFile($logData);
 
         //Write to structured log table Daily
-        $this->logsRepository->writeStructuredLog($logData);
+        $this->logsRepository->writeStructuredLog($logData, $line);
     }
 
 

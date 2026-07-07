@@ -122,7 +122,7 @@ class LogsRepository implements LogsRepositoryInterface
         }
     }
 
-    public function writeStructuredLog(array $data): void
+    public function writeStructuredLog(array $data, ?string $rawLine = null): void
     {
         try {
             $device = $this->deviceRepository->findByIP($data['ip_address']);
@@ -137,6 +137,7 @@ class LogsRepository implements LogsRepositoryInterface
                 'device_name' => $device?->device_name ?? 'Unknown',
                 'ip_address' => $data['ip_address'] ?? null,
                 'logged_at' => now()->toISOString(),
+                'raw_line' => $rawLine,
             ];
             Log::channel('device_logs')->info('Device log entry', $logData);
         } catch (\Exception $e) {
