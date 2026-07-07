@@ -145,6 +145,16 @@ class LogsService
         }
 
         $dateTime = \Carbon\Carbon::parse($datetime);
+        $dateTimeStr = $dateTime->format('Y-m-d H:i:s');
+
+        // Skip duplicate entries — ZKTeco devices resend logs until they get OK
+        if ($this->logsRepository->logExists((int)$biometric_id, $dateTimeStr)) {
+            Log::channel('device_logs')->info('Duplicate log skipped', [
+                'biometric_id' => $biometric_id,
+                'date_time' => $dateTimeStr,
+            ]);
+            return;
+        }
 
         $logData = [
             'biometric_id' => $biometric_id,

@@ -150,7 +150,7 @@ class LogsRepository implements LogsRepositoryInterface
      */
     public function logExists(int $biometricId, string $dateTime): bool
     {
-        return DB::table('attendance_logs')
+        return DB::table('device_logs')
             ->where('biometric_id', $biometricId)
             ->where('date_time', $dateTime)
             ->exists();
