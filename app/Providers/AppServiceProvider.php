@@ -31,6 +31,11 @@ class AppServiceProvider extends ServiceProvider
             \App\Contracts\TimeRecordRepositoryInterface::class,
             \App\Repositories\TimeRecordRepository::class
         );
+
+        $this->app->bind(
+            \App\Contracts\DtrReportRepositoryInterface::class,
+            \App\Repositories\DtrReportRepository::class
+        );
     }
 
     /**

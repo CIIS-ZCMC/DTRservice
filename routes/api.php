@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\DeviceController;
+use App\Http\Controllers\DtrReportController;
 use App\Http\Controllers\TimeRecordController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -24,3 +25,7 @@ Route::get('/time-records/{biometricId}/{date}', [TimeRecordController::class, '
 
 
 Route::get('/compute-dtr/{biometricId}/{date}', [TimeRecordController::class, 'computeDTR']);
+
+// DTR Report routes
+Route::get('/dtr/report/{biometricId}/{dateFrom}/{dateTo}', [DtrReportController::class, 'generate']);
+Route::get('/dtr/download/{biometricId}/{dateFrom}/{dateTo}', [DtrReportController::class, 'download']);
