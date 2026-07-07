@@ -63,7 +63,7 @@ class LogsService
     {
         // Parse tab-separated format.
         $parts = preg_split('/\t/', $line);
-         Log::channel('device_logs')->info('Parts', ['parts' => $parts]);
+        Log::channel('device_logs')->info('Parts', ['parts' => $parts]);
 
         if (count($parts) < 3) {
             Log::channel('device_logs')->error('Invalid device data format', ['line' => $line]);
