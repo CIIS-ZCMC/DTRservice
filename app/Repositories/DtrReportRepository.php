@@ -5,6 +5,11 @@ namespace App\Repositories;
 use App\Contracts\DtrReportRepositoryInterface;
 use App\Models\Biometrics;
 use App\Models\DeviceLogs;
+use App\Models\LeaveApplication;
+use App\Models\OfficialBusinessApplication;
+use App\Models\OfficialTimeApplication;
+use App\Models\CtoApplication;
+use App\Models\TimeAdjustment;
 use Illuminate\Support\Facades\DB;
 
 class DtrReportRepository implements DtrReportRepositoryInterface
@@ -44,6 +49,27 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             $records[$date]['device_logs'][] = $log;
         }
 
+        // Fill missing dates in the range
+        $period = new \DatePeriod(
+            new \DateTime($dateFrom),
+            new \DateInterval('P1D'),
+            (new \DateTime($dateTo))->modify('+1 day')
+        );
+
+        foreach ($period as $dt) {
+            $date = $dt->format('Y-m-d');
+            if (!isset($records[$date])) {
+                $records[$date] = [
+                    'date' => $date,
+                    'device_logs' => [],
+                    'schedule' => $this->getEmployeeSchedule($biometricId, $date),
+                    'time_shift' => $this->getTimeShiftByDate($biometricId, $date),
+                ];
+            }
+        }
+
+        ksort($records);
+
         $employeeName = 'Unknown';
         $department = 'N/A';
 
@@ -55,11 +81,14 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             $department = $employee->externalProfile->department ?? 'N/A';
         }
 
+        $employeeProfileId = $employee->employeeProfile?->id;
+
         return [
             'employee' => [
                 'biometric_id' => $biometricId,
                 'name' => $employeeName,
                 'department' => $department,
+                'employee_profile_id' => $employeeProfileId,
             ],
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
@@ -108,6 +137,64 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         }
 
         return $schedule->timeShift;
+    }
+
+    /**
+     * Get approved applications for an internal employee on a specific date
+     */
+    private function getApplications(?int $employeeProfileId, string $date): array
+    {
+        $empty = [
+            'has_leave' => [],
+            'has_ob' => [],
+            'has_ot' => [],
+            'has_cto' => [],
+            'has_ta' => null,
+        ];
+
+        if (!$employeeProfileId) {
+            return $empty;
+        }
+
+        $leaveApps = LeaveApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date_from', '<=', $date)
+            ->whereDate('date_to', '>=', $date)
+            ->get()
+            ->toArray();
+
+        $obApps = OfficialBusinessApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date_from', '<=', $date)
+            ->whereDate('date_to', '>=', $date)
+            ->get()
+            ->toArray();
+
+        $otApps = OfficialTimeApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date_from', '<=', $date)
+            ->whereDate('date_to', '>=', $date)
+            ->get()
+            ->toArray();
+
+        $ctoApps = CtoApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date', $date)
+            ->get()
+            ->toArray();
+
+        $timeAdjustment = TimeAdjustment::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date', $date)
+            ->first();
+
+        return [
+            'has_leave' => $leaveApps,
+            'has_ob' => $obApps,
+            'has_ot' => $otApps,
+            'has_cto' => $ctoApps,
+            'has_ta' => $timeAdjustment ? $timeAdjustment->toArray() : null,
+        ];
     }
 
     /**
@@ -304,6 +391,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         $dailyRecords = [];
         $records = $data['records'];
         $recordCount = count($records);
+        $employeeProfileId = $data['employee']['employee_profile_id'] ?? null;
 
         for ($i = 0; $i < $recordCount; $i++) {
             $record = $records[$i];
@@ -436,6 +524,9 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 $hasSchedule[] = $scheduleData;
             }
 
+            // Fetch applications (internal employees only)
+            $applications = $this->getApplications($employeeProfileId, $date);
+
             // Attendance status logic
             $isWeekend = $dayName === 'Saturday' || $dayName === 'Sunday';
             $isFuture = $date > date('Y-m-d');
@@ -443,10 +534,46 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             $hasScheduleData = $scheduleData !== null;
             $remarks = null;
 
-            // Applications placeholder: if has leave/OT/OB, prioritize application (TODO: fill later)
-            $hasApplications = !empty($dailyRecords) && false; // placeholder
-
-            if (!$hasApplications) {
+            // TA: if approved time adjustment exists, override time slots with TA values
+            if ($applications['has_ta']) {
+                $ta = $applications['has_ta'];
+                if (!empty($ta['first_in'])) {
+                    $timeSlots['first_in'] = $this->formatTime($ta['first_in']);
+                }
+                if (!empty($ta['first_out'])) {
+                    $timeSlots['first_out'] = $this->formatTime($ta['first_out']);
+                }
+                if (!empty($ta['second_in'])) {
+                    $timeSlots['second_in'] = $this->formatTime($ta['second_in']);
+                }
+                if (!empty($ta['second_out'])) {
+                    $timeSlots['second_out'] = $this->formatTime($ta['second_out']);
+                }
+            } elseif (!empty($applications['has_leave'])) {
+                $timeSlots['first_in'] = 'LV';
+                $timeSlots['first_out'] = null;
+                $timeSlots['second_in'] = null;
+                $timeSlots['second_out'] = null;
+                $remarks = 'Leave';
+            } elseif (!empty($applications['has_ob'])) {
+                $timeSlots['first_in'] = 'OB';
+                $timeSlots['first_out'] = null;
+                $timeSlots['second_in'] = null;
+                $timeSlots['second_out'] = null;
+                $remarks = 'Official Business';
+            } elseif (!empty($applications['has_ot'])) {
+                $timeSlots['first_in'] = 'OT';
+                $timeSlots['first_out'] = null;
+                $timeSlots['second_in'] = null;
+                $timeSlots['second_out'] = null;
+                $remarks = 'Official Time';
+            } elseif (!empty($applications['has_cto'])) {
+                $timeSlots['first_in'] = 'CTO';
+                $timeSlots['first_out'] = null;
+                $timeSlots['second_in'] = null;
+                $timeSlots['second_out'] = null;
+                $remarks = 'CTO';
+            } else {
                 if ($hasEntries && $hasScheduleData) {
                     // Show actual time — first_in already set from matching
                 } elseif ($hasScheduleData && !$hasEntries) {
@@ -474,11 +601,11 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 'first_out' => $timeSlots['first_out'],
                 'second_in' => $timeSlots['second_in'],
                 'second_out' => $timeSlots['second_out'],
-                'has_leave' => [],
-                'has_ob' => [],
-                'has_ot' => [],
-                'has_cto' => [],
-                'has_ta' => null,
+                'has_leave' => $applications['has_leave'],
+                'has_ob' => $applications['has_ob'],
+                'has_ot' => $applications['has_ot'],
+                'has_cto' => $applications['has_cto'],
+                'has_ta' => $applications['has_ta'],
                 'has_schedule' => $hasSchedule,
                 'has_undertime' => [],
                 'has_holiday' => [],
