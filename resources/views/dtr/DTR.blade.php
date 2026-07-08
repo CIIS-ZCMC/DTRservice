@@ -477,8 +477,6 @@
                                 $holidayDesc = $dailyLog['has_holiday'][0]['description'] ?? 'Holiday';
                             @endphp
                             <td colspan="6" style="text-align: center;"><span style="padding-right:60px !important">{{ $holidayDesc }}</span></td>
-                        @elseif ($isStatusRow)
-                            <td colspan="6" style="text-align: center; font-size: 10px; font-weight: bold;">{{ $statusLabel }}</td>
                         @else
                             <td>{{ $dailyLog['first_in'] ?? '' }}</td>
                             <td>{{ $dailyLog['first_out'] ?? '' }}</td>
