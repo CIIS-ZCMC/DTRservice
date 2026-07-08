@@ -15,7 +15,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
     public function getEmployeeDtrData(int $biometricId, string $dateFrom, string $dateTo): array
     {
         $employee = Biometrics::where('biometric_id', $biometricId)
-            ->with('employeeProfile')
+            ->with('employeeProfile', 'externalProfile')
             ->first();
 
         if (!$employee) {
@@ -43,12 +43,23 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             }
             $records[$date]['device_logs'][] = $log;
         }
-     
+
+        $employeeName = 'Unknown';
+        $department = 'N/A';
+
+        if ($employee->employeeProfile) {
+            $employeeName = $employee->employeeProfile->personalInformation->employeeName() ?? 'Unknown';
+            $department = $employee->employeeProfile->assignArea->area_name ?? 'N/A';
+        } elseif ($employee->externalProfile) {
+            $employeeName = trim(($employee->externalProfile->first_name ?? '') . ' ' . ($employee->externalProfile->last_name ?? '')) ?: 'Unknown';
+            $department = $employee->externalProfile->department ?? 'N/A';
+        }
+
         return [
             'employee' => [
                 'biometric_id' => $biometricId,
-                'name' => $employee->employeeProfile->personalInformation->employeeName() ?? 'Unknown',
-                'department' => $employee->employeeProfile->assignArea->area_name ?? 'N/A',
+                'name' => $employeeName,
+                'department' => $department,
             ],
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
@@ -59,19 +70,19 @@ class DtrReportRepository implements DtrReportRepositoryInterface
     /**
      * Get employee schedule for a specific date
      */
-    private function getEmployeeSchedule(int $biometricId, string $date): ?\App\Models\Schedule
+    private function getEmployeeSchedule(int $biometricId, string $date)
     {
         $employeeProfile = Biometrics::where('biometric_id', $biometricId)
-            ->with('employeeProfile')
+            ->with('employeeProfile','externalProfile')
             ->first();
 
       
-
         if (!$employeeProfile || !$employeeProfile->employeeProfile) {
+                if($employeeProfile->externalProfile){  
+                return $employeeProfile->getSchedules($date);
+               }
             return null;
         }
-
-     
 
         return \App\Models\Schedule::where('date', $date)
             ->whereHas('employeeSchedules', function ($query) use ($employeeProfile) {
@@ -84,11 +95,19 @@ class DtrReportRepository implements DtrReportRepositoryInterface
     /**
      * Get time shift for a specific date
      */
-    private function getTimeShiftByDate(int $biometricId, string $date): ?\App\Models\TimeShifts
+    private function getTimeShiftByDate(int $biometricId, string $date)
     {
         $schedule = $this->getEmployeeSchedule($biometricId, $date);
 
-        return $schedule ? $schedule->timeShift : null;
+        if (!$schedule) {
+            return null;
+        }
+
+        if ($schedule instanceof \App\Models\ExternalSchedule) {
+            return null;
+        }
+
+        return $schedule->timeShift;
     }
 
     /**
@@ -116,15 +135,60 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             ];
         }
 
+        $firstEntry = $timeShift->first_in ?? null;
+        $lastEntry = $timeShift->second_out ?? null;
+        $isCrossMidnight = $firstEntry !== null && $lastEntry !== null && $firstEntry > $lastEntry;
+
         return [
             'scheduleDate' => $schedule->date,
-            'first_entry' => $timeShift->first_in ?? null,
+            'first_entry' => $firstEntry,
             'second_entry' => $timeShift->first_out ?? null,
             'third_entry' => $timeShift->second_in ?? null,
-            'last_entry' => $timeShift->second_out ?? null,
+            'last_entry' => $lastEntry,
             'total_hours' => 8,
             'arrival_departure' => null,
-            'is_cross_midnight' => false,
+            'is_cross_midnight' => $isCrossMidnight,
+        ];
+    }
+
+    /**
+     * Build schedule data array from ExternalSchedule model
+     */
+    private function buildExternalScheduleData(\App\Models\ExternalSchedule $schedule): array
+    {
+        $hasSecondIn = $schedule->second_in !== null && $schedule->second_in !== '';
+        $hasSecondOut = $schedule->second_out !== null && $schedule->second_out !== '';
+
+        if (!$hasSecondIn && !$hasSecondOut) {
+            $isCrossMidnight = $schedule->first_in !== null
+                && $schedule->first_out !== null
+                && $schedule->first_in === $schedule->first_out;
+
+            return [
+                'scheduleDate' => $schedule->dtr_date,
+                'first_entry' => $schedule->first_in ?? null,
+                'second_entry' => null,
+                'third_entry' => null,
+                'last_entry' => $schedule->first_out ?? null,
+                'total_hours' => 8,
+                'arrival_departure' => null,
+                'is_cross_midnight' => $isCrossMidnight,
+            ];
+        }
+
+        $firstEntry = $schedule->first_in ?? null;
+        $lastEntry = $schedule->second_out ?? null;
+        $isCrossMidnight = $firstEntry !== null && $lastEntry !== null && $firstEntry > $lastEntry;
+
+        return [
+            'scheduleDate' => $schedule->dtr_date,
+            'first_entry' => $firstEntry,
+            'second_entry' => $schedule->first_out ?? null,
+            'third_entry' => $schedule->second_in ?? null,
+            'last_entry' => $lastEntry,
+            'total_hours' => 8,
+            'arrival_departure' => null,
+            'is_cross_midnight' => $isCrossMidnight,
         ];
     }
 
@@ -162,13 +226,27 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         $secondInTime = $schedule['third_entry'] ?? null;
         $secondOutTime = $schedule['last_entry'] ?? null;
 
+        // Detect PM schedule (first_entry >= 12:00)
+        $isPmSchedule = $firstInTime !== null && $firstInTime >= '12:00:00';
+
         // Find closest log for each schedule slot (skip if schedule time is null)
-        $matched = [
-            'first_in' => $firstInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $firstInTime) : null,
-            'first_out' => ($firstOutTime ?: '12:00:00') ? $this->findClosestLog($deviceLogs, $date . ' ' . ($firstOutTime ?: '12:00:00'), '00:00:00', '13:00:00') : null,
-            'second_in' => $secondInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondInTime) : null,
-            'second_out' => ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondOutTime) : null,
-        ];
+        if ($isPmSchedule) {
+            // PM schedule: first_in/first_out match AM logs only (for cross-midnight leftovers)
+            // second_in matches against first_entry, second_out against last_entry
+            $matched = [
+                'first_in' => $this->findClosestLog($deviceLogs, $date . ' 08:00:00', '00:00:00', '12:00:00'),
+                'first_out' => $this->findClosestLog($deviceLogs, $date . ' 12:00:00', '00:00:00', '13:00:00'),
+                'second_in' => $firstInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $firstInTime) : null,
+                'second_out' => ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondOutTime) : null,
+            ];
+        } else {
+            $matched = [
+                'first_in' => $firstInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $firstInTime) : null,
+                'first_out' => ($firstOutTime ?: '12:00:00') ? $this->findClosestLog($deviceLogs, $date . ' ' . ($firstOutTime ?: '12:00:00'), '00:00:00', '13:00:00') : null,
+                'second_in' => $secondInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondInTime) : null,
+                'second_out' => ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondOutTime) : null,
+            ];
+        }
 
         // Format times to 12-hour format
         return [
@@ -248,19 +326,43 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             ];
 
             $scheduleData = null;
-            if ($schedule && $timeShift) {
+            if ($schedule instanceof \App\Models\ExternalSchedule) {
+                $scheduleData = $this->buildExternalScheduleData($schedule);
+            } elseif ($schedule && $timeShift) {
                 $scheduleData = $this->buildScheduleData($schedule, $timeShift);
             }
 
             // Handle cross-midnight FIRST: if previous day was cross-midnight, find out time in current day's logs
             $crossMidnightLogDateTime = null;
+
+            // Build previous day's schedule data
+            $prevScheduleData = null;
             if ($i > 0) {
                 $prevRecord = $records[$i - 1];
                 $prevSchedule = $prevRecord['schedule'];
                 $prevTimeShift = $prevRecord['time_shift'];
 
-                if ($prevSchedule && $prevTimeShift) {
+                if ($prevSchedule instanceof \App\Models\ExternalSchedule) {
+                    $prevScheduleData = $this->buildExternalScheduleData($prevSchedule);
+                } elseif ($prevSchedule && $prevTimeShift) {
                     $prevScheduleData = $this->buildScheduleData($prevSchedule, $prevTimeShift);
+                }
+            } else {
+                // First record: fetch previous day's schedule directly (may be outside dateFrom range)
+                $prevDate = date('Y-m-d', strtotime($date . ' -1 day'));
+                $prevSchedule = $this->getEmployeeSchedule($biometricId, $prevDate);
+
+                if ($prevSchedule instanceof \App\Models\ExternalSchedule) {
+                    $prevScheduleData = $this->buildExternalScheduleData($prevSchedule);
+                } elseif ($prevSchedule) {
+                    $prevTimeShift = $prevSchedule->timeShift;
+                    if ($prevTimeShift) {
+                        $prevScheduleData = $this->buildScheduleData($prevSchedule, $prevTimeShift);
+                    }
+                }
+            }
+
+            if ($prevScheduleData) {
 
                     if (!empty($prevScheduleData['is_cross_midnight']) && !empty($deviceLogs)) {
                         $prevLastEntry = $prevScheduleData['last_entry'] ?? '08:00:00';
@@ -309,7 +411,6 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                         }
                     }
                 }
-            }
 
             // Remove cross-midnight log from device logs so it's not reused by matchLogsToScheduleSlots
             $logsForMatching = $deviceLogs;
@@ -335,6 +436,35 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 $hasSchedule[] = $scheduleData;
             }
 
+            // Attendance status logic
+            $isWeekend = $dayName === 'Saturday' || $dayName === 'Sunday';
+            $isFuture = $date > date('Y-m-d');
+            $hasEntries = $timeSlots['first_in'] !== null || $timeSlots['second_in'] !== null || $timeSlots['second_out'] !== null;
+            $hasScheduleData = $scheduleData !== null;
+            $remarks = null;
+
+            // Applications placeholder: if has leave/OT/OB, prioritize application (TODO: fill later)
+            $hasApplications = !empty($dailyRecords) && false; // placeholder
+
+            if (!$hasApplications) {
+                if ($hasEntries && $hasScheduleData) {
+                    // Show actual time — first_in already set from matching
+                } elseif ($hasScheduleData && !$hasEntries) {
+                    $timeSlots['first_in'] = 'ABSENT';
+                } elseif (!$hasScheduleData && $hasEntries) {
+                    $timeSlots['first_in'] = null;
+                    $remarks = 'no schedule';
+                } elseif (!$hasScheduleData && !$hasEntries && $isWeekend) {
+                    $timeSlots['first_in'] = 'DAY OFF';
+                } elseif (!$hasScheduleData && !$hasEntries && !$isWeekend && !$isFuture) {
+                    $timeSlots['first_in'] = 'DAY OFF';
+                } elseif ($isFuture && $isWeekend) {
+                    $timeSlots['first_in'] = 'DAY OFF';
+                } elseif ($isFuture && !$isWeekend) {
+                    $timeSlots['first_in'] = null;
+                }
+            }
+
             $dailyRecords[] = [
                 'dtr_date' => $date,
                 'day' => $dayNum,
@@ -354,11 +484,12 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 'has_holiday' => [],
                 'undertime' => null,
                 'attendance_status' => 1,
+                'remarks' => $remarks,
             ];
         }
 
         //dd("test",$dailyRecords[2],$dailyRecords[3]);
-       ///dd("test",$dailyRecords);
+      //dd("test",$dailyRecords);
 
         // Calculate totals
         $totalDays = count($dailyRecords);
