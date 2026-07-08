@@ -10,6 +10,7 @@ use App\Models\OfficialBusinessApplication;
 use App\Models\OfficialTimeApplication;
 use App\Models\CtoApplication;
 use App\Models\TimeAdjustment;
+use App\Models\Holiday;
 use Illuminate\Support\Facades\DB;
 
 class DtrReportRepository implements DtrReportRepositoryInterface
@@ -195,6 +196,18 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             'has_cto' => $ctoApps,
             'has_ta' => $timeAdjustment ? $timeAdjustment->toArray() : null,
         ];
+    }
+
+    /**
+     * Get holiday for a specific date (matches by month-day)
+     */
+    private function getHoliday(string $date): ?array
+    {
+        $monthDay = substr($date, 5, 5); // Extract MM-DD from Y-m-d
+
+        $holiday = Holiday::where('month_day', $monthDay)->first();
+
+        return $holiday ? ['description' => $holiday->description] : null;
     }
 
     /**
@@ -527,6 +540,9 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             // Fetch applications (internal employees only)
             $applications = $this->getApplications($employeeProfileId, $date);
 
+            // Fetch holiday
+            $holiday = $this->getHoliday($date);
+
             // Attendance status logic
             $isWeekend = $dayName === 'Saturday' || $dayName === 'Sunday';
             $isFuture = $date > date('Y-m-d');
@@ -578,6 +594,12 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                     // Show actual time — first_in already set from matching
                 } elseif ($hasScheduleData && !$hasEntries) {
                     $timeSlots['first_in'] = 'ABSENT';
+                } elseif (!$hasScheduleData && $holiday) {
+                    $timeSlots['first_in'] = $holiday['description'];
+                    $timeSlots['first_out'] = null;
+                    $timeSlots['second_in'] = null;
+                    $timeSlots['second_out'] = null;
+                    $remarks = $holiday['description'];
                 } elseif (!$hasScheduleData && $hasEntries) {
                     $timeSlots['first_in'] = null;
                     $remarks = 'no schedule';
@@ -591,6 +613,9 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                     $timeSlots['first_in'] = null;
                 }
             }
+
+            // Calculate undertime
+            $undertime = $this->calculateUndertime($timeSlots, $scheduleData);
 
             $dailyRecords[] = [
                 'dtr_date' => $date,
@@ -608,8 +633,9 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 'has_ta' => $applications['has_ta'],
                 'has_schedule' => $hasSchedule,
                 'has_undertime' => [],
-                'has_holiday' => [],
-                'undertime' => null,
+                'has_holiday' => $holiday ? [$holiday] : [],
+                'undertime' => $undertime,
+                'undertime_in_words' => $this->minutesToWords($undertime),
                 'attendance_status' => 1,
                 'remarks' => $remarks,
             ];
@@ -625,10 +651,250 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             'employee' => $data['employee'],
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
+            'arrival_departure' => $this->buildArrivalDeparture($dailyRecords),
+            'hours' => $this->buildScheduleHours($dailyRecords),
             'daily_records' => $dailyRecords,
             'summary' => [
                 'total_days' => $totalDays,
             ],
         ];
+    }
+
+    /**
+     * Format a time string (H:i:s) to compact AM/PM format (e.g., 8AM, 1PM)
+     */
+    private function formatTimeForArrival(?string $time): ?string
+    {
+        if (!$time) {
+            return null;
+        }
+        $timestamp = strtotime($time);
+        if ($timestamp === false) {
+            return null;
+        }
+        return date('gA', $timestamp);
+    }
+
+    /**
+     * Build arrival/departure string from unique schedules across all daily records
+     */
+    private function buildArrivalDeparture(array $dailyRecords): ?string
+    {
+        $uniqueSchedules = [];
+        $seen = [];
+
+        foreach ($dailyRecords as $record) {
+            if (empty($record['has_schedule'])) {
+                continue;
+            }
+            foreach ($record['has_schedule'] as $schedule) {
+                $first = $schedule['first_entry'] ?? null;
+                $second = $schedule['second_entry'] ?? null;
+                $third = $schedule['third_entry'] ?? null;
+                $last = $schedule['last_entry'] ?? null;
+
+                $key = "{$first}/{$second}/{$third}/{$last}";
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+
+                $parts = [];
+                if ($first && $second) {
+                    $parts[] = $this->formatTimeForArrival($first) . '/' . $this->formatTimeForArrival($second);
+                }
+                if ($third && $last) {
+                    $parts[] = $this->formatTimeForArrival($third) . '/' . $this->formatTimeForArrival($last);
+                }
+                if (empty($parts) && $first && $last) {
+                    $parts[] = $this->formatTimeForArrival($first) . '/' . $this->formatTimeForArrival($last);
+                }
+
+                if (!empty($parts)) {
+                    $uniqueSchedules[] = implode(' ', $parts);
+                }
+            }
+        }
+
+        if (empty($uniqueSchedules)) {
+            return null;
+        }
+
+        return implode(' | ', $uniqueSchedules);
+    }
+
+    /**
+     * Build schedule hours string from unique schedules across all daily records
+     */
+    private function buildScheduleHours(array $dailyRecords): ?string
+    {
+        $uniqueHours = [];
+        $seen = [];
+
+        foreach ($dailyRecords as $record) {
+            if (empty($record['has_schedule'])) {
+                continue;
+            }
+            foreach ($record['has_schedule'] as $schedule) {
+                $first = $schedule['first_entry'] ?? null;
+                $second = $schedule['second_entry'] ?? null;
+                $third = $schedule['third_entry'] ?? null;
+                $last = $schedule['last_entry'] ?? null;
+                $isCrossMidnight = $schedule['is_cross_midnight'] ?? false;
+
+                // 24h pattern: first_in === first_out
+                if ($first !== null && $last !== null && $first === $last && !$second && !$third) {
+                    $hours = 24;
+                } elseif ($first && $second && $third && $last) {
+                    // Split shift: (second - first) + (last - third)
+                    $hours = $this->calculateHourDiff($first, $second) + $this->calculateHourDiff($third, $last);
+                } elseif ($first && $last) {
+                    // Single pair
+                    if ($isCrossMidnight || $first > $last) {
+                        // Cross-midnight: (24 - first) + last
+                        $hours = $this->calculateHourDiff($first, '24:00:00') + $this->calculateHourDiff('00:00:00', $last);
+                    } else {
+                        $hours = $this->calculateHourDiff($first, $last);
+                    }
+                } else {
+                    continue;
+                }
+
+                $hours = (int) round($hours);
+                if (isset($seen[$hours])) {
+                    continue;
+                }
+                $seen[$hours] = true;
+                $uniqueHours[] = "{$hours} Hours";
+            }
+        }
+
+        if (empty($uniqueHours)) {
+            return null;
+        }
+
+        return implode(' | ', $uniqueHours);
+    }
+
+    /**
+     * Calculate hour difference between two time strings
+     */
+    private function calculateHourDiff(string $from, string $to): float
+    {
+        $fromTs = strtotime($from);
+        $toTs = strtotime($to);
+        return ($toTs - $fromTs) / 3600;
+    }
+
+    /**
+     * Calculate undertime in minutes by comparing actual log times vs schedule times
+     */
+    private function calculateUndertime(array $timeSlots, ?array $scheduleData): ?int
+    {
+        if (!$scheduleData) {
+            return null;
+        }
+
+        $first = $scheduleData['first_entry'] ?? null;
+        $second = $scheduleData['second_entry'] ?? null;
+        $third = $scheduleData['third_entry'] ?? null;
+        $last = $scheduleData['last_entry'] ?? null;
+
+        if (!$first) {
+            return null;
+        }
+
+        $totalMinutes = 0;
+
+        // Convert time slots from 'h:i A' format to minutes since midnight
+        $toMinutes = function (?string $time): ?int {
+            if (!$time) {
+                return null;
+            }
+            $ts = strtotime($time);
+            if ($ts === false) {
+                return null;
+            }
+            return (int)date('H', $ts) * 60 + (int)date('i', $ts);
+        };
+
+        // Convert schedule time from 'H:i:s' format to minutes since midnight
+        $toMinutesFrom24 = function (?string $time): ?int {
+            if (!$time) {
+                return null;
+            }
+            $parts = explode(':', $time);
+            return (int)$parts[0] * 60 + (int)$parts[1];
+        };
+
+        $schedFirst = $toMinutesFrom24($first);
+        $schedSecond = $toMinutesFrom24($second);
+        $schedThird = $toMinutesFrom24($third);
+        $schedLast = $toMinutesFrom24($last);
+
+        $actualFirstIn = $toMinutes($timeSlots['first_in']);
+        $actualFirstOut = $toMinutes($timeSlots['first_out']);
+        $actualSecondIn = $toMinutes($timeSlots['second_in']);
+        $actualSecondOut = $toMinutes($timeSlots['second_out']);
+
+        // Late arrival (first_in)
+        if ($actualFirstIn !== null && $schedFirst !== null && $actualFirstIn > $schedFirst) {
+            $totalMinutes += $actualFirstIn - $schedFirst;
+        }
+
+        if ($second && $third) {
+            // Split shift
+            // Early out (AM) - first_out vs second_entry
+            if ($actualFirstOut !== null && $schedSecond !== null && $actualFirstOut < $schedSecond) {
+                $totalMinutes += $schedSecond - $actualFirstOut;
+            }
+            // Late in (PM) - second_in vs third_entry
+            if ($actualSecondIn !== null && $schedThird !== null && $actualSecondIn > $schedThird) {
+                $totalMinutes += $actualSecondIn - $schedThird;
+            }
+            // Early out (PM) - second_out vs last_entry
+            if ($actualSecondOut !== null && $schedLast !== null && $actualSecondOut < $schedLast) {
+                $totalMinutes += $schedLast - $actualSecondOut;
+            }
+        } else {
+            // Single pair schedule
+            $schedLastTime = $schedLast ?? $schedSecond;
+            $actualOut = $actualSecondOut ?? $actualFirstOut;
+            if ($actualOut !== null && $schedLastTime !== null && $actualOut < $schedLastTime) {
+                // Handle cross-midnight: if schedule end is next day (schedLast < schedFirst)
+                if ($schedLastTime < $schedFirst) {
+                    $schedLastTime += 24 * 60;
+                }
+                if ($actualOut < $schedFirst) {
+                    $actualOut += 24 * 60;
+                }
+                $totalMinutes += $schedLastTime - $actualOut;
+            }
+        }
+
+        return $totalMinutes > 0 ? $totalMinutes : null;
+    }
+
+    /**
+     * Convert minutes to human-readable words (e.g., '1 hour 30 minutes')
+     */
+    private function minutesToWords(?int $minutes): ?string
+    {
+        if (!$minutes || $minutes <= 0) {
+            return null;
+        }
+
+        $hours = intdiv($minutes, 60);
+        $mins = $minutes % 60;
+
+        $parts = [];
+        if ($hours > 0) {
+            $parts[] = $hours . ' hour' . ($hours > 1 ? 's' : '');
+        }
+        if ($mins > 0) {
+            $parts[] = $mins . ' minute' . ($mins > 1 ? 's' : '');
+        }
+
+        return implode(' ', $parts);
     }
 }
