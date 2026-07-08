@@ -32,7 +32,14 @@ class DtrReportController extends Controller
                 ], 404);
             }
 
-            $pdf = Pdf::loadView('dtr.report', $data);
+            $data['w_print'] = 1;
+            $data['displayMonth'] = strtoupper(date('F', strtotime($data['date_from'])));
+            $data['year'] = date('Y', strtotime($data['date_from']));
+            $data['OHF'] = $data['hours'] ?? '';
+            $data['Arrival_Departure'] = $data['arrival_departure'] ?? '';
+            $data['dailyLogs'] = $data['daily_records'] ?? [];
+
+            $pdf = Pdf::loadView('dtr.DTRview', $data)->setPaper('a4', 'portrait');
             return $pdf->stream("DTR_{$biometricId}_{$year}_{$month}.pdf");
         } catch (\Exception $e) {
             Log::error('Error generating DTR report: ' . $e->getMessage());
@@ -61,7 +68,14 @@ class DtrReportController extends Controller
                 ], 404);
             }
 
-            $pdf = Pdf::loadView('dtr.report', $data);
+            $data['w_print'] = 1;
+            $data['displayMonth'] = strtoupper(date('F', strtotime($data['date_from'])));
+            $data['year'] = date('Y', strtotime($data['date_from']));
+            $data['OHF'] = $data['hours'] ?? '';
+            $data['Arrival_Departure'] = $data['arrival_departure'] ?? '';
+            $data['dailyLogs'] = $data['daily_records'] ?? [];
+
+            $pdf = Pdf::loadView('dtr.DTRview', $data)->setPaper('a4', 'portrait');
             return $pdf->download("DTR_{$biometricId}_{$year}_{$month}.pdf");
         } catch (\Exception $e) {
             Log::error('Error downloading DTR report: ' . $e->getMessage());
