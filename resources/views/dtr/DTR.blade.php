@@ -165,7 +165,7 @@
     }
 
     .certification p {
-        font-size: 14px;
+        font-size: 13px;
         line-height: 1;
         text-indent: 20px;
         margin: 10px 0;
@@ -287,7 +287,7 @@
         <span id="addr">
             DR. EVANGELISTA ST., STA. CATALINA, ZAMBOANGA CITY
         </span>
-        <div id="header" style="font-size:13px;">
+        <div id="header" style="font-size:14px;">
             <h5> {{ $isExternal ? 'PARTNER - DAILY TIME RECORD' : 'DAILY TIME RECORD' }} </h5>
         </div>
 
@@ -295,7 +295,8 @@
 
     <div id="userName" style="text-align: center; ">
         {{ $name }}
-        <hr>
+        <hr style="width: 60%; margin-left: 20%;">
+        <span style="font-size: 9px;font-weight:normal;">Name</span>
     </div>
 
     <table style="width:100% !important;">
@@ -303,23 +304,26 @@
 
         <tr>
             <td class="tit">
-                <span>
+                <span style="font-weight:normal;font-size:12px">
                     For the month of <span
-                        style="font-size:11px;font-weight: bold;text-transform: uppercase;margin-left: 10px">{{ $displayMonth }}-{{ $year }}</span>
+                        style="font-size:12px;font-weight: bold;text-transform: uppercase;margin-left: 2px">{{ $displayMonth }}-{{ $year }}</span>
                 </span>
             </td>
+         
+        </tr>
+        <tr>
             <td class="ot">
-                <span style="font-size:10px">{{ $isExternal ? '' : $OHF . ' | ' }} Regular Days</span>
+                <span style="font-size:12px">   <span style="font-weight:normal"> Office Hours (regular days): </span> {{ $isExternal ? '' : $OHF }}</span>
             </td>
         </tr>
 
 
         <tr>
+               
             <td class="tit" colspan="2">
-                <span>
-                    Arrival and Departure : <span
-                        style="font-size:10px;font-weight: bold">{{ $isExternal ? '' : $Arrival_Departure }}</span>
-                </span>
+             
+                    <span style="font-weight:normal;font-size:12px">Arrival and Departure : </span> <span
+                        style="font-size:12px;font-weight: bold">{{ $isExternal ? '' : $Arrival_Departure }}</span>
             </td>
 
             {{-- {{ substr($Arrival_Departure, 0, 35) }} --}}
@@ -440,7 +444,8 @@
                         $statusLabel = $dailyLog['first_in'] ?? '';
                         $hasActualTime = $dailyLog['first_out'] || $dailyLog['second_in'] || $secondOut;
                         $isStatusRow = !$hasApplication && !$hasActualTime && in_array(strtoupper($statusLabel), ['ABSENT', 'DAY OFF']);
-                        $isHolidayRow = !$hasApplication && $hasHoliday && !$hasActualTime;
+                        $isHolidayRow = !$hasApplication && $hasHoliday && !$hasActualTime && !count($dailyLog['has_schedule'] ?? []);
+                        $isHolidayWithTime = !$hasApplication && $hasHoliday && $hasActualTime && $dailyLog['first_out'] && !count($dailyLog['has_schedule'] ?? []);
 
                         $undertimeMinutes = $dailyLog['undertime'] ?? null;
                         if (!is_null($undertimeMinutes) && is_numeric($undertimeMinutes) && $undertimeMinutes > 0) {
@@ -472,6 +477,13 @@
                                 }
                             @endphp
                             <td colspan="6" style="text-align: center;"><span style="padding-right:60px !important">{{ $application }}</span></td>
+                        @elseif ($isHolidayWithTime)
+                            @php
+                                $holidayDesc = $dailyLog['has_holiday'][0]['description'] ?? 'Holiday';
+                            @endphp
+                            <td>{{ $dailyLog['first_in'] ?? '' }}</td>
+                            <td>{{ $dailyLog['first_out'] ?? '' }}</td>
+                            <td colspan="4" style="text-align: center;"><span style="padding-right:60px !important">{{ $holidayDesc }}</span></td>
                         @elseif ($isHolidayRow)
                             @php
                                 $holidayDesc = $dailyLog['has_holiday'][0]['description'] ?? 'Holiday';
@@ -489,6 +501,23 @@
                 @endif
             @endforeach
         </tbody>
+        @php
+            $totalUtMinutes = 0;
+            foreach ($dailyLogs as $dl) {
+                if (!empty($dl['undertime']) && is_numeric($dl['undertime'])) {
+                    $totalUtMinutes += (int) $dl['undertime'];
+                }
+            }
+            $totalUtHours = intdiv($totalUtMinutes, 60);
+            $totalUtMins = $totalUtMinutes % 60;
+        @endphp
+        <tfoot>
+            <tr style="font-weight: bold; border-top: 2px solid gray;">
+                <td colspan="6" style="text-align: right; border: 1px solid gray; padding-right:10px">Total </td>
+                <td style="border: 1px solid gray;">{{ $totalUtHours > 0 ? $totalUtHours : '' }}</td>
+                <td style="border: 1px solid gray;">{{ $totalUtMins > 0 ? $totalUtMins : '' }}</td>
+            </tr>
+        </tfoot>
     </table>
     <div class="certification" style="padding: 1px">
         <p> I certify on my honor that the above is a true and correct report of the hours of work performed, recorded
@@ -502,7 +531,7 @@
         </div>
         <span style="font-size: 10px;"> Verified as to prescribed hours</span>
     </div>
-    <div class="signature" style="margin-top: 25px;">
+    <div class="signature" style="margin-top: 50px;">
         <div style="font-size: 11px;text-transform:uppercase;font-weight:bold;">
         </div>
         <div class="line"></div>
@@ -511,13 +540,13 @@
     <div class="footer" style="padding: 1px; margin-top: 5px;">
         <span>Adopted from CSC FORM NO. 48</span>
         <br>
-        {{-- <table id="lfooter">
+      <table id="lfooter">
             <tr>
                 <td id="f1">ZCMC-F-HRMO-01</td>
                 <td id="f2">ReV.0</td>
                 <td id="f3">Effectivity Date: June 2, 2014</td>
             </tr>
-        </table>  --}}
+        </table> 
 
     </div>
 

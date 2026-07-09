@@ -531,6 +531,30 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 }
             }
 
+            // If no schedule but has device logs, create regulated entries using 12 PM split
+            $regulatedEntries = null;
+            if (!$scheduleData && !empty($deviceLogs)) {
+                $amLogs = [];
+                $pmLogs = [];
+                foreach ($deviceLogs as $log) {
+                    $logTime = substr($log['date_time'], 11, 8);
+                    $formattedTime = $this->formatTime($logTime);
+                    if ($logTime < '12:00:00') {
+                        $amLogs[] = $formattedTime;
+                    } else {
+                        $pmLogs[] = $formattedTime;
+                    }
+                }
+                sort($amLogs);
+                sort($pmLogs);
+                $regulatedEntries = [
+                    'first_in' => count($amLogs) >= 1 ? $amLogs[0] : null,
+                    'first_out' => count($amLogs) >= 2 ? $amLogs[1] : null,
+                    'second_in' => count($pmLogs) >= 1 ? $pmLogs[0] : null,
+                    'second_out' => count($pmLogs) >= 2 ? $pmLogs[1] : null,
+                ];
+            }
+
             // Format schedule
             $hasSchedule = [];
             if ($scheduleData) {
@@ -546,7 +570,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             // Attendance status logic
             $isWeekend = $dayName === 'Saturday' || $dayName === 'Sunday';
             $isFuture = $date > date('Y-m-d');
-            $hasEntries = $timeSlots['first_in'] !== null || $timeSlots['second_in'] !== null || $timeSlots['second_out'] !== null;
+            $hasEntries = $timeSlots['first_in'] !== null || $timeSlots['first_out'] !== null || $timeSlots['second_in'] !== null || $timeSlots['second_out'] !== null;
             $hasScheduleData = $scheduleData !== null;
             $remarks = null;
 
@@ -595,11 +619,16 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 } elseif ($hasScheduleData && !$hasEntries) {
                     $timeSlots['first_in'] = 'ABSENT';
                 } elseif (!$hasScheduleData && $holiday) {
-                    $timeSlots['first_in'] = $holiday['description'];
-                    $timeSlots['first_out'] = null;
-                    $timeSlots['second_in'] = null;
-                    $timeSlots['second_out'] = null;
-                    $remarks = $holiday['description'];
+                    if ($hasEntries) {
+                        $timeSlots['second_in'] = $holiday['description'];
+                        $remarks = $holiday['description'];
+                    } else {
+                        $timeSlots['first_in'] = $holiday['description'];
+                        $timeSlots['first_out'] = null;
+                        $timeSlots['second_in'] = null;
+                        $timeSlots['second_out'] = null;
+                        $remarks = $holiday['description'];
+                    }
                 } elseif (!$hasScheduleData && $hasEntries) {
                     $timeSlots['first_in'] = null;
                     $remarks = 'no schedule';
@@ -638,6 +667,8 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 'undertime_in_words' => $this->minutesToWords($undertime),
                 'attendance_status' => 1,
                 'remarks' => $remarks,
+                'regulated_entries' => $regulatedEntries ?? null,
+                'data'=>$deviceLogs
             ];
         }
 
@@ -837,27 +868,53 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         $actualSecondIn = $toMinutes($timeSlots['second_in']);
         $actualSecondOut = $toMinutes($timeSlots['second_out']);
 
-        // Late arrival (first_in)
-        if ($actualFirstIn !== null && $schedFirst !== null && $actualFirstIn > $schedFirst) {
-            $totalMinutes += $actualFirstIn - $schedFirst;
+        // Skip undertime calculation for non-time values (LV, OB, OT, CTO, ABSENT, DAY OFF, holidays)
+        $isNonTimeValue = function ($val) use ($toMinutes) {
+            return $val !== null && $toMinutes($val) === null;
+        };
+        if ($isNonTimeValue($timeSlots['first_in']) || $isNonTimeValue($timeSlots['first_out'])) {
+            return null;
         }
 
         if ($second && $third) {
-            // Split shift
-            // Early out (AM) - first_out vs second_entry
-            if ($actualFirstOut !== null && $schedSecond !== null && $actualFirstOut < $schedSecond) {
-                $totalMinutes += $schedSecond - $actualFirstOut;
+            // Split shift (e.g., 8AM-12PM / 1PM-5PM)
+            // AM shift: first_in → first_out vs schedFirst → schedSecond
+            if ($actualFirstIn === null && $actualFirstOut === null) {
+                // Both AM punches missing → entire AM shift is undertime
+                $totalMinutes += $schedSecond - $schedFirst;
+            } elseif ($actualFirstIn === null) {
+                // Missing first_in → count full AM shift as undertime
+                $totalMinutes += $schedSecond - $schedFirst;
+            } else {
+                // Late arrival
+                if ($actualFirstIn > $schedFirst) {
+                    $totalMinutes += $actualFirstIn - $schedFirst;
+                }
+                // Early out (AM)
+                if ($actualFirstOut !== null && $actualFirstOut < $schedSecond) {
+                    $totalMinutes += $schedSecond - $actualFirstOut;
+                }
             }
-            // Late in (PM) - second_in vs third_entry
-            if ($actualSecondIn !== null && $schedThird !== null && $actualSecondIn > $schedThird) {
-                $totalMinutes += $actualSecondIn - $schedThird;
-            }
-            // Early out (PM) - second_out vs last_entry
-            if ($actualSecondOut !== null && $schedLast !== null && $actualSecondOut < $schedLast) {
-                $totalMinutes += $schedLast - $actualSecondOut;
+
+            // PM shift: second_in → second_out vs schedThird → schedLast
+            if ($actualSecondIn === null && $actualSecondOut === null) {
+                // Both PM punches missing → entire PM shift is undertime
+                $totalMinutes += $schedLast - $schedThird;
+            } elseif ($actualSecondIn === null) {
+                // Missing second_in → count full PM shift as undertime
+                $totalMinutes += $schedLast - $schedThird;
+            } else {
+                // Late in (PM)
+                if ($actualSecondIn > $schedThird) {
+                    $totalMinutes += $actualSecondIn - $schedThird;
+                }
+                // Early out (PM)
+                if ($actualSecondOut !== null && $actualSecondOut < $schedLast) {
+                    $totalMinutes += $schedLast - $actualSecondOut;
+                }
             }
         } else {
-            // Single pair schedule
+            // Single pair schedule - only calculate early out, skip missing punch undertime
             $schedLastTime = $schedLast ?? $schedSecond;
             $actualOut = $actualSecondOut ?? $actualFirstOut;
             if ($actualOut !== null && $schedLastTime !== null && $actualOut < $schedLastTime) {

@@ -6,6 +6,7 @@ use App\Services\DtrReportService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class DtrReportController extends Controller
@@ -17,13 +18,10 @@ class DtrReportController extends Controller
     /**
      * Generate DTR report (view in browser)
      */
-    public function generate(int $biometricId, int $year, int $month)
+    public function generate(Request $request, int $biometricId, int $year, int $month)
     {
         try {
-            $dateFrom = sprintf('%04d-%02d-01', $year, $month);
-            $dateTo = date('Y-m-t', strtotime($dateFrom));
-
-            $data = $this->dtrReportService->generateReport($biometricId, $dateFrom, $dateTo);
+            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'));
 
             if (empty($data)) {
                 return response()->json([
@@ -32,12 +30,7 @@ class DtrReportController extends Controller
                 ], 404);
             }
 
-            $data['w_print'] = 1;
-            $data['displayMonth'] = strtoupper(date('F', strtotime($data['date_from'])));
-            $data['year'] = date('Y', strtotime($data['date_from']));
-            $data['OHF'] = $data['hours'] ?? '';
-            $data['Arrival_Departure'] = $data['arrival_departure'] ?? '';
-            $data['dailyLogs'] = $data['daily_records'] ?? [];
+            $data = $this->prepareViewData($data);
 
             $pdf = Pdf::loadView('dtr.DTRview', $data)->setPaper('a4', 'portrait');
             return $pdf->stream("DTR_{$biometricId}_{$year}_{$month}.pdf");
@@ -53,13 +46,10 @@ class DtrReportController extends Controller
     /**
      * Download DTR report
      */
-    public function download(int $biometricId, int $year, int $month)
+    public function download(Request $request, int $biometricId, int $year, int $month)
     {
         try {
-            $dateFrom = sprintf('%04d-%02d-01', $year, $month);
-            $dateTo = date('Y-m-t', strtotime($dateFrom));
-
-            $data = $this->dtrReportService->generateReport($biometricId, $dateFrom, $dateTo);
+            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'));
 
             if (empty($data)) {
                 return response()->json([
@@ -68,12 +58,7 @@ class DtrReportController extends Controller
                 ], 404);
             }
 
-            $data['w_print'] = 1;
-            $data['displayMonth'] = strtoupper(date('F', strtotime($data['date_from'])));
-            $data['year'] = date('Y', strtotime($data['date_from']));
-            $data['OHF'] = $data['hours'] ?? '';
-            $data['Arrival_Departure'] = $data['arrival_departure'] ?? '';
-            $data['dailyLogs'] = $data['daily_records'] ?? [];
+            $data = $this->prepareViewData($data);
 
             $pdf = Pdf::loadView('dtr.DTRview', $data)->setPaper('a4', 'portrait');
             return $pdf->download("DTR_{$biometricId}_{$year}_{$month}.pdf");
@@ -89,13 +74,10 @@ class DtrReportController extends Controller
     /**
      * Return DTR report as JSON
      */
-    public function json(int $biometricId, int $year, int $month)
+    public function json(Request $request, int $biometricId, int $year, int $month)
     {
         try {
-            $dateFrom = sprintf('%04d-%02d-01', $year, $month);
-            $dateTo = date('Y-m-t', strtotime($dateFrom));
-
-            $data = $this->dtrReportService->generateReport($biometricId, $dateFrom, $dateTo);
+            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'));
 
             if (empty($data)) {
                 return response()->json([
@@ -112,5 +94,47 @@ class DtrReportController extends Controller
                 'message' => 'Error generating report: ' . $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Get report data from cache or generate fresh
+     */
+    private function getReportData(int $biometricId, int $year, int $month, bool $refresh = false): array
+    {
+        $cacheKey = "dtr_report_{$biometricId}_{$year}_{$month}";
+
+        if ($refresh) {
+            Cache::forget($cacheKey);
+        }
+
+        $data = Cache::get($cacheKey);
+
+        if ($data === null) {
+            $dateFrom = sprintf('%04d-%02d-01', $year, $month);
+            $dateTo = date('Y-m-t', strtotime($dateFrom));
+
+            $data = $this->dtrReportService->generateReport($biometricId, $dateFrom, $dateTo);
+
+            if (!empty($data)) {
+                Cache::put($cacheKey, $data, 3600);
+            }
+        }
+
+        return $data ?? [];
+    }
+
+    /**
+     * Prepare view data for PDF rendering
+     */
+    private function prepareViewData(array $data): array
+    {
+        $data['w_print'] = 1;
+        $data['displayMonth'] = strtoupper(date('F', strtotime($data['date_from'])));
+        $data['year'] = date('Y', strtotime($data['date_from']));
+        $data['OHF'] = $data['hours'] ?? '';
+        $data['Arrival_Departure'] = $data['arrival_departure'] ?? '';
+        $data['dailyLogs'] = $data['daily_records'] ?? [];
+
+        return $data;
     }
 }
