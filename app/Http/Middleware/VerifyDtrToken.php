@@ -11,10 +11,26 @@ class VerifyDtrToken
     public function handle(Request $request, Closure $next): Response
     {
         $token = $request->query('token');
-        $expectedToken = config('dtr.access_token');
+        $secret = config('dtr.access_token');
 
-        if (empty($expectedToken) || $token !== $expectedToken) {
-         
+        if (empty($secret)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized access',
+            ], 401);
+        }
+
+        $currentHour = date('Y-m-d H');
+        $previousHour = date('Y-m-d H', strtotime('-1 hour'));
+        $prevHour = date('Y-m-d H', strtotime('+1 hour'));
+
+        $validTokens = [
+            hash('sha256', $secret . $currentHour),
+            hash('sha256', $secret . $previousHour),
+            hash('sha256', $secret . $prevHour),
+        ];
+
+        if (!in_array($token, $validTokens)) {
             return response()->json([
                 'success' => false,
                 'message' => 'Unauthorized access',
