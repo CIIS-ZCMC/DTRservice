@@ -197,7 +197,7 @@ class LogsRepository implements LogsRepositoryInterface
             ];
     }
 
-    public function saveForAttendance(array $data): void
+    public function saveForAttendance(array $data)
     {
         try {
             // 1. Get active attendances
@@ -304,6 +304,7 @@ class LogsRepository implements LogsRepositoryInterface
                 'attendances_id' => $matchedAttendance ? $matchedAttendance->id : null,
                 'device_date' => $data['dtr_date']
             ]);
+            return "OK";
 
         } catch (\Exception $e) {
             Log::channel('attendance_logs')->error('saveForAttendance :: Error: ' . $e->getMessage(), [
