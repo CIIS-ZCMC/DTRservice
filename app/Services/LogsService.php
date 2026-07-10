@@ -39,7 +39,7 @@ class LogsService
                 }
 
                 try {
-                    $this->processLogLine($line, $clientIp);
+                  return  $this->processLogLine($line, $clientIp);
                 } catch (\Throwable $th) {
                     Log::channel('device_logs')->error('Error processing device log line', [
                         'error' => $th->getMessage(),
@@ -59,7 +59,7 @@ class LogsService
     /**
      * Parse and persist a single device log line.
      */
-    private function processLogLine(string $line, string $clientIp): void
+    private function processLogLine(string $line, string $clientIp)
     {
         // Parse tab-separated format.
         $parts = preg_split('/\t/', $line);
@@ -67,7 +67,7 @@ class LogsService
 
         if (count($parts) < 3) {
             Log::channel('device_logs')->error('Invalid device data format', ['line' => $line]);
-            return;
+            return "ERROR";
         }
 
         // Two formats are sent by the device:
@@ -77,7 +77,7 @@ class LogsService
         if (stripos($parts[0], 'OPLOG') === 0) {
             if (count($parts) < 4) {
                 Log::channel('device_logs')->error('Invalid OPLOG data format', ['line' => $line, 'parts' => $parts]);
-                return;
+                return "OK";
             }
             $isOplog = true;
             $biometric_id = $parts[1];
@@ -92,20 +92,20 @@ class LogsService
         // Validate biometric_id is numeric
         if (!is_numeric($biometric_id)) {
             Log::channel('device_logs')->error('Invalid biometric_id (must be numeric)', ['biometric_id' => $biometric_id, 'line' => $line]);
-            return;
+            return "OK";
         }
 
         // Skip system/device operation events (biometric_id 0 is not a real user).
         // These come from OPLOG operation logs (e.g. config changes) and are not attendance.
         if ((int)$biometric_id <= 0) {
             Log::channel('device_logs')->info('Skipped system operation log (no real user)', ['line' => $line]);
-            return;
+            return "OK";
         }
 
         // Validate that the datetime part is valid
         if (!strtotime($datetime)) {
             Log::channel('device_logs')->error('Invalid datetime format', ['datetime' => $datetime, 'line' => $line]);
-            return;
+            return "OK";
         }
 
         // Validate dtr_type/status is a small numeric code (not an IP/garbage).
@@ -117,7 +117,7 @@ class LogsService
                 'line' => $line,
                 'parts' => $parts,
             ]);
-            return;
+            return "OK";
         }
 
         // Standard ZKTeco attendance status codes:
@@ -132,7 +132,7 @@ class LogsService
                 'line' => $line,
                 'parts' => $parts,
             ]);
-            return;
+            return "OK";
         }
 
         // Log entries with unusual (non-standard) status codes for ATTLOG
@@ -173,6 +173,8 @@ class LogsService
 
         //Write to structured log table Daily
         $this->logsRepository->writeStructuredLog($logData, $line);
+
+        return "OK";
     }
 
 

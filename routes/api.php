@@ -23,7 +23,6 @@ Route::get('/devices/{id}/restart', [DeviceController::class, 'restart']);
 Route::get('/time-records', [TimeRecordController::class, 'index']);
 Route::get('/time-records/{biometricId}/{date}', [TimeRecordController::class, 'show']);
 
-
 Route::get('/compute-dtr/{biometricId}/{date}', [TimeRecordController::class, 'computeDTR']);
 
 // DTR Report routes
