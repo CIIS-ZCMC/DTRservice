@@ -21,7 +21,7 @@ class DtrReportController extends Controller
     public function generate(Request $request, int $biometricId, int $year, int $month)
     {
         try {
-            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'));
+            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'), $request->query('whole_month', 1));
 
             if (empty($data)) {
                 return response()->json([
@@ -49,7 +49,7 @@ class DtrReportController extends Controller
     public function download(Request $request, int $biometricId, int $year, int $month)
     {
         try {
-            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'));
+            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'), $request->query('whole_month', 1));
 
             if (empty($data)) {
                 return response()->json([
@@ -57,11 +57,16 @@ class DtrReportController extends Controller
                     'message' => 'No data found for the specified employee and date range'
                 ], 404);
             }
-
             $data = $this->prepareViewData($data);
 
+            $empName = trim($data['employee']['name'] ?? 'Unknown');
+            $monthName = strtoupper(date('F', strtotime($data['date_from'])));
+            $filenameYear = date('Y', strtotime($data['date_from']));
+            $halfLabel = ($request->query('whole_month', 1) == 0) ? ' (1-15)' : '';
+            $filename = "{$empName} (DTR - {$monthName} {$filenameYear}{$halfLabel}).pdf";
+
             $pdf = Pdf::loadView('dtr.DTRview', $data)->setPaper('a4', 'portrait');
-            return $pdf->download("DTR_{$biometricId}_{$year}_{$month}.pdf");
+            return $pdf->download($filename);
         } catch (\Exception $e) {
             Log::error('Error downloading DTR report: ' . $e->getMessage());
             return response()->json([
@@ -77,7 +82,7 @@ class DtrReportController extends Controller
     public function json(Request $request, int $biometricId, int $year, int $month)
     {
         try {
-            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'));
+            $data = $this->getReportData($biometricId, $year, $month, $request->boolean('refresh'), $request->query('whole_month', 1));
 
             if (empty($data)) {
                 return response()->json([
@@ -99,7 +104,7 @@ class DtrReportController extends Controller
     /**
      * Get report data from cache or generate fresh
      */
-    private function getReportData(int $biometricId, int $year, int $month, bool $refresh = false): array
+    private function getReportData(int $biometricId, int $year, int $month, bool $refresh = false, ?int $wholeMonth = null): array
     {
         $cacheKey = "dtr_report_{$biometricId}_{$year}_{$month}";
 
@@ -120,7 +125,17 @@ class DtrReportController extends Controller
             }
         }
 
-        return $data ?? [];
+        if (empty($data)) {
+            return [];
+        }
+
+        if ($wholeMonth === 0 && !empty($data['daily_records'])) {
+            $data['daily_records'] = array_values(array_filter($data['daily_records'], function ($record) {
+                return (int)$record['day'] <= 15;
+            }));
+        }
+
+        return $data;
     }
 
     /**

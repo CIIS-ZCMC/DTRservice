@@ -26,8 +26,8 @@ Route::get('/time-records/{biometricId}/{date}', [TimeRecordController::class, '
 Route::get('/compute-dtr/{biometricId}/{date}', [TimeRecordController::class, 'computeDTR']);
 
 // DTR Report routes
-Route::middleware('dtr.token')->group(function () {
+//Route::middleware('dtr.token')->group(function () {
     Route::get('/dtr/report/{biometricId}/{year}/{month}', [DtrReportController::class, 'generate']);
     Route::get('/dtr/download/{biometricId}/{year}/{month}', [DtrReportController::class, 'download']);
     Route::get('/dtr/json/{biometricId}/{year}/{month}', [DtrReportController::class, 'json']);
-});
+//});
