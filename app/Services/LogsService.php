@@ -39,15 +39,12 @@ class LogsService
                 }
 
                 try {
-                  return  $this->processLogLine($line, $clientIp);
+                    $this->processLogLine($line, $clientIp);
                 } catch (\Throwable $th) {
                     Log::channel('device_logs')->error('Error processing device log line', [
                         'error' => $th->getMessage(),
                         'line' => $line,
                     ]);
-                    // Return error to trigger device retry
-                    return response("ERROR", 500)
-                        ->header('Content-Type', 'text/plain');
                 }
             }
         }
@@ -154,7 +151,7 @@ class LogsService
                 'biometric_id' => $biometric_id,
                 'date_time' => $dateTimeStr,
             ]);
-            return;
+            return "OK";
         }
 
         $logData = [
