@@ -274,6 +274,19 @@ class LogsRepository implements LogsRepositoryInterface
             }
 
             // 4. Save to AttendanceInformation
+            $entryDateTime = $data['dtr_date'] . ' ' . $data['dtr_time'];
+            $exists = AttendanceInformation::where('biometric_id', $data['biometric_id'])
+                ->where('first_entry', $entryDateTime)
+                ->exists();
+
+            if ($exists) {
+                Log::channel('attendance_logs')->info('Duplicate attendance log skipped', [
+                    'biometric_id' => $data['biometric_id'],
+                    'first_entry' => $entryDateTime,
+                ]);
+                return;
+            }
+
             AttendanceInformation::create([
                 'biometric_id' => $data['biometric_id'],
                 'name' => $employeeName,
