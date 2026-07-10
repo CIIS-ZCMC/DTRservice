@@ -304,6 +304,7 @@ class LogsRepository implements LogsRepositoryInterface
                 'attendances_id' => $matchedAttendance ? $matchedAttendance->id : null,
                 'device_date' => $data['dtr_date']
             ]);
+            return "OK";
 
             return "OK";
         } catch (\Exception $e) {
