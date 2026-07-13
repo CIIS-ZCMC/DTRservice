@@ -24,7 +24,8 @@ class LogsService
         $rawBody = $request->getContent();
 
         $this->deviceRepository->markAsConnected($clientIp);
-      
+
+        $this->rotateLogsIfNeeded();
 
         if (!empty($rawBody)) {
             // Device may push multiple records in a single request, separated by newlines.
@@ -174,6 +175,28 @@ class LogsService
         return "OK";
     }
 
+    private function rotateLogsIfNeeded(): void
+    {
+        $maxSize = 10 * 1024 * 1024; // 10MB
+        $logs = [
+            storage_path('logs/device_logs.log'),
+            storage_path('logs/attendance_logs.log'),
+        ];
 
-   
+        foreach ($logs as $logPath) {
+            if (!file_exists($logPath)) {
+                continue;
+            }
+
+            if (filesize($logPath) < $maxSize) {
+                continue;
+            }
+
+            $date = date('Y-m-d');
+            $info = pathinfo($logPath);
+            $newPath = $info['dirname'] . '/' . $info['filename'] . '_' . $date . '.' . $info['extension'];
+
+            rename($logPath, $newPath);
+        }
+    }
 }
