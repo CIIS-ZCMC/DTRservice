@@ -781,7 +781,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             } else {
                 if ($hasEntries && $hasScheduleData) {
                     // Show actual time — first_in already set from matching
-                } elseif ($hasScheduleData && !$hasEntries) {
+                } elseif ($hasScheduleData && !$hasEntries && !$isFuture) {
                     $timeSlots['first_in'] = 'ABSENT';
                 } elseif (!$hasScheduleData && $holiday) {
                     if ($hasEntries) {
