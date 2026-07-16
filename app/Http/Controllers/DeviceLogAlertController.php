@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Biometrics;
 use App\Models\DeviceLogs;
+use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 
@@ -224,6 +226,135 @@ class DeviceLogAlertController extends Controller
             'entries' => $parsed,
             'total' => count($parsed),
         ]);
+    }
+
+    /**
+     * Print device logs for a specific date with optional name/biometric_id filters
+     */
+    public function printDtrLogs(Request $request)
+    {
+        $request->validate([
+            'date' => 'required|date_format:Y-m-d',
+            'name' => 'nullable|string',
+            'biometric_id' => 'nullable|string',
+        ]);
+
+        $date = $request->input('date');
+        $name = $request->input('name');
+        $biometricId = $request->input('biometric_id');
+
+        $query = DeviceLogs::where('dtr_date', $date);
+
+        if ($biometricId) {
+            $query->where('biometric_id', $biometricId);
+        }
+
+        if ($name) {
+            $query->where('name', 'LIKE', "%{$name}%");
+        }
+
+        $logs = $query->orderBy('date_time')->get();
+
+        if ($logs->isEmpty()) {
+            $pdf = Pdf::loadView('logs.print_dtr_logs', [
+                'date' => $date,
+                'logs' => [],
+                'employeeName' => $name ?: 'All Employees',
+                'biometricId' => $biometricId ?: '',
+                'designation' => null,
+                'empId' => '',
+                'noData' => true,
+            ])->setPaper('Letter', 'portrait');
+            return $pdf->stream("DTR_Logs_{$date}.pdf");
+        }
+
+        $employeeName = $name ?: $logs->first()->name ?? 'All Employees';
+        $designation = null;
+        $empId = '';
+
+        if ($biometricId) {
+            $biometric = Biometrics::where('biometric_id', $biometricId)
+                ->with('employeeProfile', 'externalProfile')
+                ->first();
+
+            if ($biometric && $biometric->employeeProfile) {
+                $employeeName = $biometric->employeeProfile->personalInformation
+                    ? $biometric->employeeProfile->personalInformation->first_name . ' ' . $biometric->employeeProfile->personalInformation->last_name
+                    : $employeeName;
+                $designation = $biometric->employeeProfile->assignArea ?? null;
+                $empId = $biometric->employeeProfile->employee_id ?? '';
+            } elseif ($biometric && $biometric->externalProfile) {
+                $employeeName = trim(($biometric->externalProfile->first_name ?? '') . ' ' . ($biometric->externalProfile->last_name ?? '')) ?: $employeeName;
+                $designation = $biometric->externalProfile->department ?? null;
+                $empId = $biometric->externalProfile->employee_id ?? '';
+            }
+        }
+
+        $pdf = Pdf::loadView('logs.print_dtr_logs', [
+            'date' => $date,
+            'logs' => $logs,
+            'employeeName' => $employeeName,
+            'biometricId' => $biometricId ?: '',
+            'designation' => $designation,
+            'empId' => $empId,
+            'noData' => false,
+        ])->setPaper('Letter', 'portrait');
+
+        $filename = $date . '_DTR_Logs_' . $employeeName . '.pdf';
+        return $pdf->stream($filename);
+    }
+
+    /**
+     * Search employees by name or biometric_id for the print modal dropdown
+     */
+    public function searchEmployees(Request $request)
+    {
+        $q = $request->query('q', '');
+
+        $query = Biometrics::with('employeeProfile.personalInformation', 'externalProfile');
+
+        if ($q !== '') {
+            $query->where(function ($sub) use ($q) {
+                $sub->where('biometric_id', 'LIKE', "%{$q}%")
+                    ->orWhereHas('employeeProfile.personalInformation', function ($pi) use ($q) {
+                        $pi->where('first_name', 'LIKE', "%{$q}%")
+                            ->orWhere('last_name', 'LIKE', "%{$q}%");
+                    })
+                    ->orWhereHas('externalProfile', function ($ext) use ($q) {
+                        $ext->where('first_name', 'LIKE', "%{$q}%")
+                            ->orWhere('last_name', 'LIKE', "%{$q}%");
+                    });
+            });
+        }
+
+        $results = $query->limit(50)->get();
+
+        $employees = [];
+        foreach ($results as $bio) {
+            $name = 'Unknown';
+            $designation = null;
+            $empId = '';
+
+            if ($bio->employeeProfile && $bio->employeeProfile->personalInformation) {
+                $pi = $bio->employeeProfile->personalInformation;
+                $name = $pi->first_name . ' ' . $pi->last_name;
+                $designation = $bio->employeeProfile->assignArea?->area_name ?? null;
+                $empId = $bio->employeeProfile->employee_id ?? '';
+            } elseif ($bio->externalProfile) {
+                $name = trim(($bio->externalProfile->first_name ?? '') . ' ' . ($bio->externalProfile->last_name ?? '')) ?: 'Unknown';
+                $designation = $bio->externalProfile->department ?? null;
+                $empId = $bio->externalProfile->employee_id ?? '';
+            }
+
+            $employees[] = [
+                'biometric_id' => (string) $bio->biometric_id,
+                'name' => $name,
+                'designation' => $designation,
+                'employee_id' => $empId,
+            ];
+        }
+
+        return response()->json($employees);
     }
 
     /**

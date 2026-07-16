@@ -153,7 +153,7 @@
                         </div>
                         <div>
                             <h1 class="text-xl font-bold themed-text-primary">Device Log Alert</h1>
-                            <p class="text-xs themed-text-muted">Late-pulled data scanner</p>
+                            
                         </div>
                     </div>
                 </div>
@@ -242,14 +242,19 @@
             <div class="col-span-7">
                 <div class="themed-bg rounded-xl border themed-border overflow-hidden">
                     <div class="panel-header px-4 py-3 border-b themed-border">
-                        <div class="flex items-center gap-3">
-                            <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                                <i class="fas fa-file-alt text-white"></i>
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+                                    <i class="fas fa-file-alt text-white"></i>
+                                </div>
+                                <div>
+                                    <h2 class="text-sm font-semibold themed-text-primary">Date Details</h2>
+                                    <span id="detailStatus" class="text-xs themed-text-secondary">Select a date from the calendar</span>
+                                </div>
                             </div>
-                            <div>
-                                <h2 class="text-sm font-semibold themed-text-primary">Date Details</h2>
-                                <span id="detailStatus" class="text-xs themed-text-secondary">Select a date from the calendar</span>
-                            </div>
+                            <button id="printBtn" onclick="openPrintModal()" class="hidden bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors">
+                                <i class="fas fa-print"></i> Print
+                            </button>
                         </div>
                     </div>
                     <div id="detailContent" class="p-4 min-h-[400px] max-h-[calc(100vh-220px)] overflow-y-auto scrollbar-thin">
@@ -382,6 +387,7 @@
 
             if (!scanData) {
                 detailContent.innerHTML = '<div class="themed-text-muted text-center py-8"><p>Scan first</p></div>';
+                document.getElementById('printBtn').classList.add('hidden');
                 return;
             }
 
@@ -394,14 +400,17 @@
                         <i class="fas fa-calendar-times text-3xl mb-3"></i>
                         <p>No log entries found for <span class="text-orange-400 font-medium">${formatDate(dateStr)}</span></p>
                     </div>`;
+                document.getElementById('printBtn').classList.add('hidden');
                 return;
             }
 
             if (dataSource === 'db') {
                 detailStatus.textContent = `${formatDate(dateStr)} — Loading...`;
                 detailContent.innerHTML = `<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-500 mb-2"></i><p class="themed-text-secondary text-sm">Loading entries...</p></div>`;
+                document.getElementById('printBtn').classList.remove('hidden');
                 fetchDBEntries(dateStr);
             } else {
+                document.getElementById('printBtn').classList.add('hidden');
                 const entries = scanData.dates[dateStr] || [];
                 renderDetailsFile(dateStr, entries);
             }
@@ -830,6 +839,45 @@
         </div>
     </div>
 
+    <!-- Print Modal -->
+    <div id="printModal" class="hidden fixed inset-0 z-50 modal-overlay items-center justify-center p-4">
+        <div class="themed-bg rounded-xl border themed-border shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+            <div class="panel-header px-5 py-4 border-b themed-border flex items-center justify-between">
+                <div>
+                    <h3 class="text-sm font-semibold themed-text-primary"><i class="fas fa-print text-blue-400 mr-2"></i>Print Device Logs</h3>
+                    <div id="printModalMeta" class="mt-1 text-xs themed-text-secondary"></div>
+                </div>
+                <button id="printModalClose" class="themed-text-secondary hover:themed-text-primary themed-hover p-2 rounded-lg transition-colors">
+                    <i class="fas fa-times text-lg"></i>
+                </button>
+            </div>
+            <div class="flex-1 overflow-y-auto scrollbar-thin p-5">
+                <div class="mb-4">
+                    <label class="text-xs themed-text-secondary font-medium block mb-1">Search Employee (required)</label>
+                    <div class="relative">
+                        <input id="printEmpSearch" type="text" placeholder="Type name or biometric ID..."
+                            class="themed-input text-xs rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            oninput="searchEmployees()" autocomplete="off">
+                        <div id="printEmpDropdown" class="hidden absolute left-0 right-0 mt-1 themed-bg themed-border border rounded-lg shadow-lg max-h-60 overflow-y-auto z-10"></div>
+                    </div>
+                    <div id="printEmpSelected" class="hidden mt-2 p-2 themed-card themed-border border rounded-lg text-xs flex items-center justify-between">
+                        <span id="printEmpLabel" class="themed-text-primary"></span>
+                        <button onclick="clearSelectedEmployee()" class="themed-text-muted hover:text-red-400 text-xs"><i class="fas fa-times"></i></button>
+                    </div>
+                </div>
+                <div id="printPreview" class="themed-text-muted text-center py-8">
+                    <p>Select an employee to preview logs</p>
+                </div>
+            </div>
+            <div class="px-5 py-4 border-t themed-border flex justify-end gap-3">
+                <button onclick="closePrintModal()" class="themed-input text-xs font-medium px-4 py-2 rounded-lg transition-colors">Cancel</button>
+                <button id="printSubmitBtn" onclick="doPrint()" disabled class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
+                    <i class="fas fa-print"></i> Print
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // Theme toggle
         const themeToggle = document.getElementById('themeToggle');
@@ -854,7 +902,154 @@
             if (e.target.id === 'fileModal') closeFileModal();
         });
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeFileModal();
+            if (e.key === 'Escape') { closeFileModal(); closePrintModal(); }
+        });
+
+        // --- Print Modal ---
+        let selectedEmployee = null;
+        let searchDebounce = null;
+
+        function openPrintModal() {
+            if (!selectedDate) return;
+            const modal = document.getElementById('printModal');
+            document.getElementById('printModalMeta').textContent = `Date: ${selectedDate} — ${dbDetailEntries.length} entries available`;
+            document.getElementById('printEmpSearch').value = '';
+            document.getElementById('printEmpDropdown').classList.add('hidden');
+            document.getElementById('printEmpSelected').classList.add('hidden');
+            selectedEmployee = null;
+            updatePrintPreview();
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closePrintModal() {
+            const modal = document.getElementById('printModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function searchEmployees() {
+            const q = document.getElementById('printEmpSearch').value.trim();
+            const dropdown = document.getElementById('printEmpDropdown');
+
+            if (q.length < 1) {
+                dropdown.classList.add('hidden');
+                return;
+            }
+
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(async () => {
+                try {
+                    const res = await fetch('/logs/alert/employees?q=' + encodeURIComponent(q));
+                    const data = await res.json();
+
+                    if (data.length === 0) {
+                        dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted">No employees found</div>';
+                    } else {
+                        dropdown.innerHTML = data.map(emp => `
+                            <div onclick="selectEmployee('${emp.biometric_id}', '${escapeHtml(emp.name)}')"
+                                class="px-3 py-2 text-xs themed-text-primary themed-hover cursor-pointer border-b themed-border-subtle">
+                                <span class="font-mono themed-text-secondary">${emp.biometric_id}</span>
+                                &mdash; ${escapeHtml(emp.name)}
+                            </div>`).join('');
+                    }
+                    dropdown.classList.remove('hidden');
+                } catch (e) {
+                    dropdown.innerHTML = '<div class="px-3 py-2 text-xs text-red-400">Error searching</div>';
+                    dropdown.classList.remove('hidden');
+                }
+            }, 300);
+        }
+
+        function selectEmployee(bioId, name) {
+            selectedEmployee = { bioId, name };
+            document.getElementById('printEmpSearch').value = '';
+            document.getElementById('printEmpDropdown').classList.add('hidden');
+            document.getElementById('printEmpLabel').textContent = `${bioId} — ${name}`;
+            document.getElementById('printEmpSelected').classList.remove('hidden');
+            updatePrintPreview();
+        }
+
+        function clearSelectedEmployee() {
+            selectedEmployee = null;
+            document.getElementById('printEmpSelected').classList.add('hidden');
+            updatePrintPreview();
+        }
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#printEmpSearch') && !e.target.closest('#printEmpDropdown')) {
+                document.getElementById('printEmpDropdown')?.classList.add('hidden');
+            }
+        });
+
+        function updatePrintPreview() {
+            const previewDiv = document.getElementById('printPreview');
+            const printBtn = document.getElementById('printSubmitBtn');
+
+            if (!selectedEmployee) {
+                previewDiv.innerHTML = '<p class="themed-text-muted">Select an employee to preview logs</p>';
+                printBtn.disabled = true;
+                return;
+            }
+
+            const bio = selectedEmployee.bioId.toLowerCase();
+            const name = selectedEmployee.name.toLowerCase();
+            const filtered = dbDetailEntries.filter(e =>
+                e.biometric_id.toLowerCase().includes(bio) &&
+                e.name.toLowerCase().includes(name)
+            );
+
+            printBtn.disabled = filtered.length === 0;
+
+            if (filtered.length === 0) {
+                previewDiv.innerHTML = '<p class="themed-text-muted">No matching log entries for this employee on this date</p>';
+                return;
+            }
+
+            let html = `<div class="mb-3 text-xs themed-text-secondary">Showing ${filtered.length} of ${dbDetailEntries.length} entries</div>
+                <div class="overflow-x-auto scrollbar-thin">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="themed-text-muted border-b themed-border">
+                                <th class="text-left py-2 px-2 font-semibold">Biometric ID</th>
+                                <th class="text-left py-2 px-2 font-semibold">Name</th>
+                                <th class="text-left py-2 px-2 font-semibold">Time</th>
+                                <th class="text-left py-2 px-2 font-semibold">Device</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+
+            filtered.slice(0, 20).forEach(e => {
+                html += `<tr class="border-b themed-border-subtle">
+                    <td class="py-2 px-2 font-mono themed-text-secondary">${escapeHtml(e.biometric_id)}</td>
+                    <td class="py-2 px-2 themed-text-primary">${escapeHtml(e.name)}</td>
+                    <td class="py-2 px-2 font-mono text-blue-500">${escapeHtml(e.dtr_time)}</td>
+                    <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.device_name)}</td>
+                </tr>`;
+            });
+
+            if (filtered.length > 20) {
+                html += `<tr><td colspan="4" class="py-2 text-center themed-text-muted">... and ${filtered.length - 20} more entries</td></tr>`;
+            }
+
+            html += '</tbody></table></div>';
+            previewDiv.innerHTML = html;
+        }
+
+        function doPrint() {
+            if (!selectedEmployee) return;
+
+            const params = new URLSearchParams();
+            params.set('date', selectedDate);
+            params.set('name', selectedEmployee.name);
+            params.set('biometric_id', selectedEmployee.bioId);
+
+            window.open('/logs/alert/print?' + params.toString(), '_blank');
+        }
+
+        document.getElementById('printModalClose').addEventListener('click', closePrintModal);
+        document.getElementById('printModal').addEventListener('click', (e) => {
+            if (e.target.id === 'printModal') closePrintModal();
         });
     </script>
 </body>

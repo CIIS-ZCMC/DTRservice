@@ -20,6 +20,8 @@ Route::get('/logs/alert/scan', [DeviceLogAlertController::class, 'scan'])->name(
 Route::get('/logs/alert/scan-db', [DeviceLogAlertController::class, 'scanDatabase'])->name('logs.alert.scan-db');
 Route::get('/logs/alert/date/{date}', [DeviceLogAlertController::class, 'dateEntries'])->name('logs.alert.date');
 Route::get('/logs/alert/file/{filename}', [DeviceLogAlertController::class, 'fileContents'])->name('logs.alert.file');
+Route::get('/logs/alert/print', [DeviceLogAlertController::class, 'printDtrLogs'])->name('logs.alert.print');
+Route::get('/logs/alert/employees', [DeviceLogAlertController::class, 'searchEmployees'])->name('logs.alert.employees');
 
 // Device push data endpoint (ZKTeco iclock) - catch all paths for debugging
 Route::any('/iclock/{any}', [DeviceController::class, 'handleDevicePush'])->where('any', '.*');
