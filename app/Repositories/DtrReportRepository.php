@@ -334,8 +334,8 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             // PM schedule: first_in/first_out match AM logs only (for cross-midnight leftovers)
             // second_in matches against first_entry, second_out against last_entry
             $matched = [
-                'first_in' => $this->findClosestLog($deviceLogs, $date . ' 08:00:00', '00:00:00', '12:00:00'),
-                'first_out' => $this->findClosestLog($deviceLogs, $date . ' 12:00:00', '00:00:00', '13:00:00'),
+                'first_in' => $isCrossMidnight ? $this->findClosestLog($deviceLogs, $date . ' 08:00:00', '00:00:00', '12:00:00') : null,
+                'first_out' => $isCrossMidnight ? $this->findClosestLog($deviceLogs, $date . ' 12:00:00', '00:00:00', '13:00:00') : null,
                 'second_in' => $firstInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $firstInTime) : null,
                 'second_out' => ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondOutTime) : null,
             ];
