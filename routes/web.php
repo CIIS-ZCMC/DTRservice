@@ -17,6 +17,8 @@ Route::post('/logs/clear', [LogViewerController::class, 'clear'])->name('logs.cl
 // Device log alert routes
 Route::get('/logs/alert', [DeviceLogAlertController::class, 'index'])->name('logs.alert');
 Route::get('/logs/alert/scan', [DeviceLogAlertController::class, 'scan'])->name('logs.alert.scan');
+Route::get('/logs/alert/scan-db', [DeviceLogAlertController::class, 'scanDatabase'])->name('logs.alert.scan-db');
+Route::get('/logs/alert/date/{date}', [DeviceLogAlertController::class, 'dateEntries'])->name('logs.alert.date');
 Route::get('/logs/alert/file/{filename}', [DeviceLogAlertController::class, 'fileContents'])->name('logs.alert.file');
 
 // Device push data endpoint (ZKTeco iclock) - catch all paths for debugging

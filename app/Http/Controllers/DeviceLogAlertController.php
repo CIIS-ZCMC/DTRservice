@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\DeviceLogs;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\File;
 
@@ -122,6 +123,62 @@ class DeviceLogAlertController extends Controller
             'dates' => $dateMap,
             'files' => $fileList,
             'late_pulls' => $latePullDates,
+        ]);
+    }
+
+    /**
+     * Scan device_logs database table and build a date map
+     */
+    public function scanDatabase(Request $request)
+    {
+        $dateCounts = DeviceLogs::selectRaw('dtr_date, COUNT(*) as count')
+            ->whereNotNull('dtr_date')
+            ->groupBy('dtr_date')
+            ->orderBy('dtr_date')
+            ->get();
+
+        if ($dateCounts->isEmpty()) {
+            return response()->json(['dates' => [], 'files' => [], 'late_pulls' => []]);
+        }
+
+        $dateMap = [];
+        foreach ($dateCounts as $row) {
+            $dateMap[$row->dtr_date] = ['count' => $row->count];
+        }
+
+        return response()->json([
+            'dates' => $dateMap,
+            'files' => [],
+            'late_pulls' => [],
+        ]);
+    }
+
+    /**
+     * Get entries for a specific date from the database
+     */
+    public function dateEntries(Request $request, string $date)
+    {
+        $logs = DeviceLogs::where('dtr_date', $date)
+            ->orderBy('date_time')
+            ->get();
+
+        $entries = [];
+        foreach ($logs as $log) {
+            $time = $log->date_time ? substr($log->date_time, 11, 8) : '';
+            $entries[] = [
+                'biometric_id' => (string) $log->biometric_id,
+                'name' => $log->name ?? '',
+                'dtr_date' => $log->dtr_date,
+                'dtr_time' => $time,
+                'dtr_type' => (string) ($log->status ?? ''),
+                'device_name' => $log->device_name ?? '',
+            ];
+        }
+
+        return response()->json([
+            'date' => $date,
+            'entries' => $entries,
+            'total' => count($entries),
         ]);
     }
 

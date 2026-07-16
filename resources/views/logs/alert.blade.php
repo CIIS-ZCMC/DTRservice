@@ -84,8 +84,15 @@
                     <a href="/logs" class="text-slate-400 hover:text-white text-sm flex items-center gap-2 transition-colors">
                         <i class="fas fa-arrow-left"></i> Back to Logs
                     </a>
+                    <div class="flex items-center gap-2 bg-slate-800 rounded-lg px-3 py-2">
+                        <label class="text-xs text-slate-400 font-medium">Source:</label>
+                        <select id="dataSource" class="bg-slate-700 text-white border border-slate-600 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
+                            <option value="file" selected>File Record</option>
+                            <option value="db">Device Logs</option>
+                        </select>
+                    </div>
                     <button id="scanBtn" class="bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-700 hover:to-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all shadow-lg hover:shadow-orange-500/25">
-                        <i class="fas fa-radar"></i> Scan Files
+                        <i class="fas fa-radar"></i> Scan
                     </button>
                 </div>
             </div>
@@ -178,7 +185,7 @@
         </div>
 
         <!-- File List -->
-        <div class="mt-6">
+        <div id="fileListSection" class="mt-6">
             <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
                 <div class="panel-header px-4 py-3 border-b border-slate-700">
                     <div class="flex items-center gap-3">
@@ -204,6 +211,7 @@
         let scanData = null;
         let currentMonth = new Date();
         let selectedDate = null;
+        let dataSource = 'file';
 
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -263,11 +271,19 @@
                     badge.className = 'late-badge text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full mt-1';
                     badge.textContent = latePulls[dateStr];
                     cell.appendChild(badge);
-                } else if (dateEntries.length > 0) {
-                    // Has data but no late pulls — show green dot
-                    const dot = document.createElement('span');
-                    dot.className = 'w-1.5 h-1.5 bg-green-500 rounded-full mt-1';
-                    cell.appendChild(dot);
+                } else if (dateEntries.length > 0 || scanData?.dates?.hasOwnProperty(dateStr)) {
+                    // Has data but no late pulls — show green dot or count badge
+                    if (dataSource === 'db' && scanData?.dates?.[dateStr]?.count) {
+                        const cnt = scanData.dates[dateStr].count;
+                        const badge = document.createElement('span');
+                        badge.className = 'bg-green-600/80 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full mt-1';
+                        badge.textContent = cnt;
+                        cell.appendChild(badge);
+                    } else {
+                        const dot = document.createElement('span');
+                        dot.className = 'w-1.5 h-1.5 bg-green-500 rounded-full mt-1';
+                        cell.appendChild(dot);
+                    }
                 }
 
                 cell.addEventListener('click', () => selectDate(dateStr));
@@ -286,13 +302,13 @@
             const detailStatus = document.getElementById('detailStatus');
 
             if (!scanData) {
-                detailContent.innerHTML = '<div class="text-slate-500 text-center py-8"><p>Scan files first</p></div>';
+                detailContent.innerHTML = '<div class="text-slate-500 text-center py-8"><p>Scan first</p></div>';
                 return;
             }
 
-            const entries = scanData.dates[dateStr] || [];
+            const hasDate = scanData.dates.hasOwnProperty(dateStr);
 
-            if (entries.length === 0) {
+            if (!hasDate) {
                 detailStatus.textContent = `No data for ${dateStr}`;
                 detailContent.innerHTML = `
                     <div class="text-slate-500 text-center py-16">
@@ -301,6 +317,32 @@
                     </div>`;
                 return;
             }
+
+            if (dataSource === 'db') {
+                detailStatus.textContent = `${formatDate(dateStr)} — Loading...`;
+                detailContent.innerHTML = `<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-500 mb-2"></i><p class="text-slate-400 text-sm">Loading entries...</p></div>`;
+                fetchDBEntries(dateStr);
+            } else {
+                const entries = scanData.dates[dateStr] || [];
+                renderDetailsFile(dateStr, entries);
+            }
+        }
+
+        async function fetchDBEntries(dateStr) {
+            try {
+                const response = await fetch('/logs/alert/date/' + encodeURIComponent(dateStr));
+                const data = await response.json();
+                const entries = data.entries || [];
+                renderDetailsDB(dateStr, entries);
+            } catch (error) {
+                document.getElementById('detailStatus').textContent = `Error loading ${dateStr}`;
+                document.getElementById('detailContent').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to load: ${escapeHtml(error.message)}</p></div>`;
+            }
+        }
+
+        function renderDetailsFile(dateStr, entries) {
+            const detailContent = document.getElementById('detailContent');
+            const detailStatus = document.getElementById('detailStatus');
 
             const totalEntries = entries.reduce((sum, e) => sum + e.count, 0);
             const lateEntries = entries.filter(e => e.is_late);
@@ -352,6 +394,53 @@
             detailContent.innerHTML = html;
         }
 
+        function renderDetailsDB(dateStr, entries) {
+            const detailContent = document.getElementById('detailContent');
+            const detailStatus = document.getElementById('detailStatus');
+
+            detailStatus.textContent = `${formatDate(dateStr)} — ${entries.length} entries`;
+
+            let html = `
+                <div class="mb-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                    <div class="flex items-center gap-2 mb-1">
+                        <i class="fas fa-info-circle text-blue-400"></i>
+                        <span class="text-sm font-medium text-white">DTR Date: ${dateStr}</span>
+                    </div>
+                    <p class="text-xs text-slate-400">${entries.length} log entries from database</p>
+                </div>
+                <div class="flex justify-end mb-3">
+                    <button onclick="openDBModal('${dateStr}')" class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors">
+                        <i class="fas fa-eye"></i> View All with Filters
+                    </button>
+                </div>
+                <div class="overflow-x-auto scrollbar-thin">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="text-slate-500 border-b border-slate-700">
+                                <th class="text-left py-2 px-2 font-semibold">Biometric ID</th>
+                                <th class="text-left py-2 px-2 font-semibold">Name</th>
+                                <th class="text-left py-2 px-2 font-semibold">Time</th>
+                                <th class="text-left py-2 px-2 font-semibold">Type</th>
+                                <th class="text-left py-2 px-2 font-semibold">Device</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+
+            entries.forEach(e => {
+                html += `
+                    <tr class="border-b border-slate-800/50 hover:bg-slate-800/30">
+                        <td class="py-2 px-2 font-mono text-slate-300">${escapeHtml(e.biometric_id)}</td>
+                        <td class="py-2 px-2 text-slate-200">${escapeHtml(e.name)}</td>
+                        <td class="py-2 px-2 font-mono text-blue-300">${escapeHtml(e.dtr_time)}</td>
+                        <td class="py-2 px-2 text-slate-500">${escapeHtml(e.dtr_type)}</td>
+                        <td class="py-2 px-2 text-slate-500">${escapeHtml(e.device_name)}</td>
+                    </tr>`;
+            });
+
+            html += '</tbody></table></div>';
+            detailContent.innerHTML = html;
+        }
+
         function renderFileList() {
             const fileList = document.getElementById('fileList');
             const fileCount = document.getElementById('fileCount');
@@ -391,15 +480,25 @@
         }
 
         async function scanFiles() {
+            dataSource = document.getElementById('dataSource').value;
             document.getElementById('loadingOverlay').classList.remove('hidden');
             document.getElementById('scanBtn').disabled = true;
 
+            const url = dataSource === 'db' ? '/logs/alert/scan-db' : '/logs/alert/scan';
+            const fileListSection = document.getElementById('fileListSection');
+
             try {
-                const response = await fetch('/logs/alert/scan');
+                const response = await fetch(url);
                 scanData = await response.json();
 
                 renderCalendar();
-                renderFileList();
+
+                if (dataSource === 'db') {
+                    fileListSection.style.display = 'none';
+                } else {
+                    fileListSection.style.display = 'block';
+                    renderFileList();
+                }
 
                 if (selectedDate) {
                     renderDetails(selectedDate);
@@ -414,6 +513,7 @@
 
         // Event listeners
         document.getElementById('scanBtn').addEventListener('click', scanFiles);
+        document.getElementById('dataSource').addEventListener('change', scanFiles);
         document.getElementById('prevMonth').addEventListener('click', () => {
             currentMonth.setMonth(currentMonth.getMonth() - 1);
             renderCalendar();
@@ -425,6 +525,51 @@
 
         // --- File Modal ---
         let modalEntries = [];
+
+        async function openDBModal(dtrDate) {
+            const modal = document.getElementById('fileModal');
+            const modalTitle = document.getElementById('fileModalTitle');
+            const modalMeta = document.getElementById('fileModalMeta');
+
+            modalTitle.innerHTML = `<i class="fas fa-database text-blue-400 mr-2"></i>Device Logs — ${dtrDate}`;
+            modalMeta.innerHTML = `<span class="text-slate-400">Source: <span class="text-white font-medium">Database</span></span>`;
+            document.getElementById('modalResults').innerHTML = `<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-500 mb-2"></i><p class="text-slate-400 text-sm">Loading entries...</p></div>`;
+            document.getElementById('modalFilters').style.display = 'none';
+
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+
+            try {
+                const response = await fetch('/logs/alert/date/' + encodeURIComponent(dtrDate));
+                const data = await response.json();
+
+                if (data.error) {
+                    document.getElementById('modalFilters').style.display = 'none';
+                    document.getElementById('modalResults').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>${escapeHtml(data.error)}</p></div>`;
+                    return;
+                }
+
+                modalEntries = data.entries || [];
+
+                if (modalEntries.length === 0) {
+                    document.getElementById('modalFilters').style.display = 'none';
+                    document.getElementById('modalResults').innerHTML = `<div class="text-slate-500 text-center py-8"><i class="fas fa-inbox text-2xl mb-2"></i><p>No entries found for ${dtrDate}</p></div>`;
+                    return;
+                }
+
+                // Clear filters and show them
+                document.getElementById('filterBio').value = '';
+                document.getElementById('filterName').value = '';
+                document.getElementById('filterTime').value = '';
+                document.getElementById('filterDevice').value = '';
+                document.getElementById('modalFilters').style.display = 'grid';
+
+                renderModalEntries();
+            } catch (error) {
+                document.getElementById('modalFilters').style.display = 'none';
+                document.getElementById('modalResults').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to load: ${escapeHtml(error.message)}</p></div>`;
+            }
+        }
 
         async function openFileModal(filename, dtrDate, isLate, lateDays) {
             const modal = document.getElementById('fileModal');
