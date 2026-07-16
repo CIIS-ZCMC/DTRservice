@@ -424,6 +424,8 @@
         });
 
         // --- File Modal ---
+        let modalEntries = [];
+
         async function openFileModal(filename, dtrDate, isLate, lateDays) {
             const modal = document.getElementById('fileModal');
             const modalTitle = document.getElementById('fileModalTitle');
@@ -436,7 +438,8 @@
 
             modalTitle.innerHTML = `<i class="fas fa-file-alt text-blue-400 mr-2"></i>${escapeHtml(filename)}`;
             modalMeta.innerHTML = `<span class="text-slate-400">DTR Date: <span class="text-white font-medium">${dtrDate}</span></span> <span class="mx-2 text-slate-600">|</span> ${statusText}`;
-            modalBody.innerHTML = `<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-500 mb-2"></i><p class="text-slate-400 text-sm">Loading file contents...</p></div>`;
+            document.getElementById('modalResults').innerHTML = `<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-500 mb-2"></i><p class="text-slate-400 text-sm">Loading file contents...</p></div>`;
+            document.getElementById('modalFilters').style.display = 'none';
 
             modal.classList.remove('hidden');
             modal.classList.add('flex');
@@ -446,19 +449,55 @@
                 const data = await response.json();
 
                 if (data.error) {
-                    modalBody.innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>${escapeHtml(data.error)}</p></div>`;
+                    document.getElementById('modalFilters').style.display = 'none';
+                    document.getElementById('modalResults').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>${escapeHtml(data.error)}</p></div>`;
                     return;
                 }
 
-                const entries = data.entries.filter(e => e.dtr_date === dtrDate);
+                modalEntries = data.entries.filter(e => e.dtr_date === dtrDate);
 
-                if (entries.length === 0) {
-                    modalBody.innerHTML = `<div class="text-slate-500 text-center py-8"><i class="fas fa-inbox text-2xl mb-2"></i><p>No entries found for ${dtrDate}</p></div>`;
+                if (modalEntries.length === 0) {
+                    document.getElementById('modalFilters').style.display = 'none';
+                    document.getElementById('modalResults').innerHTML = `<div class="text-slate-500 text-center py-8"><i class="fas fa-inbox text-2xl mb-2"></i><p>No entries found for ${dtrDate}</p></div>`;
                     return;
                 }
 
-                let html = `
-                    <div class="mb-3 text-xs text-slate-400">Showing ${entries.length} entr${entries.length !== 1 ? 'ies' : 'y'} for ${dtrDate}</div>
+                // Clear filters and show them
+                document.getElementById('filterBio').value = '';
+                document.getElementById('filterName').value = '';
+                document.getElementById('filterTime').value = '';
+                document.getElementById('filterDevice').value = '';
+                document.getElementById('modalFilters').style.display = 'grid';
+
+                renderModalEntries();
+            } catch (error) {
+                document.getElementById('modalFilters').style.display = 'none';
+                document.getElementById('modalResults').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to load: ${escapeHtml(error.message)}</p></div>`;
+            }
+        }
+
+        function renderModalEntries() {
+            const resultsDiv = document.getElementById('modalResults');
+            const filtersDiv = document.getElementById('modalFilters');
+            const fBio = (document.getElementById('filterBio')?.value || '').toLowerCase().trim();
+            const fName = (document.getElementById('filterName')?.value || '').toLowerCase().trim();
+            const fTime = (document.getElementById('filterTime')?.value || '').toLowerCase().trim();
+            const fDevice = (document.getElementById('filterDevice')?.value || '').toLowerCase().trim();
+
+            const filtered = modalEntries.filter(e => {
+                if (fBio && !e.biometric_id.toLowerCase().includes(fBio)) return false;
+                if (fName && !e.name.toLowerCase().includes(fName)) return false;
+                if (fTime && !e.dtr_time.toLowerCase().includes(fTime)) return false;
+                if (fDevice && !e.device_name.toLowerCase().includes(fDevice)) return false;
+                return true;
+            });
+
+            let html = `<div class="mb-3 text-xs text-slate-400">Showing ${filtered.length} of ${modalEntries.length} entries</div>`;
+
+            if (filtered.length === 0) {
+                html += `<div class="text-slate-500 text-center py-8"><i class="fas fa-search text-2xl mb-2 text-slate-600"></i><p>No matching entries</p></div>`;
+            } else {
+                html += `
                     <div class="overflow-x-auto scrollbar-thin">
                         <table class="w-full text-xs">
                             <thead>
@@ -473,7 +512,7 @@
                             </thead>
                             <tbody>`;
 
-                entries.forEach(e => {
+                filtered.forEach(e => {
                     html += `
                         <tr class="border-b border-slate-800/50 hover:bg-slate-800/30">
                             <td class="py-2 px-2 font-mono text-slate-300">${escapeHtml(e.biometric_id)}</td>
@@ -486,10 +525,9 @@
                 });
 
                 html += '</tbody></table></div>';
-                modalBody.innerHTML = html;
-            } catch (error) {
-                modalBody.innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to load: ${escapeHtml(error.message)}</p></div>`;
             }
+
+            resultsDiv.innerHTML = html;
         }
 
         function closeFileModal() {
@@ -515,7 +553,19 @@
                     <i class="fas fa-times text-lg"></i>
                 </button>
             </div>
-            <div id="fileModalBody" class="flex-1 overflow-y-auto scrollbar-thin p-5"></div>
+            <div id="fileModalBody" class="flex-1 overflow-y-auto scrollbar-thin p-5">
+                <div id="modalFilters" class="mb-4 grid grid-cols-4 gap-3" style="display:none">
+                    <input id="filterBio" type="text" placeholder="Biometric ID" oninput="renderModalEntries()"
+                        class="bg-slate-800 text-white text-xs border border-slate-600 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-slate-500">
+                    <input id="filterName" type="text" placeholder="Name" oninput="renderModalEntries()"
+                        class="bg-slate-800 text-white text-xs border border-slate-600 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-slate-500">
+                    <input id="filterTime" type="text" placeholder="Time" oninput="renderModalEntries()"
+                        class="bg-slate-800 text-white text-xs border border-slate-600 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-slate-500">
+                    <input id="filterDevice" type="text" placeholder="Device" oninput="renderModalEntries()"
+                        class="bg-slate-800 text-white text-xs border border-slate-600 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-slate-500">
+                </div>
+                <div id="modalResults"></div>
+            </div>
         </div>
     </div>
 
