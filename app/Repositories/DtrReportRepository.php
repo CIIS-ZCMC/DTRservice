@@ -35,16 +35,20 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             ->get()
             ->toArray();
 
+        // Batch-fetch all schedules for the date range
+        $scheduleMap = $this->batchGetSchedules($employee, $dateFrom, $dateTo);
+
         // Group logs by date and include schedule/time_shift
         $records = [];
         foreach ($logs as $log) {
             $date = $log['dtr_date'];
             if (!isset($records[$date])) {
+                $schedule = $scheduleMap[$date] ?? null;
                 $records[$date] = [
                     'date' => $date,
                     'device_logs' => [],
-                    'schedule' => $this->getEmployeeSchedule($biometricId, $date),
-                    'time_shift' => $this->getTimeShiftByDate($biometricId, $date),
+                    'schedule' => $schedule,
+                    'time_shift' => ($schedule && !($schedule instanceof \App\Models\ExternalSchedule)) ? $schedule->timeShift : null,
                 ];
             }
             $records[$date]['device_logs'][] = $log;
@@ -60,11 +64,12 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         foreach ($period as $dt) {
             $date = $dt->format('Y-m-d');
             if (!isset($records[$date])) {
+                $schedule = $scheduleMap[$date] ?? null;
                 $records[$date] = [
                     'date' => $date,
                     'device_logs' => [],
-                    'schedule' => $this->getEmployeeSchedule($biometricId, $date),
-                    'time_shift' => $this->getTimeShiftByDate($biometricId, $date),
+                    'schedule' => $schedule,
+                    'time_shift' => ($schedule && !($schedule instanceof \App\Models\ExternalSchedule)) ? $schedule->timeShift : null,
                 ];
             }
         }
@@ -98,25 +103,64 @@ class DtrReportRepository implements DtrReportRepositoryInterface
     }
 
     /**
+     * Batch-fetch all schedules for a date range, indexed by date
+     */
+    private function batchGetSchedules($employee, string $dateFrom, string $dateTo): array
+    {
+        $map = [];
+
+        if ($employee->employeeProfile) {
+            $schedules = \App\Models\Schedule::whereBetween('date', [$dateFrom, $dateTo])
+                ->whereHas('employeeSchedules', function ($query) use ($employee) {
+                    $query->where('employee_profile_id', $employee->employeeProfile->id);
+                })
+                ->with('timeShift')
+                ->get()
+                ->keyBy('date');
+
+            foreach ($schedules as $date => $schedule) {
+                $map[$date] = $schedule;
+            }
+        } elseif ($employee->externalProfile) {
+            // External profiles use getSchedules per date — fetch all dates
+            $period = new \DatePeriod(
+                new \DateTime($dateFrom),
+                new \DateInterval('P1D'),
+                (new \DateTime($dateTo))->modify('+1 day')
+            );
+            foreach ($period as $dt) {
+                $date = $dt->format('Y-m-d');
+                $schedule = $employee->getSchedules($date);
+                if ($schedule) {
+                    $map[$date] = $schedule;
+                }
+            }
+        }
+
+        return $map;
+    }
+
+    /**
      * Get employee schedule for a specific date
      */
-    private function getEmployeeSchedule(int $biometricId, string $date)
+    private function getEmployeeSchedule(int $biometricId, string $date, ?\App\Models\Biometrics $employee = null)
     {
-        $employeeProfile = Biometrics::where('biometric_id', $biometricId)
-            ->with('employeeProfile','externalProfile')
-            ->first();
+        if ($employee === null) {
+            $employee = Biometrics::where('biometric_id', $biometricId)
+                ->with('employeeProfile', 'externalProfile')
+                ->first();
+        }
 
-      
-        if (!$employeeProfile || !$employeeProfile->employeeProfile) {
-                if($employeeProfile->externalProfile){  
-                return $employeeProfile->getSchedules($date);
+        if (!$employee || !$employee->employeeProfile) {
+                if($employee && $employee->externalProfile){  
+                return $employee->getSchedules($date);
                }
             return null;
         }
 
         return \App\Models\Schedule::where('date', $date)
-            ->whereHas('employeeSchedules', function ($query) use ($employeeProfile) {
-                $query->where('employee_profile_id', $employeeProfile->employeeProfile->id);
+            ->whereHas('employeeSchedules', function ($query) use ($employee) {
+                $query->where('employee_profile_id', $employee->employeeProfile->id);
             })
             ->with('timeShift')
             ->first();
@@ -138,6 +182,112 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         }
 
         return $schedule->timeShift;
+    }
+
+    /**
+     * Batch-fetch all applications for a date range, indexed by date
+     */
+    private function batchGetApplications(?int $employeeProfileId, string $dateFrom, string $dateTo): array
+    {
+        $empty = [
+            'has_leave' => [],
+            'has_ob' => [],
+            'has_ot' => [],
+            'has_cto' => [],
+            'has_ta' => null,
+        ];
+
+        if (!$employeeProfileId) {
+            $map = [];
+            $period = new \DatePeriod(
+                new \DateTime($dateFrom),
+                new \DateInterval('P1D'),
+                (new \DateTime($dateTo))->modify('+1 day')
+            );
+            foreach ($period as $dt) {
+                $map[$dt->format('Y-m-d')] = $empty;
+            }
+            return $map;
+        }
+
+        $leaveApps = LeaveApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date_from', '<=', $dateTo)
+            ->whereDate('date_to', '>=', $dateFrom)
+            ->get();
+
+        $obApps = OfficialBusinessApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date_from', '<=', $dateTo)
+            ->whereDate('date_to', '>=', $dateFrom)
+            ->get();
+
+        $otApps = OfficialTimeApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereDate('date_from', '<=', $dateTo)
+            ->whereDate('date_to', '>=', $dateFrom)
+            ->get();
+
+        $ctoApps = CtoApplication::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereBetween('date', [$dateFrom, $dateTo])
+            ->get();
+
+        $timeAdjustments = TimeAdjustment::where('employee_profile_id', $employeeProfileId)
+            ->where('status', 'approved')
+            ->whereBetween('date', [$dateFrom, $dateTo])
+            ->get()
+            ->keyBy('date');
+
+        // Index by date
+        $map = [];
+        $period = new \DatePeriod(
+            new \DateTime($dateFrom),
+            new \DateInterval('P1D'),
+            (new \DateTime($dateTo))->modify('+1 day')
+        );
+        foreach ($period as $dt) {
+            $date = $dt->format('Y-m-d');
+            $map[$date] = [
+                'has_leave' => $leaveApps->filter(fn($a) => $date >= $a->date_from && $date <= $a->date_to)->values()->toArray(),
+                'has_ob' => $obApps->filter(fn($a) => $date >= $a->date_from && $date <= $a->date_to)->values()->toArray(),
+                'has_ot' => $otApps->filter(fn($a) => $date >= $a->date_from && $date <= $a->date_to)->values()->toArray(),
+                'has_cto' => $ctoApps->filter(fn($a) => $a->date === $date)->values()->toArray(),
+                'has_ta' => $timeAdjustments->has($date) ? $timeAdjustments->get($date)->toArray() : null,
+            ];
+        }
+
+        return $map;
+    }
+
+    /**
+     * Batch-fetch all holidays for a date range, indexed by date
+     */
+    private function batchGetHolidays(string $dateFrom, string $dateTo): array
+    {
+        // Extract all month-day combinations in the range
+        $period = new \DatePeriod(
+            new \DateTime($dateFrom),
+            new \DateInterval('P1D'),
+            (new \DateTime($dateTo))->modify('+1 day')
+        );
+        $monthDays = [];
+        foreach ($period as $dt) {
+            $monthDays[] = $dt->format('m-d');
+        }
+        $monthDays = array_unique($monthDays);
+
+        $holidays = Holiday::whereIn('month_day', $monthDays)->get()->keyBy('month_day');
+
+        $map = [];
+        foreach ($period as $dt) {
+            $date = $dt->format('Y-m-d');
+            $monthDay = $dt->format('m-d');
+            $holiday = $holidays->get($monthDay);
+            $map[$date] = $holiday ? ['description' => $holiday->description] : null;
+        }
+
+        return $map;
     }
 
     /**
@@ -406,6 +556,15 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         $recordCount = count($records);
         $employeeProfileId = $data['employee']['employee_profile_id'] ?? null;
 
+        // Batch-fetch all applications and holidays for the date range
+        $applicationsMap = $this->batchGetApplications($employeeProfileId, $dateFrom, $dateTo);
+        $holidaysMap = $this->batchGetHolidays($dateFrom, $dateTo);
+
+        // Fetch employee model for prev-day schedule lookup
+        $employeeModel = Biometrics::where('biometric_id', $biometricId)
+            ->with('employeeProfile', 'externalProfile')
+            ->first();
+
         for ($i = 0; $i < $recordCount; $i++) {
             $record = $records[$i];
             $deviceLogs = $record['device_logs'];
@@ -451,7 +610,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             } else {
                 // First record: fetch previous day's schedule directly (may be outside dateFrom range)
                 $prevDate = date('Y-m-d', strtotime($date . ' -1 day'));
-                $prevSchedule = $this->getEmployeeSchedule($biometricId, $prevDate);
+                $prevSchedule = $this->getEmployeeSchedule($biometricId, $prevDate, $employeeModel);
 
                 if ($prevSchedule instanceof \App\Models\ExternalSchedule) {
                     $prevScheduleData = $this->buildExternalScheduleData($prevSchedule);
@@ -562,10 +721,16 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             }
 
             // Fetch applications (internal employees only)
-            $applications = $this->getApplications($employeeProfileId, $date);
+            $applications = $applicationsMap[$date] ?? [
+                'has_leave' => [],
+                'has_ob' => [],
+                'has_ot' => [],
+                'has_cto' => [],
+                'has_ta' => null,
+            ];
 
             // Fetch holiday
-            $holiday = $this->getHoliday($date);
+            $holiday = $holidaysMap[$date] ?? null;
 
             // Attendance status logic
             $isWeekend = $dayName === 'Saturday' || $dayName === 'Sunday';
