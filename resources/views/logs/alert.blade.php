@@ -907,7 +907,6 @@
 
         // --- Print Modal ---
         let selectedEmployee = null;
-        let searchDebounce = null;
 
         function openPrintModal() {
             if (!selectedDate) return;
@@ -929,7 +928,7 @@
         }
 
         function searchEmployees() {
-            const q = document.getElementById('printEmpSearch').value.trim();
+            const q = document.getElementById('printEmpSearch').value.trim().toLowerCase();
             const dropdown = document.getElementById('printEmpDropdown');
 
             if (q.length < 1) {
@@ -937,28 +936,32 @@
                 return;
             }
 
-            clearTimeout(searchDebounce);
-            searchDebounce = setTimeout(async () => {
-                try {
-                    const res = await fetch('/logs/alert/employees?q=' + encodeURIComponent(q));
-                    const data = await res.json();
-
-                    if (data.length === 0) {
-                        dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted">No employees found</div>';
-                    } else {
-                        dropdown.innerHTML = data.map(emp => `
-                            <div onclick="selectEmployee('${emp.biometric_id}', '${escapeHtml(emp.name)}')"
-                                class="px-3 py-2 text-xs themed-text-primary themed-hover cursor-pointer border-b themed-border-subtle">
-                                <span class="font-mono themed-text-secondary">${emp.biometric_id}</span>
-                                &mdash; ${escapeHtml(emp.name)}
-                            </div>`).join('');
-                    }
-                    dropdown.classList.remove('hidden');
-                } catch (e) {
-                    dropdown.innerHTML = '<div class="px-3 py-2 text-xs text-red-400">Error searching</div>';
-                    dropdown.classList.remove('hidden');
+            const seen = new Set();
+            const unique = [];
+            for (const e of dbDetailEntries) {
+                const key = e.biometric_id;
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    unique.push({ biometric_id: e.biometric_id, name: e.name });
                 }
-            }, 300);
+            }
+
+            const filtered = unique.filter(emp =>
+                emp.biometric_id.toLowerCase().includes(q) ||
+                emp.name.toLowerCase().includes(q)
+            );
+
+            if (filtered.length === 0) {
+                dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted">No employees found</div>';
+            } else {
+                dropdown.innerHTML = filtered.map(emp => `
+                    <div onclick="selectEmployee('${emp.biometric_id}', '${escapeHtml(emp.name)}')"
+                        class="px-3 py-2 text-xs themed-text-primary themed-hover cursor-pointer border-b themed-border-subtle">
+                        <span class="font-mono themed-text-secondary">${emp.biometric_id}</span>
+                        &mdash; ${escapeHtml(emp.name)}
+                    </div>`).join('');
+            }
+            dropdown.classList.remove('hidden');
         }
 
         function selectEmployee(bioId, name) {
