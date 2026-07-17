@@ -274,14 +274,25 @@ class DeviceLogAlertController extends Controller
 
         if ($biometricId) {
             $biometric = Biometrics::where('biometric_id', $biometricId)
-                ->with('employeeProfile', 'externalProfile')
+                ->with('employeeProfile.assignArea.department', 'employeeProfile.assignArea.section', 'employeeProfile.assignArea.unit', 'employeeProfile.assignArea.division', 'employeeProfile.personalInformation', 'externalProfile')
                 ->first();
 
             if ($biometric && $biometric->employeeProfile) {
                 $employeeName = $biometric->employeeProfile->personalInformation
                     ? $biometric->employeeProfile->personalInformation->first_name . ' ' . $biometric->employeeProfile->personalInformation->last_name
                     : $employeeName;
-                $designation = $biometric->employeeProfile->assignArea ?? null;
+                $assignArea = $biometric->employeeProfile->assignArea;
+                if ($assignArea) {
+                    if ($assignArea->department) {
+                        $designation = $assignArea->department->name;
+                    } elseif ($assignArea->section) {
+                        $designation = $assignArea->section->name;
+                    } elseif ($assignArea->unit) {
+                        $designation = $assignArea->unit->name;
+                    } elseif ($assignArea->division) {
+                        $designation = $assignArea->division->name;
+                    }
+                }
                 $empId = $biometric->employeeProfile->employee_id ?? '';
             } elseif ($biometric && $biometric->externalProfile) {
                 $employeeName = trim(($biometric->externalProfile->first_name ?? '') . ' ' . ($biometric->externalProfile->last_name ?? '')) ?: $employeeName;
