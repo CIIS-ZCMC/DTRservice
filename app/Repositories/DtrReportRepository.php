@@ -808,8 +808,12 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 }
             }
 
-            // Calculate undertime
-            $undertime = $this->calculateUndertime($timeSlots, $scheduleData);
+            // Calculate undertime (skip for future dates)
+            if ($isFuture) {
+                $undertime = 0;
+            } else {
+                $undertime = $this->calculateUndertime($timeSlots, $scheduleData);
+            }
 
             $dailyRecords[] = [
                 'dtr_date' => $date,
