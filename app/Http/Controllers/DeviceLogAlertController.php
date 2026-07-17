@@ -338,7 +338,7 @@ class DeviceLogAlertController extends Controller
             if ($bio->employeeProfile && $bio->employeeProfile->personalInformation) {
                 $pi = $bio->employeeProfile->personalInformation;
                 $name = $pi->first_name . ' ' . $pi->last_name;
-                $designation = $bio->employeeProfile->assignArea?->area_name ?? null;
+                $designation = $bio->employeeProfile->assignArea?->name ?? null;
                 $empId = $bio->employeeProfile->employee_id ?? '';
             } elseif ($bio->externalProfile) {
                 $name = trim(($bio->externalProfile->first_name ?? '') . ' ' . ($bio->externalProfile->last_name ?? '')) ?: 'Unknown';

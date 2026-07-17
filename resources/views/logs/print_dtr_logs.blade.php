@@ -215,7 +215,7 @@
             <tr>
                 <td style="text-align:left;font-size:12px;">
                     @if ($designation)
-                        {{ is_object($designation) ? ($designation->area_name ?? $designation->name ?? $designation->department ?? '') : $designation }}<br>
+                        {{ is_object($designation) ? ($designation->name ?? $designation->department ?? '') : $designation }}<br>
                     @endif
                     @if ($empId)
                         {{ $empId }}<br>
