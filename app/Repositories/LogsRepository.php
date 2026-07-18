@@ -197,48 +197,74 @@ class LogsRepository implements LogsRepositoryInterface
             ];
     }
 
-    public function saveForAttendance(array $data)
+    public function saveForAttendance(array $data): bool
     {
         try {
             // 1. Get active attendances
             $activeAttendances = Attendance::where("attendance_key", 1)
                 ->get();
 
+            $matchedAttendance = null;
+
             if ($activeAttendances->isEmpty()) {
                 Log::channel('attendance_logs')->error('No active attendance found');
-                $matchedAttendance = null;
-            } else {
-                // 4. Loop through active attendances and find matching date
-                $matchedAttendance = null;
-                foreach ($activeAttendances as $attendance) {
-                    // Extract date from title (e.g., "testxxxx-2026_06_15_1781504458" -> "2026-06-15")
-                    preg_match('/(\d{4}_\d{2}_\d{2})/', $attendance->title, $matches);
-                    if (!$matches) {
-                        continue;
-                    }
-                    $extractedDate = str_replace('_', '-', $matches[1]);
+                Log::channel('failed_attendancelogs')->warning('Failed attendance log', [
+                    'reason' => 'no_active_attendance',
+                    'biometric_id' => $data['biometric_id'],
+                    'dtr_date' => $data['dtr_date'],
+                    'dtr_time' => $data['dtr_time'],
+                    'dtr_type' => $data['dtr_type'] ?? null,
+                    'full_data' => $data,
+                ]);
+                return true;
+            }
 
-                    // Check if extracted date matches device date
-                    if ($extractedDate === $data['dtr_date']) {
-                        $matchedAttendance = $attendance;
-                        break;
-                    }
+            // Loop through active attendances and find matching date
+            foreach ($activeAttendances as $attendance) {
+                // Extract date from title (e.g., "testxxxx-2026_06_15_1781504458" -> "2026-06-15")
+                preg_match('/(\d{4}_\d{2}_\d{2})/', $attendance->title, $matches);
+                if (!$matches) {
+                    continue;
                 }
+                $extractedDate = str_replace('_', '-', $matches[1]);
 
-                if (!$matchedAttendance) {
-                    Log::channel('attendance_logs')->info('No attendance matching device date, saving without attendance_id', [
-                        'device_date' => $data['dtr_date'],
-                        'biometric_id' => $data['biometric_id'],
-                        'full_data' => $data
-                    ]);
+                // Check if extracted date matches device date
+                if ($extractedDate === $data['dtr_date']) {
+                    $matchedAttendance = $attendance;
+                    break;
                 }
+            }
+
+            if (!$matchedAttendance) {
+                Log::channel('attendance_logs')->info('No attendance matching device date', [
+                    'device_date' => $data['dtr_date'],
+                    'biometric_id' => $data['biometric_id'],
+                    'full_data' => $data
+                ]);
+                Log::channel('failed_attendancelogs')->warning('Failed attendance log', [
+                    'reason' => 'no_matched_date',
+                    'biometric_id' => $data['biometric_id'],
+                    'dtr_date' => $data['dtr_date'],
+                    'dtr_time' => $data['dtr_time'],
+                    'dtr_type' => $data['dtr_type'] ?? null,
+                    'full_data' => $data,
+                ]);
+                return true;
             }
 
             // 2. Get employee profile
             $employee = EmployeeProfile::where('biometric_id', $data['biometric_id'])->first();
             if (!$employee) {
                 Log::channel('attendance_logs')->error('Employee not found', ['biometric_id' => $data['biometric_id']]);
-                return;
+                Log::channel('failed_attendancelogs')->warning('Failed attendance log', [
+                    'reason' => 'employee_not_found',
+                    'biometric_id' => $data['biometric_id'],
+                    'dtr_date' => $data['dtr_date'],
+                    'dtr_time' => $data['dtr_time'],
+                    'dtr_type' => $data['dtr_type'] ?? null,
+                    'full_data' => $data,
+                ]);
+                return true;
             }
 
             // Get employee name using existing method
@@ -252,10 +278,10 @@ class LogsRepository implements LogsRepositoryInterface
                 ->first();
 
             $email = null;
+            $assignedArea = null;
             if ($user && $user->employeeProfile) {
                 $profile = $user->employeeProfile;
                 $assignedArea = $profile->assignArea ?? null;
-                $info = $assignedArea?->findDetails() ?? null;
 
                 if ($profile->personalInformation && $profile->personalInformation->contact) {
                     $email = $profile->personalInformation->contact->email_address ?? null;
@@ -263,7 +289,6 @@ class LogsRepository implements LogsRepositoryInterface
             }
 
             // 3. Get area details
-
             if (!$assignedArea) {
                 $areaDetails = null;
                 $sector = null;
@@ -284,7 +309,7 @@ class LogsRepository implements LogsRepositoryInterface
                     'biometric_id' => $data['biometric_id'],
                     'first_entry' => $entryDateTime,
                 ]);
-                return;
+                return true;
             }
 
             AttendanceInformation::create([
@@ -304,14 +329,22 @@ class LogsRepository implements LogsRepositoryInterface
                 'attendances_id' => $matchedAttendance ? $matchedAttendance->id : null,
                 'device_date' => $data['dtr_date']
             ]);
-            return "OK";
-
-            return "OK";
+            return true;
         } catch (\Exception $e) {
             Log::channel('attendance_logs')->error('saveForAttendance :: Error: ' . $e->getMessage(), [
                 'data' => $data,
                 'trace' => $e->getTraceAsString()
             ]);
+            Log::channel('failed_attendancelogs')->warning('Failed attendance log', [
+                'reason' => 'save_error',
+                'biometric_id' => $data['biometric_id'],
+                'dtr_date' => $data['dtr_date'],
+                'dtr_time' => $data['dtr_time'],
+                'dtr_type' => $data['dtr_type'] ?? null,
+                'full_data' => $data,
+                'error' => $e->getMessage(),
+            ]);
+            return true;
         }
     }
 }
