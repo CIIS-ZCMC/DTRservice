@@ -479,22 +479,48 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         // Detect PM schedule (first_entry >= 12:00)
         $isPmSchedule = $firstInTime !== null && $firstInTime >= '12:00:00';
 
+        // Track used logs to prevent the same log from matching multiple slots
+        $usedLogs = [];
+        $availableLogs = $deviceLogs;
+
         // Find closest log for each schedule slot (skip if schedule time is null)
         if ($isPmSchedule) {
             // PM schedule: first_in/first_out match AM logs only (for cross-midnight leftovers)
             // second_in matches against first_entry, second_out against last_entry
+            $firstIn = $isCrossMidnight ? $this->findClosestLog($availableLogs, $date . ' 08:00:00', '00:00:00', '12:00:00') : null;
+            if ($firstIn) { $usedLogs[] = $firstIn; $availableLogs = array_filter($availableLogs, fn($l) => $l['date_time'] !== $firstIn); }
+
+            $firstOut = $isCrossMidnight ? $this->findClosestLog($availableLogs, $date . ' 12:00:00', '00:00:00', '13:00:00') : null;
+            if ($firstOut) { $usedLogs[] = $firstOut; $availableLogs = array_filter($availableLogs, fn($l) => $l['date_time'] !== $firstOut); }
+
+            $secondIn = $firstInTime ? $this->findClosestLog($availableLogs, $date . ' ' . $firstInTime) : null;
+            if ($secondIn) { $usedLogs[] = $secondIn; $availableLogs = array_filter($availableLogs, fn($l) => $l['date_time'] !== $secondIn); }
+
+            $secondOut = ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($availableLogs, $date . ' ' . $secondOutTime) : null;
+
             $matched = [
-                'first_in' => $isCrossMidnight ? $this->findClosestLog($deviceLogs, $date . ' 08:00:00', '00:00:00', '12:00:00') : null,
-                'first_out' => $isCrossMidnight ? $this->findClosestLog($deviceLogs, $date . ' 12:00:00', '00:00:00', '13:00:00') : null,
-                'second_in' => $firstInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $firstInTime) : null,
-                'second_out' => ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondOutTime) : null,
+                'first_in' => $firstIn,
+                'first_out' => $firstOut,
+                'second_in' => $secondIn,
+                'second_out' => $secondOut,
             ];
         } else {
+            $firstIn = $firstInTime ? $this->findClosestLog($availableLogs, $date . ' ' . $firstInTime) : null;
+            if ($firstIn) { $usedLogs[] = $firstIn; $availableLogs = array_filter($availableLogs, fn($l) => $l['date_time'] !== $firstIn); }
+
+            $firstOut = ($firstOutTime ?: '12:00:00') ? $this->findClosestLog($availableLogs, $date . ' ' . ($firstOutTime ?: '12:00:00'), '00:00:00', '13:00:00') : null;
+            if ($firstOut) { $usedLogs[] = $firstOut; $availableLogs = array_filter($availableLogs, fn($l) => $l['date_time'] !== $firstOut); }
+
+            $secondIn = $secondInTime ? $this->findClosestLog($availableLogs, $date . ' ' . $secondInTime) : null;
+            if ($secondIn) { $usedLogs[] = $secondIn; $availableLogs = array_filter($availableLogs, fn($l) => $l['date_time'] !== $secondIn); }
+
+            $secondOut = ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($availableLogs, $date . ' ' . $secondOutTime) : null;
+
             $matched = [
-                'first_in' => $firstInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $firstInTime) : null,
-                'first_out' => ($firstOutTime ?: '12:00:00') ? $this->findClosestLog($deviceLogs, $date . ' ' . ($firstOutTime ?: '12:00:00'), '00:00:00', '13:00:00') : null,
-                'second_in' => $secondInTime ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondInTime) : null,
-                'second_out' => ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($deviceLogs, $date . ' ' . $secondOutTime) : null,
+                'first_in' => $firstIn,
+                'first_out' => $firstOut,
+                'second_in' => $secondIn,
+                'second_out' => $secondOut,
             ];
         }
 
