@@ -219,17 +219,9 @@ class LogsRepository implements LogsRepositoryInterface
                 return true;
             }
 
-            // Loop through active attendances and find matching date
+            // Loop through active attendances and find matching open_date
             foreach ($activeAttendances as $attendance) {
-                // Extract date from title (e.g., "testxxxx-2026_06_15_1781504458" -> "2026-06-15")
-                preg_match('/(\d{4}_\d{2}_\d{2})/', $attendance->title, $matches);
-                if (!$matches) {
-                    continue;
-                }
-                $extractedDate = str_replace('_', '-', $matches[1]);
-
-                // Check if extracted date matches device date
-                if ($extractedDate === $data['dtr_date']) {
+                if ($attendance->open_date === $data['dtr_date']) {
                     $matchedAttendance = $attendance;
                     break;
                 }
