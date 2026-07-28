@@ -13,4 +13,9 @@ interface DtrReportRepositoryInterface
      * Generate report data with calculated totals
      */
     public function generateReport(int $biometricId, string $dateFrom, string $dateTo): array;
+
+    /**
+     * Get self-service DTR for a single day
+     */
+    public function getSelfDtr(int $biometricId, string $date): array;
 }

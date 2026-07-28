@@ -260,8 +260,14 @@
         </div>
 
         <div class="signature">
+            <span>{{ strtoupper($employeeName) }}</span>
             <div class="line"></div>
-            <span>{{ $employeeName }}</span>
+        </div>
+
+        <div class="signature" style="margin-top: 45px;">
+            <span style="font-size: 10px; color: #656f74;">Reviewed by:</span><br>
+            <span>KRIZELLE MAE B. FALCASANTOS</span>
+            <div class="line"></div>
         </div>
 
         <table id="footerTable">
