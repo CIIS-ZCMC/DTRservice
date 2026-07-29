@@ -36,4 +36,16 @@ class DtrReportService
     {
         return (bool) strtotime($date) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $date);
     }
+
+    /**
+     * Get self-service DTR for a single day
+     */
+    public function getSelfDtr(int $biometricId, string $date): array
+    {
+        if (!$this->validateDate($date)) {
+            throw new \InvalidArgumentException('Invalid date format. Use Y-m-d format.');
+        }
+
+        return $this->dtrReportRepository->getSelfDtr($biometricId, $date);
+    }
 }

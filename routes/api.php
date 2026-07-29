@@ -31,3 +31,6 @@ Route::middleware('dtr.token')->group(function () {
     Route::get('/dtr/download/{biometricId}/{year}/{month}', [DtrReportController::class, 'download']);
     Route::get('/dtr/json/{biometricId}/{year}/{month}', [DtrReportController::class, 'json']);
 });
+
+// DTR Self-service
+Route::get('/dtr-self', [DtrReportController::class, 'dtrSelf']);

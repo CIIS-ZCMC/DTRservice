@@ -1149,4 +1149,152 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
         return implode(' ', $parts);
     }
+
+    /**
+     * Filter device logs into time slots using interval-based logic.
+     * Pattern: first_in → 3hr gap → first_out → 2min gap → second_in → 3hr gap → second_out
+     */
+    private function filterByIntervals(array $deviceLogs): array
+    {
+        $slots = [
+            'first_in' => null,
+            'first_out' => null,
+            'second_in' => null,
+            'second_out' => null,
+        ];
+
+        if (empty($deviceLogs)) {
+            return $slots;
+        }
+
+        // Sort logs by date_time ascending
+        usort($deviceLogs, fn($a, $b) => strcmp($a['date_time'], $b['date_time']));
+
+        $usedIndices = [];
+
+        // Entry 1: first_in = first log of the day
+        $slots['first_in'] = $this->formatTime(substr($deviceLogs[0]['date_time'], 11, 8));
+        $usedIndices[] = 0;
+
+        // Entry 2: first_out = first log >= 3 hours after first_in
+        $firstInTime = strtotime($deviceLogs[0]['date_time']);
+        for ($i = 1; $i < count($deviceLogs); $i++) {
+            if (in_array($i, $usedIndices)) {
+                continue;
+            }
+            $logTime = strtotime($deviceLogs[$i]['date_time']);
+            if (($logTime - $firstInTime) >= 10800) {
+                $slots['first_out'] = $this->formatTime(substr($deviceLogs[$i]['date_time'], 11, 8));
+                $usedIndices[] = $i;
+                $firstOutTime = $logTime;
+                break;
+            }
+        }
+
+        if (!isset($firstOutTime)) {
+            return $slots;
+        }
+
+        // Entry 3: second_in = first log >= 2 minutes after first_out
+        for ($i = 1; $i < count($deviceLogs); $i++) {
+            if (in_array($i, $usedIndices)) {
+                continue;
+            }
+            $logTime = strtotime($deviceLogs[$i]['date_time']);
+            if (($logTime - $firstOutTime) >= 120) {
+                $slots['second_in'] = $this->formatTime(substr($deviceLogs[$i]['date_time'], 11, 8));
+                $usedIndices[] = $i;
+                $secondInTime = $logTime;
+                break;
+            }
+        }
+
+        if (!isset($secondInTime)) {
+            return $slots;
+        }
+
+        // Entry 4: second_out = first log >= 3 hours after second_in
+        for ($i = 1; $i < count($deviceLogs); $i++) {
+            if (in_array($i, $usedIndices)) {
+                continue;
+            }
+            $logTime = strtotime($deviceLogs[$i]['date_time']);
+            if (($logTime - $secondInTime) >= 10800) {
+                $slots['second_out'] = $this->formatTime(substr($deviceLogs[$i]['date_time'], 11, 8));
+                $usedIndices[] = $i;
+                break;
+            }
+        }
+
+        return $slots;
+    }
+
+    /**
+     * Get self-service DTR for a single day
+     */
+    public function getSelfDtr(int $biometricId, string $date): array
+    {
+        $employee = Biometrics::where('biometric_id', $biometricId)
+            ->with('employeeProfile', 'externalProfile')
+            ->first();
+
+        if (!$employee) {
+            return [];
+        }
+
+        $allLogs = DeviceLogs::where('biometric_id', $biometricId)
+            ->orderBy('date_time')
+            ->get()
+            ->toArray();
+
+        $dateLogs = array_values(array_filter($allLogs, fn($log) => $log['dtr_date'] === $date));
+
+        $schedule = $this->getEmployeeSchedule($biometricId, $date, $employee);
+        $timeShift = ($schedule && !($schedule instanceof \App\Models\ExternalSchedule)) ? $schedule->timeShift : null;
+
+        $scheduleData = null;
+        if ($schedule instanceof \App\Models\ExternalSchedule) {
+            $scheduleData = $this->buildExternalScheduleData($schedule);
+        } elseif ($schedule && $timeShift) {
+            $scheduleData = $this->buildScheduleData($schedule, $timeShift);
+        }
+
+        // Interval-based matching (priority) - only on logs for the target date
+        $intervalSlots = $this->filterByIntervals($dateLogs);
+
+        // Schedule-based matching (fills gaps) - only on logs for the target date
+        $scheduleSlots = [
+            'first_in' => null,
+            'first_out' => null,
+            'second_in' => null,
+            'second_out' => null,
+        ];
+        if (!empty($dateLogs) && $scheduleData) {
+            $scheduleSlots = $this->matchLogsToScheduleSlots($dateLogs, $scheduleData, $date);
+        }
+
+        // Merge: interval takes priority, schedule fills nulls
+        $timeSlots = $intervalSlots;
+        foreach ($scheduleSlots as $key => $value) {
+            if ($timeSlots[$key] === null && $value !== null) {
+                $timeSlots[$key] = $value;
+            }
+        }
+
+        // Format: lowercase am/pm, ' --:--' for nulls
+        $formatSlot = fn($val) => $val !== null ? strtolower($val) : ' --:--';
+
+        return [
+            'dtr_date' => $date,
+            'first_in' => $formatSlot($timeSlots['first_in']),
+            'first_out' => $formatSlot($timeSlots['first_out']),
+            'second_in' => $formatSlot($timeSlots['second_in']),
+            'second_out' => $formatSlot($timeSlots['second_out']),
+            'schedule' => $scheduleData ?? (object) [],
+            'deviceLogs' => [
+                'dtr_date' => count($dateLogs) > 0,
+                'logs' => $allLogs,
+            ],
+        ];
+    }
 }

@@ -102,6 +102,42 @@ class DtrReportController extends Controller
     }
 
     /**
+     * Get self-service DTR for a single day
+     */
+    public function dtrSelf(Request $request): JsonResponse
+    {
+        try {
+            $request->validate([
+                'biometric_id' => 'required|integer',
+                'date' => 'nullable|date_format:Y-m-d',
+            ]);
+
+            $biometricId = (int) $request->input('biometric_id');
+            $date = $request->input('date', date('Y-m-d'));
+
+            $data = $this->dtrReportService->getSelfDtr($biometricId, $date);
+
+            if (empty($data)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Employee not found'
+                ], 404);
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $data,
+            ]);
+        } catch (\Exception $e) {
+            Log::error('Error fetching self DTR: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Error: ' . $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
      * Get report data from cache or generate fresh
      */
     private function getReportData(int $biometricId, int $year, int $month, bool $refresh = false, ?int $wholeMonth = null): array
