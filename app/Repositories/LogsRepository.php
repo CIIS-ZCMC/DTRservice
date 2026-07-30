@@ -173,6 +173,9 @@ class LogsRepository implements LogsRepositoryInterface
 
             for ($i = count($lines) - 1; $i >= 0; $i--) {
                 $line = $lines[$i];
+                if (strpos($line, 'Device log entry') === false) {
+                    continue;
+                }
                 if (strpos($line, $searchPattern) !== false
                     && strpos($line, $datePattern) !== false
                     && strpos($line, $timePattern) !== false) {
