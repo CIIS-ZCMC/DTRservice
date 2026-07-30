@@ -146,14 +146,42 @@ class LogsRepository implements LogsRepositoryInterface
     }
 
     /**
-     * Check if a log already exists
+     * Check if a log already exists by scanning log files instead of querying the DB.
+     * Scans current device_logs.log + 2 most recent rotated files.
      */
     public function logExists(int $biometricId, string $dateTime): bool
     {
-        return DB::table('device_logs')
-            ->where('biometric_id', $biometricId)
-            ->where('date_time', $dateTime)
-            ->exists();
+        $date = substr($dateTime, 0, 10);
+        $time = substr($dateTime, 11, 8);
+        $searchPattern = '"biometric_id":"' . $biometricId . '"';
+        $datePattern = '"dtr_date":"' . $date . '"';
+        $timePattern = '"dtr_time":"' . $time . '"';
+
+        $files = glob(storage_path('logs/device_logs*.log'));
+        if (!$files) {
+            return false;
+        }
+
+        usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
+        $files = array_slice($files, 0, 3);
+
+        foreach ($files as $file) {
+            $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            if (!$lines) {
+                continue;
+            }
+
+            for ($i = count($lines) - 1; $i >= 0; $i--) {
+                $line = $lines[$i];
+                if (strpos($line, $searchPattern) !== false
+                    && strpos($line, $datePattern) !== false
+                    && strpos($line, $timePattern) !== false) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
