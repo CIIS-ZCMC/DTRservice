@@ -174,6 +174,7 @@ class DeviceLogAlertController extends Controller
                 'dtr_time' => $time,
                 'dtr_type' => (string) ($log->status ?? ''),
                 'device_name' => $log->device_name ?? '',
+                'created_at' => $log->created_at ? $log->created_at->format('Y-m-d h:i a') : '',
             ];
         }
 
