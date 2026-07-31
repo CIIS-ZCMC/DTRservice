@@ -545,6 +545,7 @@
                                     <th class="text-left py-2 px-2 font-semibold">Time</th>
                                     <th class="text-left py-2 px-2 font-semibold">Type</th>
                                     <th class="text-left py-2 px-2 font-semibold">Device</th>
+                                    <th class="text-left py-2 px-2 font-semibold">Synced Time</th>
                                 </tr>
                             </thead>
                             <tbody>`;
@@ -557,6 +558,7 @@
                             <td class="py-2 px-2 font-mono text-blue-500">${escapeHtml(e.dtr_time)}</td>
                             <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.dtr_type)}</td>
                             <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.device_name)}</td>
+                            <td class="py-2 px-2 font-mono themed-text-muted">${escapeHtml(e.created_at)}</td>
                         </tr>`;
                 });
 
