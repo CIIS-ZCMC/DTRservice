@@ -210,7 +210,8 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             return $map;
         }
 
-        $leaveApps = LeaveApplication::where('employee_profile_id', $employeeProfileId)
+        $leaveApps = LeaveApplication::with('leaveType')
+            ->where('employee_profile_id', $employeeProfileId)
             ->where('status', 'received')
             ->whereDate('date_from', '<=', $dateTo)
             ->whereDate('date_to', '>=', $dateFrom)
@@ -249,7 +250,10 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         foreach ($period as $dt) {
             $date = $dt->format('Y-m-d');
             $map[$date] = [
-                'has_leave' => $leaveApps->filter(fn($a) => $date >= substr($a->date_from, 0, 10) && $date <= substr($a->date_to, 0, 10))->values()->toArray(),
+                'has_leave' => $leaveApps->filter(fn($a) => $date >= substr($a->date_from, 0, 10) && $date <= substr($a->date_to, 0, 10))->values()->map(fn($a) => array_merge($a->toArray(), [
+                    'leavetype' => $a->leaveType?->name ?? '',
+                    'reason' => $a->reason ?? '',
+                ]))->toArray(),
                 'has_ob' => $obApps->filter(fn($a) => $date >= substr($a->date_from, 0, 10) && $date <= substr($a->date_to, 0, 10))->values()->toArray(),
                 'has_ot' => $otApps->filter(fn($a) => $date >= substr($a->date_from, 0, 10) && $date <= substr($a->date_to, 0, 10))->values()->toArray(),
                 'has_cto' => $ctoApps->filter(fn($a) => $a->date === $date)->values()->toArray(),
@@ -307,11 +311,16 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             return $empty;
         }
 
-        $leaveApps = LeaveApplication::where('employee_profile_id', $employeeProfileId)
+        $leaveApps = LeaveApplication::with('leaveType')
+            ->where('employee_profile_id', $employeeProfileId)
             ->where('status', 'approved')
             ->whereDate('date_from', '<=', $date)
             ->whereDate('date_to', '>=', $date)
             ->get()
+            ->map(fn($a) => array_merge($a->toArray(), [
+                'leavetype' => $a->leaveType?->name ?? '',
+                'reason' => $a->reason ?? '',
+            ]))
             ->toArray();
 
         $obApps = OfficialBusinessApplication::where('employee_profile_id', $employeeProfileId)
@@ -781,11 +790,14 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                     $timeSlots['second_out'] = $this->formatTime($ta['second_out']);
                 }
             } elseif (!empty($applications['has_leave'])) {
+                $leave = $applications['has_leave'][0];
+                $leaveType = $leave['leavetype'] ?? '';
+                $leaveReason = $leave['reason'] ?? '';
                 $timeSlots['first_in'] = 'LV';
                 $timeSlots['first_out'] = null;
                 $timeSlots['second_in'] = null;
                 $timeSlots['second_out'] = null;
-                $remarks = 'Leave';
+                $remarks = 'Leave' . ($leaveType ? " ({$leaveType})" : '') . ($leaveReason ? " - {$leaveReason}" : '');
             } elseif (!empty($applications['has_ob'])) {
                 $timeSlots['first_in'] = 'OB';
                 $timeSlots['first_out'] = null;

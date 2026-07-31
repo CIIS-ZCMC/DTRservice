@@ -10,8 +10,15 @@ class LeaveApplication extends Model
 
     protected $fillable = [
         'employee_profile_id',
+        'leave_type_id',
+        'reason',
         'status',
         'date_from',
         'date_to',
     ];
+
+    public function leaveType()
+    {
+        return $this->belongsTo(LeaveType::class);
+    }
 }
