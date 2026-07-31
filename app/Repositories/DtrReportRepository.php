@@ -211,7 +211,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         }
 
         $leaveApps = LeaveApplication::where('employee_profile_id', $employeeProfileId)
-            ->where('status', 'approved')
+            ->where('status', 'received')
             ->whereDate('date_from', '<=', $dateTo)
             ->whereDate('date_to', '>=', $dateFrom)
             ->get();
