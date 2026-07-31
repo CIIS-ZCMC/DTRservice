@@ -211,7 +211,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         }
 
         $leaveApps = LeaveApplication::where('employee_profile_id', $employeeProfileId)
-            ->where('status', 'approved')
+            ->where('status', 'received')
             ->whereDate('date_from', '<=', $dateTo)
             ->whereDate('date_to', '>=', $dateFrom)
             ->get();
@@ -249,9 +249,9 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         foreach ($period as $dt) {
             $date = $dt->format('Y-m-d');
             $map[$date] = [
-                'has_leave' => $leaveApps->filter(fn($a) => $date >= $a->date_from && $date <= $a->date_to)->values()->toArray(),
-                'has_ob' => $obApps->filter(fn($a) => $date >= $a->date_from && $date <= $a->date_to)->values()->toArray(),
-                'has_ot' => $otApps->filter(fn($a) => $date >= $a->date_from && $date <= $a->date_to)->values()->toArray(),
+                'has_leave' => $leaveApps->filter(fn($a) => $date >= substr($a->date_from, 0, 10) && $date <= substr($a->date_to, 0, 10))->values()->toArray(),
+                'has_ob' => $obApps->filter(fn($a) => $date >= substr($a->date_from, 0, 10) && $date <= substr($a->date_to, 0, 10))->values()->toArray(),
+                'has_ot' => $otApps->filter(fn($a) => $date >= substr($a->date_from, 0, 10) && $date <= substr($a->date_to, 0, 10))->values()->toArray(),
                 'has_cto' => $ctoApps->filter(fn($a) => $a->date === $date)->values()->toArray(),
                 'has_ta' => $timeAdjustments->has($date) ? $timeAdjustments->get($date)->toArray() : null,
             ];
