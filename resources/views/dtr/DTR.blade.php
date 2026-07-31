@@ -467,7 +467,7 @@
                             @php
                                 $application = '';
                                 if ($hasLeave) {
-                                    $application = 'Leave';
+                                    $application = 'Leave (' . ($dailyLog['has_leave'][0]['leavetype'] ?? '') . ')';
                                 } elseif ($hasCto) {
                                     $application = 'Compensatory Time Off ( C T O )';
                                 } elseif ($hasOb) {
