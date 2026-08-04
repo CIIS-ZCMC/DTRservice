@@ -380,7 +380,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         if (!$hasSecondIn && !$hasSecondOut) {
             $isCrossMidnight = $timeShift->first_in !== null
                 && $timeShift->first_out !== null
-                && $timeShift->first_in === $timeShift->first_out;
+                && ($timeShift->first_in > $timeShift->first_out || $timeShift->first_in === $timeShift->first_out);
 
             return [
                 'scheduleDate' => $schedule->date,
@@ -396,7 +396,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
         $firstEntry = $timeShift->first_in ?? null;
         $lastEntry = $timeShift->second_out ?? null;
-        $isCrossMidnight = $firstEntry !== null && $lastEntry !== null && $firstEntry > $lastEntry;
+        $isCrossMidnight = $firstEntry !== null && $lastEntry !== null && ($firstEntry > $lastEntry || $firstEntry === $lastEntry);
 
         return [
             'scheduleDate' => $schedule->date,
@@ -421,7 +421,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         if (!$hasSecondIn && !$hasSecondOut) {
             $isCrossMidnight = $schedule->first_in !== null
                 && $schedule->first_out !== null
-                && $schedule->first_in === $schedule->first_out;
+                && ($schedule->first_in > $schedule->first_out || $schedule->first_in === $schedule->first_out);
 
             return [
                 'scheduleDate' => $schedule->dtr_date,
@@ -437,7 +437,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
         $firstEntry = $schedule->first_in ?? null;
         $lastEntry = $schedule->second_out ?? null;
-        $isCrossMidnight = $firstEntry !== null && $lastEntry !== null && $firstEntry > $lastEntry;
+        $isCrossMidnight = $firstEntry !== null && $lastEntry !== null && ($firstEntry > $lastEntry || $firstEntry === $lastEntry);
 
         return [
             'scheduleDate' => $schedule->dtr_date,
@@ -676,7 +676,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                             }
                         }
 
-                        $crossMidnightLogDateTime = $this->findClosestLog($deviceLogs, $targetDateTime, $prevLastEntry, $maxSearchTime, $searchThreshold);
+                        $crossMidnightLogDateTime = $this->findClosestLog($deviceLogs, $targetDateTime, '00:00:00', $maxSearchTime, $searchThreshold);
 
                         if ($crossMidnightLogDateTime) {
                             $logTime = substr($crossMidnightLogDateTime, 11, 8);
@@ -727,7 +727,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
             // If no schedule but has device logs, create regulated entries using 12 PM split
             $regulatedEntries = null;
-            if (!$scheduleData && !empty($deviceLogs)) {
+            if (!$scheduleData && !empty($logsForMatching)) {
                 $amLogs = [];
                 $pmLogs = [];
                 foreach ($deviceLogs as $log) {
@@ -771,6 +771,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             $isWeekend = $dayName === 'Saturday' || $dayName === 'Sunday';
             $isFuture = $date > date('Y-m-d');
             $hasEntries = $timeSlots['first_in'] !== null || $timeSlots['first_out'] !== null || $timeSlots['second_in'] !== null || $timeSlots['second_out'] !== null;
+            $hasOwnEntries = !empty($logsForMatching);
             $hasScheduleData = $scheduleData !== null;
             $remarks = null;
 
@@ -832,12 +833,12 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                         $timeSlots['second_out'] = null;
                         $remarks = $holiday['description'];
                     }
-                } elseif (!$hasScheduleData && $hasEntries) {
+                } elseif (!$hasScheduleData && $hasOwnEntries) {
                     $timeSlots['first_in'] = null;
                     $remarks = 'no schedule';
-                } elseif (!$hasScheduleData && !$hasEntries && $isWeekend) {
+                } elseif (!$hasScheduleData && !$hasOwnEntries && $isWeekend) {
                     $timeSlots['first_in'] = 'DAY OFF';
-                } elseif (!$hasScheduleData && !$hasEntries && !$isWeekend && !$isFuture) {
+                } elseif (!$hasScheduleData && !$hasOwnEntries && !$isWeekend && !$isFuture) {
                     $timeSlots['first_in'] = 'DAY OFF';
                 } elseif ($isFuture && $isWeekend) {
                     $timeSlots['first_in'] = 'DAY OFF';
