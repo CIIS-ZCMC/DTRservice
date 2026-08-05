@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class AttendanceInformation extends Model
 {
     protected $table = "attendance__information";
-      protected $fillable = [
+    protected $fillable = [
         'biometric_id',
         'name',
         'area',
@@ -18,4 +18,9 @@ class AttendanceInformation extends Model
         'attendances_id',
         'email'
     ];
+
+    public function attendance()
+    {
+        return $this->belongsTo(Attendance::class, 'attendances_id');
+    }
 }

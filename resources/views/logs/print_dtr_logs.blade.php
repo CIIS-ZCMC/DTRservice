@@ -199,12 +199,21 @@
         </table>
 
         <div class="title-block">
-            <span class="main-title">DTR Logs</span><br>
+            <span class="main-title">
+                DTR Logs
+                @if(!empty($isViaAttendanceLogs))
+                    <span style="font-size: 10px; color: #047857; background-color: #D1FAE5; border: 1px solid #10B981; padding: 2px 6px; border-radius: 4px; margin-left: 6px; vertical-align: middle; display: inline-block;">Via Attendance LOGs</span>
+                @endif
+            </span><br>
             <span class="sub-title">
-                Device Daily Time Records<br>
+                @if(!empty($isViaAttendanceLogs))
+                    Attendance Records (Via Attendance LOGs)<br>
+                @else
+                    Device Daily Time Records<br>
+                @endif
                 User Management Information System
             </span><br>
-            <span class="doc-date">{{ date('F j, Y', strtotime($date)) }}</span>
+            <span class="doc-date">{{ strtotime($date) !== false ? date('F j, Y', strtotime($date)) : $date }}</span>
         </div>
 
         <table id="infoTable">
@@ -231,7 +240,7 @@
 
         @if ($noData || $logs->isEmpty())
             <div class="no-data">
-                <p>No device log entries found for {{ date('F j, Y', strtotime($date)) }}.</p>
+                <p>No log entries found for {{ strtotime($date) !== false ? date('F j, Y', strtotime($date)) : $date }}.</p>
             </div>
         @else
             <table id="tabledate">
@@ -243,7 +252,16 @@
                     </tr>
                 </thead>
                 <tbody>
+                    @php $currentGroupDate = null; @endphp
                     @foreach ($logs as $item)
+                        @if(!empty($isMultipleDates) && $item->dtr_date !== $currentGroupDate)
+                            @php $currentGroupDate = $item->dtr_date; @endphp
+                            <tr style="background-color: #e5e7eb;">
+                                <td colspan="3" style="text-align: left; font-weight: bold; font-size: 10px; padding: 5px 8px; color: #1f2937;">
+                                    {{ date('F j, Y (l)', strtotime($item->dtr_date)) }}
+                                </td>
+                            </tr>
+                        @endif
                         <tr>
                             <td style="font-weight:bold;">{{ $item->date_time ? date('h:i a', strtotime($item->date_time)) : '' }}</td>
                             <td style="font-weight:bold;">{{ $item->created_at ? date('Y-m-d h:i a', strtotime($item->created_at)) : '' }}</td>
@@ -255,8 +273,13 @@
         @endif
 
         <div class="certification">
-            <p>I CERTIFY that the above records are true and correct as taken from the</p>
-            <p>biometric device logs of the Zamboanga City Medical Center.</p>
+            @if(!empty($isViaAttendanceLogs))
+                <p>I CERTIFY that the above records are true and correct as taken from the</p>
+                <p>Attendance Logs (Via Attendance LOGs) of the Zamboanga City Medical Center.</p>
+            @else
+                <p>I CERTIFY that the above records are true and correct as taken from the</p>
+                <p>biometric device logs of the Zamboanga City Medical Center.</p>
+            @endif
         </div>
 
         <div class="signature">

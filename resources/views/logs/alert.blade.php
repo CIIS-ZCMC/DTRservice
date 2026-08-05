@@ -162,8 +162,8 @@
                     <div class="flex items-center gap-2 themed-card themed-border rounded-lg px-3 py-2">
                         <label class="text-xs themed-text-secondary font-medium">Source:</label>
                         <select id="dataSource" class="themed-input rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            <option value="file" selected>File Record</option>
-                            <option value="db">Device Logs</option>
+                            <option value="db" selected>Device Logs</option>
+                            <option value="file">File Record</option>
                         </select>
                     </div>
                     <button id="themeToggle" class="themed-input rounded-lg p-2 text-sm transition-colors" title="Toggle theme">
@@ -253,7 +253,7 @@
                                 </div>
                             </div>
                             <button id="printBtn" onclick="openPrintModal()" class="hidden bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors">
-                                <i class="fas fa-print"></i> Print
+                                <i class="fas fa-print"></i> Print Device Logs
                             </button>
                         </div>
                     </div>
@@ -294,7 +294,7 @@
         let scanData = null;
         let currentMonth = new Date();
         let selectedDate = null;
-        let dataSource = 'file';
+        let dataSource = 'db';
         let dbDetailEntries = [];
 
         function escapeHtml(text) {
@@ -381,13 +381,23 @@
             renderDetails(dateStr);
         }
 
+        function updatePrintBtnVisibility() {
+            const printBtn = document.getElementById('printBtn');
+            if (dataSource === 'db') {
+                printBtn.classList.remove('hidden');
+            } else {
+                printBtn.classList.add('hidden');
+            }
+        }
+
         function renderDetails(dateStr) {
             const detailContent = document.getElementById('detailContent');
             const detailStatus = document.getElementById('detailStatus');
 
+            updatePrintBtnVisibility();
+
             if (!scanData) {
                 detailContent.innerHTML = '<div class="themed-text-muted text-center py-8"><p>Scan first</p></div>';
-                document.getElementById('printBtn').classList.add('hidden');
                 return;
             }
 
@@ -400,17 +410,14 @@
                         <i class="fas fa-calendar-times text-3xl mb-3"></i>
                         <p>No log entries found for <span class="text-orange-400 font-medium">${formatDate(dateStr)}</span></p>
                     </div>`;
-                document.getElementById('printBtn').classList.add('hidden');
                 return;
             }
 
             if (dataSource === 'db') {
                 detailStatus.textContent = `${formatDate(dateStr)} — Loading...`;
                 detailContent.innerHTML = `<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-2xl text-blue-500 mb-2"></i><p class="themed-text-secondary text-sm">Loading entries...</p></div>`;
-                document.getElementById('printBtn').classList.remove('hidden');
                 fetchDBEntries(dateStr);
             } else {
-                document.getElementById('printBtn').classList.add('hidden');
                 const entries = scanData.dates[dateStr] || [];
                 renderDetailsFile(dateStr, entries);
             }
@@ -619,6 +626,7 @@
                 scanData = await response.json();
 
                 renderCalendar();
+                updatePrintBtnVisibility();
 
                 if (dataSource === 'db') {
                     fileListSection.style.display = 'none';
@@ -652,8 +660,81 @@
 
         // --- File Modal ---
         let modalEntries = [];
+        let selectedModalEntries = new Map();
+        let isFromFileRecord = false;
+
+        function getEntryKey(e) {
+            return `${e.biometric_id}|${e.dtr_date}|${e.dtr_time}|${e.dtr_type}`;
+        }
+
+        function toggleEntrySelection(key) {
+            const entry = modalEntries.find(e => getEntryKey(e) === key);
+            if (!entry) return;
+
+            if (selectedModalEntries.has(key)) {
+                selectedModalEntries.delete(key);
+            } else {
+                selectedModalEntries.set(key, entry);
+            }
+            updateSelectedCount();
+            renderModalEntries();
+        }
+
+        function toggleSelectAllModalEntries(headerCb) {
+            const isChecked = headerCb.checked;
+            const filtered = getFilteredModalEntries();
+
+            filtered.forEach(e => {
+                const key = getEntryKey(e);
+                if (isChecked) {
+                    selectedModalEntries.set(key, e);
+                } else {
+                    selectedModalEntries.delete(key);
+                }
+            });
+
+            renderModalEntries();
+        }
+
+        function updateSelectedCount() {
+            const btn = document.getElementById('btnGenerateDeviceLogs');
+            const countSpan = document.getElementById('selectedCount');
+            const count = selectedModalEntries.size;
+
+            if (countSpan) countSpan.textContent = count;
+            if (btn) btn.disabled = (count === 0);
+
+            const selectAllCb = document.getElementById('selectAllModalEntries');
+            if (selectAllCb) {
+                const filtered = getFilteredModalEntries();
+                if (filtered.length > 0) {
+                    selectAllCb.checked = filtered.every(e => selectedModalEntries.has(getEntryKey(e)));
+                } else {
+                    selectAllCb.checked = false;
+                }
+            }
+        }
+
+        function getFilteredModalEntries() {
+            const fBio = (document.getElementById('filterBio')?.value || '').toLowerCase().trim();
+            const fName = (document.getElementById('filterName')?.value || '').toLowerCase().trim();
+            const fTime = (document.getElementById('filterTime')?.value || '').toLowerCase().trim();
+            const fDevice = (document.getElementById('filterDevice')?.value || '').toLowerCase().trim();
+
+            return modalEntries.filter(e => {
+                if (fBio && !e.biometric_id.toLowerCase().includes(fBio)) return false;
+                if (fName && !e.name.toLowerCase().includes(fName)) return false;
+                if (fTime && !e.dtr_time.toLowerCase().includes(fTime)) return false;
+                if (fDevice && !e.device_name.toLowerCase().includes(fDevice)) return false;
+                return true;
+            });
+        }
 
         async function openDBModal(dtrDate) {
+            isFromFileRecord = false;
+            selectedModalEntries.clear();
+            document.getElementById('btnGenerateDeviceLogs')?.classList.add('hidden');
+
             const modal = document.getElementById('fileModal');
             const modalTitle = document.getElementById('fileModalTitle');
             const modalMeta = document.getElementById('fileModalMeta');
@@ -699,6 +780,10 @@
         }
 
         async function openFileModal(filename, dtrDate, isLate, lateDays) {
+            isFromFileRecord = true;
+            selectedModalEntries.clear();
+            document.getElementById('btnGenerateDeviceLogs')?.classList.remove('hidden');
+
             const modal = document.getElementById('fileModal');
             const modalTitle = document.getElementById('fileModalTitle');
             const modalMeta = document.getElementById('fileModalMeta');
@@ -750,30 +835,30 @@
 
         function renderModalEntries() {
             const resultsDiv = document.getElementById('modalResults');
-            const filtersDiv = document.getElementById('modalFilters');
-            const fBio = (document.getElementById('filterBio')?.value || '').toLowerCase().trim();
-            const fName = (document.getElementById('filterName')?.value || '').toLowerCase().trim();
-            const fTime = (document.getElementById('filterTime')?.value || '').toLowerCase().trim();
-            const fDevice = (document.getElementById('filterDevice')?.value || '').toLowerCase().trim();
+            const filtered = getFilteredModalEntries();
 
-            const filtered = modalEntries.filter(e => {
-                if (fBio && !e.biometric_id.toLowerCase().includes(fBio)) return false;
-                if (fName && !e.name.toLowerCase().includes(fName)) return false;
-                if (fTime && !e.dtr_time.toLowerCase().includes(fTime)) return false;
-                if (fDevice && !e.device_name.toLowerCase().includes(fDevice)) return false;
-                return true;
-            });
+            updateSelectedCount();
 
-            let html = `<div class="mb-3 text-xs themed-text-secondary">Showing ${filtered.length} of ${modalEntries.length} entries</div>`;
+            let html = `<div class="mb-3 flex items-center justify-between text-xs themed-text-secondary">
+                <span>Showing ${filtered.length} of ${modalEntries.length} entries</span>
+                ${isFromFileRecord && selectedModalEntries.size > 0 ? `<span class="text-green-500 font-medium">${selectedModalEntries.size} record(s) selected</span>` : ''}
+            </div>`;
 
             if (filtered.length === 0) {
                 html += `<div class="themed-text-muted text-center py-8"><i class="fas fa-search text-2xl mb-2"></i><p>No matching entries</p></div>`;
             } else {
+                const allFilteredChecked = isFromFileRecord && filtered.length > 0 && filtered.every(e => selectedModalEntries.has(getEntryKey(e)));
+
                 html += `
                     <div class="overflow-x-auto scrollbar-thin">
                         <table class="w-full text-xs">
                             <thead>
                                 <tr class="themed-text-muted border-b themed-border">
+                                    ${isFromFileRecord ? `
+                                    <th class="w-10 text-center py-2 px-2">
+                                        <input type="checkbox" id="selectAllModalEntries" onchange="toggleSelectAllModalEntries(this)"
+                                            ${allFilteredChecked ? 'checked' : ''} class="rounded border-slate-600 text-green-600 focus:ring-green-500 cursor-pointer">
+                                    </th>` : ''}
                                     <th class="text-left py-2 px-2 font-semibold">Biometric ID</th>
                                     <th class="text-left py-2 px-2 font-semibold">Name</th>
                                     <th class="text-left py-2 px-2 font-semibold">DTR Date</th>
@@ -785,8 +870,15 @@
                             <tbody>`;
 
                 filtered.forEach(e => {
+                    const key = getEntryKey(e);
+                    const isChecked = selectedModalEntries.has(key);
                     html += `
-                        <tr class="border-b themed-border-subtle themed-hover">
+                        <tr class="border-b themed-border-subtle themed-hover ${isChecked ? 'bg-green-950/20' : ''}">
+                            ${isFromFileRecord ? `
+                            <td class="text-center py-2 px-2">
+                                <input type="checkbox" class="entry-checkbox rounded border-slate-600 text-green-600 focus:ring-green-500 cursor-pointer"
+                                    onchange="toggleEntrySelection('${escapeHtml(key)}')" ${isChecked ? 'checked' : ''}>
+                            </td>` : ''}
                             <td class="py-2 px-2 font-mono themed-text-secondary">${escapeHtml(e.biometric_id)}</td>
                             <td class="py-2 px-2 themed-text-primary">${escapeHtml(e.name)}</td>
                             <td class="py-2 px-2 themed-text-secondary">${escapeHtml(e.dtr_date)}</td>
@@ -800,6 +892,64 @@
             }
 
             resultsDiv.innerHTML = html;
+        }
+
+        async function generateDeviceLogs() {
+            if (selectedModalEntries.size === 0) {
+                alert('Please select at least one record.');
+                return;
+            }
+
+            const btn = document.getElementById('btnGenerateDeviceLogs');
+            btn.disabled = true;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Generating...`;
+
+            const entries = Array.from(selectedModalEntries.values());
+
+            try {
+                const response = await fetch('/logs/alert/generate-device-logs', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content
+                    },
+                    body: JSON.stringify({ entries })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showNotification(data.message, 'success');
+                    selectedModalEntries.clear();
+                    renderModalEntries();
+                    if (dataSource === 'db') {
+                        scanFiles();
+                    }
+                } else {
+                    showNotification(data.error || 'Failed to generate device logs', 'error');
+                }
+            } catch (error) {
+                showNotification('Error generating device logs: ' + error.message, 'error');
+            } finally {
+                updateSelectedCount();
+                btn.innerHTML = `<i class="fas fa-database"></i> Generate Device Logs (<span id="selectedCount">${selectedModalEntries.size}</span>)`;
+            }
+        }
+
+        function showNotification(message, type = 'success') {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `fixed bottom-5 right-5 z-50 px-4 py-3 rounded-lg shadow-2xl text-xs font-medium text-white flex items-center gap-3 border transition-all duration-300 transform translate-y-0 opacity-100 ${
+                type === 'success' ? 'bg-emerald-600 border-emerald-500' : 'bg-red-600 border-red-500'
+            }`;
+            alertDiv.innerHTML = `
+                <i class="fas ${type === 'success' ? 'fa-check-circle' : 'fa-exclamation-triangle'} text-base"></i>
+                <span>${escapeHtml(message)}</span>
+            `;
+            document.body.appendChild(alertDiv);
+            setTimeout(() => {
+                alertDiv.classList.add('opacity-0', 'translate-y-2');
+                setTimeout(() => alertDiv.remove(), 300);
+            }, 4500);
         }
 
         function closeFileModal() {
@@ -821,9 +971,14 @@
                     <h3 id="fileModalTitle" class="text-sm font-semibold themed-text-primary"></h3>
                     <div id="fileModalMeta" class="mt-1 text-xs"></div>
                 </div>
-                <button id="fileModalClose" class="themed-text-secondary hover:themed-text-primary themed-hover p-2 rounded-lg transition-colors">
-                    <i class="fas fa-times text-lg"></i>
-                </button>
+                <div class="flex items-center gap-3">
+                    <button id="btnGenerateDeviceLogs" onclick="generateDeviceLogs()" disabled class="hidden bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-700 hover:to-green-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-3.5 py-2 rounded-lg flex items-center gap-2 transition-all shadow-md">
+                        <i class="fas fa-database"></i> Generate Device Logs (<span id="selectedCount">0</span>)
+                    </button>
+                    <button id="fileModalClose" class="themed-text-secondary hover:themed-text-primary themed-hover p-2 rounded-lg transition-colors">
+                        <i class="fas fa-times text-lg"></i>
+                    </button>
+                </div>
             </div>
             <div id="fileModalBody" class="flex-1 overflow-y-auto scrollbar-thin p-5">
                 <div id="modalFilters" class="mb-4 grid grid-cols-4 gap-3" style="display:none">
@@ -843,39 +998,175 @@
 
     <!-- Print Modal -->
     <div id="printModal" class="hidden fixed inset-0 z-50 modal-overlay items-center justify-center p-4">
-        <div class="themed-bg rounded-xl border themed-border shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+        <div class="themed-bg rounded-xl border themed-border shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
             <div class="panel-header px-5 py-4 border-b themed-border flex items-center justify-between">
                 <div>
                     <h3 class="text-sm font-semibold themed-text-primary"><i class="fas fa-print text-blue-400 mr-2"></i>Print Device Logs</h3>
-                    <div id="printModalMeta" class="mt-1 text-xs themed-text-secondary"></div>
+                    <div id="printModalMeta" class="mt-1 text-xs themed-text-secondary">Select employee and multiple dates to print device logs</div>
                 </div>
                 <button id="printModalClose" class="themed-text-secondary hover:themed-text-primary themed-hover p-2 rounded-lg transition-colors">
                     <i class="fas fa-times text-lg"></i>
                 </button>
             </div>
-            <div class="flex-1 overflow-y-auto scrollbar-thin p-5">
-                <div class="mb-4">
-                    <label class="text-xs themed-text-secondary font-medium block mb-1">Search Employee (required)</label>
+            <div class="flex-1 overflow-y-auto scrollbar-thin p-5 space-y-4">
+                <!-- Employee Selection -->
+                <div>
+                    <label class="text-xs themed-text-secondary font-medium block mb-1">Select Employee (required)</label>
                     <div class="relative">
-                        <input id="printEmpSearch" type="text" placeholder="Type name or biometric ID..."
+                        <input id="printEmpSearch" type="text" placeholder="Search by name or biometric ID..."
                             class="themed-input text-xs rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            oninput="searchEmployees()" autocomplete="off">
-                        <div id="printEmpDropdown" class="hidden absolute left-0 right-0 mt-1 themed-bg themed-border border rounded-lg shadow-lg max-h-60 overflow-y-auto z-10"></div>
+                            onfocus="searchEmployees()" oninput="searchEmployees()" autocomplete="off">
+                        <div id="printEmpDropdown" class="hidden absolute left-0 right-0 mt-1 themed-bg themed-border border rounded-lg shadow-lg max-h-60 overflow-y-auto z-20"></div>
                     </div>
-                    <div id="printEmpSelected" class="hidden mt-2 p-2 themed-card themed-border border rounded-lg text-xs flex items-center justify-between">
-                        <span id="printEmpLabel" class="themed-text-primary"></span>
-                        <button onclick="clearSelectedEmployee()" class="themed-text-muted hover:text-red-400 text-xs"><i class="fas fa-times"></i></button>
+                    <div id="printEmpSelected" class="hidden mt-2 p-2.5 themed-card themed-border border rounded-lg text-xs space-y-2">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <span class="w-6 h-6 rounded-full bg-blue-600/20 text-blue-400 flex items-center justify-center font-bold text-[10px]"><i class="fas fa-user"></i></span>
+                                <span id="printEmpLabel" class="themed-text-primary font-medium"></span>
+                            </div>
+                            <button onclick="clearSelectedEmployee()" class="themed-text-muted hover:text-red-400 text-xs px-1.5 py-0.5 rounded transition-colors"><i class="fas fa-times"></i> Clear</button>
+                        </div>
+                        <div class="pt-2 border-t themed-border-subtle flex items-center justify-between gap-2">
+                            <span class="text-[11px] themed-text-secondary">Fetch attendance events (e.g. Flag Ceremony) for employee</span>
+                            <button type="button" id="btnFetchAttendanceLogs" onclick="openAttendanceLogsModal()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-medium px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm shrink-0">
+                                <i class="fas fa-clipboard-list text-xs"></i> fetch from Attendance Logs
+                            </button>
+                        </div>
                     </div>
                 </div>
-                <div id="printPreview" class="themed-text-muted text-center py-8">
-                    <p>Select an employee to preview logs</p>
+
+                <!-- Date Selection Section (Multiple Dates) -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-xs themed-text-secondary font-medium block">Select Dates (multiple dates)</label>
+                        <div class="flex items-center gap-2">
+                            <button type="button" onclick="useCalendarDate()" class="text-[11px] text-blue-400 hover:underline"><i class="fas fa-calendar-day mr-1"></i>Use Calendar Date</button>
+                            <span class="themed-text-muted text-[11px]">•</span>
+                            <button type="button" onclick="clearAllPrintDates()" class="text-[11px] text-red-400 hover:underline">Clear Dates</button>
+                        </div>
+                    </div>
+
+                    <!-- Range & Custom Date Add -->
+                    <div class="grid grid-cols-12 gap-3 mb-2">
+                        <div class="col-span-5">
+                            <label class="text-[10px] themed-text-muted block mb-1">From Date</label>
+                            <input id="printStartDate" type="date" class="themed-input text-xs rounded-lg px-2.5 py-1.5 w-full focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div class="col-span-5">
+                            <label class="text-[10px] themed-text-muted block mb-1">To Date</label>
+                            <input id="printEndDate" type="date" class="themed-input text-xs rounded-lg px-2.5 py-1.5 w-full focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div class="col-span-2 flex items-end">
+                            <button type="button" onclick="addPrintDates()" class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-1.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-1" title="Add Selected Date(s)">
+                                <i class="fas fa-plus"></i> Add Date
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Selected Date Chips -->
+                    <div id="printDateChips" class="flex flex-wrap gap-1.5 min-h-[32px] p-2 themed-card themed-border border rounded-lg text-xs">
+                        <span class="themed-text-muted text-xs italic">No dates selected</span>
+                    </div>
+                </div>
+
+                <!-- Preview Area -->
+                <div>
+                    <label class="text-xs themed-text-secondary font-medium block mb-1">Log Preview</label>
+                    <div id="printPreview" class="themed-card themed-border border rounded-lg p-4 themed-text-muted text-center">
+                        <p>Select an employee and date(s) to preview device logs</p>
+                    </div>
                 </div>
             </div>
-            <div class="px-5 py-4 border-t themed-border flex justify-end gap-3">
-                <button onclick="closePrintModal()" class="themed-input text-xs font-medium px-4 py-2 rounded-lg transition-colors">Cancel</button>
-                <button id="printSubmitBtn" onclick="doPrint()" disabled class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
-                    <i class="fas fa-print"></i> Print
+            <div class="px-5 py-4 border-t themed-border flex justify-between items-center">
+                <span id="printSummaryText" class="text-xs themed-text-secondary"></span>
+                <div class="flex gap-3">
+                    <button onclick="closePrintModal()" class="themed-input text-xs font-medium px-4 py-2 rounded-lg transition-colors">Cancel</button>
+                    <button id="printSubmitBtn" onclick="doPrint()" disabled class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
+                        <i class="fas fa-print"></i> Print Device Logs
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Attendance Logs Modal -->
+    <div id="attendanceLogsModal" class="hidden fixed inset-0 z-50 modal-overlay items-center justify-center p-4">
+        <div class="themed-bg rounded-xl border themed-border shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+            <div class="panel-header px-5 py-4 border-b themed-border flex items-center justify-between">
+                <div>
+                    <h3 class="text-sm font-semibold themed-text-primary flex items-center gap-2">
+                        <i class="fas fa-clipboard-check text-emerald-500"></i>
+                        Fetch Attendance Logs
+                        <span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-full font-mono">Via Attendance LOGs</span>
+                    </h3>
+                    <div id="attModalMeta" class="mt-1 text-xs themed-text-secondary">Select specific attendance logs to preview and print using device logs printer</div>
+                </div>
+                <button onclick="closeAttendanceLogsModal()" class="themed-text-secondary hover:themed-text-primary themed-hover p-2 rounded-lg transition-colors">
+                    <i class="fas fa-times text-lg"></i>
                 </button>
+            </div>
+            <div class="flex-1 overflow-y-auto scrollbar-thin p-5 space-y-3">
+                <div id="attModalEmployeeInfo" class="p-3 themed-card themed-border border rounded-lg text-xs flex justify-between items-center">
+                    <div class="flex items-center gap-2">
+                        <i class="fas fa-user-check text-emerald-400 text-sm"></i>
+                        <span id="attModalEmpName" class="font-semibold themed-text-primary"></span>
+                    </div>
+                    <span id="attModalEmpBio" class="font-mono text-blue-400 font-medium"></span>
+                </div>
+
+                <!-- Filter Controls -->
+                <div class="grid grid-cols-12 gap-2.5 p-3 themed-card themed-border border rounded-lg">
+                    <div class="col-span-5">
+                        <label class="text-[10px] themed-text-muted block mb-1">Search Event / Title / Area</label>
+                        <div class="relative">
+                            <input id="attFilterSearch" type="text" placeholder="Search Flag Ceremony, area..."
+                                oninput="filterAttendanceLogs()"
+                                class="themed-input text-xs rounded-lg px-2.5 py-1.5 w-full focus:outline-none focus:ring-2 focus:ring-emerald-500 pl-7">
+                            <i class="fas fa-search absolute left-2.5 top-2 text-xs themed-text-muted"></i>
+                        </div>
+                    </div>
+                    <div class="col-span-3">
+                        <label class="text-[10px] themed-text-muted block mb-1">From Date</label>
+                        <input id="attFilterStartDate" type="date" onchange="filterAttendanceLogs()"
+                            class="themed-input text-xs rounded-lg px-2.5 py-1.5 w-full focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <div class="col-span-3">
+                        <label class="text-[10px] themed-text-muted block mb-1">To Date</label>
+                        <input id="attFilterEndDate" type="date" onchange="filterAttendanceLogs()"
+                            class="themed-input text-xs rounded-lg px-2.5 py-1.5 w-full focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    </div>
+                    <div class="col-span-1 flex items-end">
+                        <button type="button" onclick="resetAttendanceFilters()" title="Reset Filters"
+                            class="w-full themed-input hover:text-red-400 text-xs py-1.5 rounded-lg font-medium transition-colors flex items-center justify-center">
+                            <i class="fas fa-undo"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-between pt-1">
+                    <span class="text-xs font-medium themed-text-secondary">Specific Attendance Logs (Flag Ceremony / Events)</span>
+                    <div class="flex items-center gap-2">
+                        <button type="button" onclick="selectAllAttendanceLogs(true)" class="text-[11px] text-blue-400 hover:underline">Select All</button>
+                        <span class="themed-text-muted text-[11px]">•</span>
+                        <button type="button" onclick="selectAllAttendanceLogs(false)" class="text-[11px] text-red-400 hover:underline">Deselect All</button>
+                    </div>
+                </div>
+
+                <div id="attModalResults" class="min-h-[160px]">
+                    <!-- Table rendered dynamically -->
+                </div>
+            </div>
+            <div class="px-5 py-4 border-t themed-border flex justify-between items-center">
+                <span id="attSummaryText" class="text-xs themed-text-secondary"></span>
+                <div class="flex gap-2">
+                    <button onclick="closeAttendanceLogsModal()" class="themed-input text-xs font-medium px-3.5 py-2 rounded-lg transition-colors">Cancel</button>
+                    <button id="btnApplyAttLogs" onclick="applyAttendanceLogsToPreview()" disabled class="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-4 py-2 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm">
+                        <i class="fas fa-eye"></i> Apply to Print Preview
+                    </button>
+                    <button id="btnPrintAttLogsDirect" onclick="printAttendanceLogsDirect()" disabled class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-4 py-2 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm">
+                        <i class="fas fa-print"></i> Print (Via Attendance LOGs)
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -907,20 +1198,38 @@
             if (e.key === 'Escape') { closeFileModal(); closePrintModal(); }
         });
 
-        // --- Print Modal ---
+        // --- Print Modal Logic ---
         let selectedEmployee = null;
+        let selectedPrintDates = new Set(); // Stores YYYY-MM-DD strings
+        let isViaAttendanceMode = false;
+        let selectedAttendanceInfoIds = new Set();
+        let cachedAttendanceLogs = [];
 
         function openPrintModal() {
-            if (!selectedDate) return;
             const modal = document.getElementById('printModal');
-            document.getElementById('printModalMeta').textContent = `Date: ${selectedDate} — ${dbDetailEntries.length} entries available`;
             document.getElementById('printEmpSearch').value = '';
             document.getElementById('printEmpDropdown').classList.add('hidden');
             document.getElementById('printEmpSelected').classList.add('hidden');
             selectedEmployee = null;
+            isViaAttendanceMode = false;
+            selectedAttendanceInfoIds.clear();
+
+            selectedPrintDates.clear();
+
+            if (selectedDate) {
+                document.getElementById('printStartDate').value = selectedDate;
+                document.getElementById('printEndDate').value = selectedDate;
+            } else {
+                document.getElementById('printStartDate').value = '';
+                document.getElementById('printEndDate').value = '';
+            }
+
+            renderDateChips();
             updatePrintPreview();
             modal.classList.remove('hidden');
             modal.classList.add('flex');
+
+            searchEmployees();
         }
 
         function closePrintModal() {
@@ -929,132 +1238,515 @@
             modal.classList.remove('flex');
         }
 
-        function searchEmployees() {
-            const q = document.getElementById('printEmpSearch').value.trim().toLowerCase();
+        async function searchEmployees() {
+            const q = document.getElementById('printEmpSearch').value.trim();
             const dropdown = document.getElementById('printEmpDropdown');
-
-            if (q.length < 1) {
-                dropdown.classList.add('hidden');
-                return;
-            }
-
-            const seen = new Set();
-            const unique = [];
-            for (const e of dbDetailEntries) {
-                const key = e.biometric_id;
-                if (!seen.has(key)) {
-                    seen.add(key);
-                    unique.push({ biometric_id: e.biometric_id, name: e.name });
-                }
-            }
-
-            const filtered = unique.filter(emp =>
-                emp.biometric_id.toLowerCase().includes(q) ||
-                emp.name.toLowerCase().includes(q)
-            );
-
-            if (filtered.length === 0) {
-                dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted">No employees found</div>';
-            } else {
-                dropdown.innerHTML = filtered.map(emp => `
-                    <div onclick="selectEmployee('${emp.biometric_id}', '${escapeHtml(emp.name)}')"
-                        class="px-3 py-2 text-xs themed-text-primary themed-hover cursor-pointer border-b themed-border-subtle">
-                        <span class="font-mono themed-text-secondary">${emp.biometric_id}</span>
-                        &mdash; ${escapeHtml(emp.name)}
-                    </div>`).join('');
-            }
+            dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted flex items-center gap-2"><i class="fas fa-spinner fa-spin text-blue-500"></i> Searching employees...</div>';
             dropdown.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/logs/alert/employees?q=' + encodeURIComponent(q));
+                const employees = await response.json();
+
+                if (!employees || employees.length === 0) {
+                    dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted">No employees found</div>';
+                } else {
+                    dropdown.innerHTML = employees.map(emp => `
+                        <div onclick="selectEmployee('${escapeHtml(emp.biometric_id)}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.designation || '')}')"
+                            class="px-3 py-2 text-xs themed-text-primary themed-hover cursor-pointer border-b themed-border-subtle flex items-center justify-between">
+                            <div>
+                                <span class="font-mono text-blue-400 font-semibold mr-2">${escapeHtml(emp.biometric_id)}</span>
+                                <span class="font-medium">${escapeHtml(emp.name)}</span>
+                            </div>
+                            ${emp.designation ? `<span class="text-[10px] themed-text-muted">${escapeHtml(emp.designation)}</span>` : ''}
+                        </div>`).join('');
+                }
+            } catch (error) {
+                dropdown.innerHTML = `<div class="px-3 py-2 text-xs text-red-400">Error loading employees: ${escapeHtml(error.message)}</div>`;
+            }
         }
 
-        function selectEmployee(bioId, name) {
-            selectedEmployee = { bioId, name };
+        function selectEmployee(bioId, name, designation) {
+            selectedEmployee = { bioId, name, designation };
+            isViaAttendanceMode = false;
+            selectedAttendanceInfoIds.clear();
             document.getElementById('printEmpSearch').value = '';
             document.getElementById('printEmpDropdown').classList.add('hidden');
-            document.getElementById('printEmpLabel').textContent = `${bioId} — ${name}`;
+            document.getElementById('printEmpLabel').textContent = `${bioId} — ${name}${designation ? ` (${designation})` : ''}`;
             document.getElementById('printEmpSelected').classList.remove('hidden');
             updatePrintPreview();
         }
 
         function clearSelectedEmployee() {
             selectedEmployee = null;
+            isViaAttendanceMode = false;
+            selectedAttendanceInfoIds.clear();
             document.getElementById('printEmpSelected').classList.add('hidden');
             updatePrintPreview();
         }
 
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('#printEmpSearch') && !e.target.closest('#printEmpDropdown')) {
-                document.getElementById('printEmpDropdown')?.classList.add('hidden');
-            }
-        });
+        function addPrintDates() {
+            const start = document.getElementById('printStartDate').value;
+            const end = document.getElementById('printEndDate').value;
 
-        function updatePrintPreview() {
+            if (start && end) {
+                let current = new Date(start);
+                const last = new Date(end);
+
+                if (current > last) {
+                    const temp = current;
+                    current = last;
+                    last = temp;
+                }
+
+                while (current <= last) {
+                    const dateStr = current.toISOString().split('T')[0];
+                    selectedPrintDates.add(dateStr);
+                    current.setDate(current.getDate() + 1);
+                }
+            } else if (start) {
+                selectedPrintDates.add(start);
+            } else if (end) {
+                selectedPrintDates.add(end);
+            }
+
+            renderDateChips();
+            updatePrintPreview();
+        }
+
+        function useCalendarDate() {
+            if (selectedDate) {
+                selectedPrintDates.add(selectedDate);
+                document.getElementById('printStartDate').value = selectedDate;
+                document.getElementById('printEndDate').value = selectedDate;
+                renderDateChips();
+                updatePrintPreview();
+            }
+        }
+
+        function removePrintDate(dateStr) {
+            selectedPrintDates.delete(dateStr);
+            renderDateChips();
+            updatePrintPreview();
+        }
+
+        function clearAllPrintDates() {
+            selectedPrintDates.clear();
+            document.getElementById('printStartDate').value = '';
+            document.getElementById('printEndDate').value = '';
+            renderDateChips();
+            updatePrintPreview();
+        }
+
+        function renderDateChips() {
+            const chipsDiv = document.getElementById('printDateChips');
+            const datesArr = Array.from(selectedPrintDates).sort();
+
+            if (datesArr.length === 0) {
+                chipsDiv.innerHTML = '<span class="themed-text-muted text-xs italic">No dates selected</span>';
+                return;
+            }
+
+            chipsDiv.innerHTML = datesArr.map(d => `
+                <span class="inline-flex items-center gap-1 bg-blue-600/20 border border-blue-500/30 text-blue-400 text-xs px-2 py-0.5 rounded-full font-mono">
+                    ${d}
+                    <button type="button" onclick="removePrintDate('${d}')" class="hover:text-red-400 ml-0.5"><i class="fas fa-times text-[10px]"></i></button>
+                </span>`).join('');
+        }
+
+        async function updatePrintPreview() {
             const previewDiv = document.getElementById('printPreview');
             const printBtn = document.getElementById('printSubmitBtn');
+            const summaryText = document.getElementById('printSummaryText');
 
             if (!selectedEmployee) {
                 previewDiv.innerHTML = '<p class="themed-text-muted">Select an employee to preview logs</p>';
                 printBtn.disabled = true;
+                summaryText.textContent = '';
                 return;
             }
 
-            const bio = selectedEmployee.bioId.toLowerCase();
-            const name = selectedEmployee.name.toLowerCase();
-            const filtered = dbDetailEntries.filter(e =>
-                e.biometric_id.toLowerCase().includes(bio) &&
-                e.name.toLowerCase().includes(name)
-            );
-
-            printBtn.disabled = filtered.length === 0;
-
-            if (filtered.length === 0) {
-                previewDiv.innerHTML = '<p class="themed-text-muted">No matching log entries for this employee on this date</p>';
+            const datesArr = Array.from(selectedPrintDates).sort();
+            if (datesArr.length === 0 && !isViaAttendanceMode) {
+                previewDiv.innerHTML = '<p class="themed-text-muted">Select one or more dates or fetch from Attendance Logs to preview</p>';
+                printBtn.disabled = true;
+                summaryText.textContent = '';
                 return;
             }
 
-            let html = `<div class="mb-3 text-xs themed-text-secondary">Showing ${filtered.length} of ${dbDetailEntries.length} entries</div>
-                <div class="overflow-x-auto scrollbar-thin">
+            previewDiv.innerHTML = '<div class="text-center py-6"><i class="fas fa-spinner fa-spin text-xl text-blue-500 mb-2"></i><p class="themed-text-secondary text-xs">Fetching preview...</p></div>';
+
+            try {
+                const response = await fetch('/logs/alert/preview-print', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content
+                    },
+                    body: JSON.stringify({
+                        biometric_id: selectedEmployee.bioId,
+                        name: selectedEmployee.name,
+                        dates: datesArr,
+                        is_via_attendance_logs: isViaAttendanceMode ? 1 : 0,
+                        attendance_info_ids: isViaAttendanceMode ? Array.from(selectedAttendanceInfoIds) : []
+                    })
+                });
+                const data = await response.json();
+                const entries = data.entries || [];
+
+                printBtn.disabled = entries.length === 0;
+
+                if (entries.length === 0) {
+                    previewDiv.innerHTML = `<p class="themed-text-muted">No log entries found for ${escapeHtml(selectedEmployee.name)}</p>`;
+                    summaryText.textContent = `0 log entries found`;
+                    return;
+                }
+
+                summaryText.innerHTML = `Found ${entries.length} log entry(ies)` + (isViaAttendanceMode ? ` <span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] px-1.5 py-0.5 rounded font-mono ml-1">Via Attendance LOGs</span>` : '');
+
+                let html = `<div class="overflow-x-auto scrollbar-thin max-h-56">
                     <table class="w-full text-xs">
-                        <thead>
-                            <tr class="themed-text-muted border-b themed-border">
+                        <thead class="sticky top-0 themed-bg border-b themed-border">
+                            <tr class="themed-text-muted">
+                                <th class="text-left py-2 px-2 font-semibold">Date</th>
                                 <th class="text-left py-2 px-2 font-semibold">Biometric ID</th>
                                 <th class="text-left py-2 px-2 font-semibold">Name</th>
                                 <th class="text-left py-2 px-2 font-semibold">Time</th>
-                                <th class="text-left py-2 px-2 font-semibold">Device</th>
+                                <th class="text-left py-2 px-2 font-semibold">Source / Device</th>
                             </tr>
                         </thead>
                         <tbody>`;
 
-            filtered.slice(0, 20).forEach(e => {
-                html += `<tr class="border-b themed-border-subtle">
-                    <td class="py-2 px-2 font-mono themed-text-secondary">${escapeHtml(e.biometric_id)}</td>
-                    <td class="py-2 px-2 themed-text-primary">${escapeHtml(e.name)}</td>
-                    <td class="py-2 px-2 font-mono text-blue-500">${escapeHtml(e.dtr_time)}</td>
-                    <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.device_name)}</td>
-                </tr>`;
-            });
+                entries.forEach(e => {
+                    html += `<tr class="border-b themed-border-subtle hover:bg-blue-500/5">
+                        <td class="py-1.5 px-2 font-mono text-blue-400 font-medium">${escapeHtml(e.dtr_date)}</td>
+                        <td class="py-1.5 px-2 font-mono themed-text-secondary">${escapeHtml(e.biometric_id)}</td>
+                        <td class="py-1.5 px-2 themed-text-primary">${escapeHtml(e.name)}</td>
+                        <td class="py-1.5 px-2 font-mono text-emerald-500 font-semibold">${escapeHtml(e.dtr_time)}</td>
+                        <td class="py-1.5 px-2 themed-text-muted font-medium">
+                            ${isViaAttendanceMode ? `<span class="text-emerald-400 font-semibold"><i class="fas fa-clipboard-check mr-1"></i>${escapeHtml(e.device_name)}</span>` : escapeHtml(e.device_name)}
+                        </td>
+                    </tr>`;
+                });
 
-            if (filtered.length > 20) {
-                html += `<tr><td colspan="4" class="py-2 text-center themed-text-muted">... and ${filtered.length - 20} more entries</td></tr>`;
+                html += '</tbody></table></div>';
+                previewDiv.innerHTML = html;
+            } catch (error) {
+                previewDiv.innerHTML = `<p class="text-red-400 text-xs">Failed to fetch preview: ${escapeHtml(error.message)}</p>`;
+                printBtn.disabled = true;
+                summaryText.textContent = '';
             }
-
-            html += '</tbody></table></div>';
-            previewDiv.innerHTML = html;
         }
 
         function doPrint() {
             if (!selectedEmployee) return;
+            const datesArr = Array.from(selectedPrintDates).sort();
+            if (datesArr.length === 0 && !isViaAttendanceMode) return;
 
-            const params = new URLSearchParams();
-            params.set('date', selectedDate);
-            params.set('name', selectedEmployee.name);
-            params.set('biometric_id', selectedEmployee.bioId);
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/logs/alert/print';
+            form.target = '_blank';
 
-            window.open('/logs/alert/print?' + params.toString(), '_blank');
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+            if (csrfToken) {
+                const csrfInput = document.createElement('input');
+                csrfInput.type = 'hidden';
+                csrfInput.name = '_token';
+                csrfInput.value = csrfToken;
+                form.appendChild(csrfInput);
+            }
+
+            const bioInput = document.createElement('input');
+            bioInput.type = 'hidden';
+            bioInput.name = 'biometric_id';
+            bioInput.value = selectedEmployee.bioId;
+            form.appendChild(bioInput);
+
+            const nameInput = document.createElement('input');
+            nameInput.type = 'hidden';
+            nameInput.name = 'name';
+            nameInput.value = selectedEmployee.name;
+            form.appendChild(nameInput);
+
+            if (isViaAttendanceMode) {
+                const viaInput = document.createElement('input');
+                viaInput.type = 'hidden';
+                viaInput.name = 'is_via_attendance_logs';
+                viaInput.value = '1';
+                form.appendChild(viaInput);
+
+                selectedAttendanceInfoIds.forEach(id => {
+                    const idInput = document.createElement('input');
+                    idInput.type = 'hidden';
+                    idInput.name = 'attendance_info_ids[]';
+                    idInput.value = id;
+                    form.appendChild(idInput);
+                });
+            }
+
+            datesArr.forEach(d => {
+                const dateInput = document.createElement('input');
+                dateInput.type = 'hidden';
+                dateInput.name = 'dates[]';
+                dateInput.value = d;
+                form.appendChild(dateInput);
+            });
+
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+        }
+
+        // --- Attendance Logs Modal & Mode Logic ---
+        async function openAttendanceLogsModal() {
+            if (!selectedEmployee) {
+                alert('Please select an employee first.');
+                return;
+            }
+
+            document.getElementById('attModalEmpName').textContent = selectedEmployee.name + (selectedEmployee.designation ? ` (${selectedEmployee.designation})` : '');
+            document.getElementById('attModalEmpBio').textContent = `Bio ID: ${selectedEmployee.bioId}`;
+
+            document.getElementById('attFilterSearch').value = '';
+            document.getElementById('attFilterStartDate').value = '';
+            document.getElementById('attFilterEndDate').value = '';
+
+            const resultsDiv = document.getElementById('attModalResults');
+            resultsDiv.innerHTML = '<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-xl text-emerald-500 mb-2"></i><p class="themed-text-secondary text-xs">Loading attendance logs...</p></div>';
+
+            const modal = document.getElementById('attendanceLogsModal');
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+
+            selectedAttendanceInfoIds.clear();
+            updateAttendanceModalButtons();
+
+            try {
+                const response = await fetch('/logs/alert/attendance-logs?biometric_id=' + encodeURIComponent(selectedEmployee.bioId));
+                const data = await response.json();
+                cachedAttendanceLogs = data.entries || [];
+
+                renderAttendanceLogsTable(cachedAttendanceLogs);
+            } catch (error) {
+                resultsDiv.innerHTML = `<div class="p-4 text-center text-red-400 text-xs">Failed to load attendance logs: ${escapeHtml(error.message)}</div>`;
+                document.getElementById('attSummaryText').textContent = 'Error loading logs';
+            }
+        }
+
+        function closeAttendanceLogsModal() {
+            const modal = document.getElementById('attendanceLogsModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        function filterAttendanceLogs() {
+            const search = (document.getElementById('attFilterSearch').value || '').toLowerCase().trim();
+            const startDate = document.getElementById('attFilterStartDate').value;
+            const endDate = document.getElementById('attFilterEndDate').value;
+
+            const filtered = cachedAttendanceLogs.filter(item => {
+                const title = (item.event_title || '').toLowerCase();
+                const area = (item.area || item.areacode || '').toLowerCase();
+                const date = item.open_date || item.dtr_date || '';
+
+                const matchesSearch = !search || title.includes(search) || area.includes(search);
+
+                let matchesDate = true;
+                if (startDate && endDate) {
+                    matchesDate = date >= startDate && date <= endDate;
+                } else if (startDate) {
+                    matchesDate = date >= startDate;
+                } else if (endDate) {
+                    matchesDate = date <= endDate;
+                }
+
+                return matchesSearch && matchesDate;
+            });
+
+            renderAttendanceLogsTable(filtered);
+        }
+
+        function resetAttendanceFilters() {
+            document.getElementById('attFilterSearch').value = '';
+            document.getElementById('attFilterStartDate').value = '';
+            document.getElementById('attFilterEndDate').value = '';
+            renderAttendanceLogsTable(cachedAttendanceLogs);
+        }
+
+        function renderAttendanceLogsTable(entries) {
+            const resultsDiv = document.getElementById('attModalResults');
+            const summaryText = document.getElementById('attSummaryText');
+
+            if (!entries || entries.length === 0) {
+                resultsDiv.innerHTML = `<div class="p-6 text-center themed-card themed-border border rounded-lg themed-text-muted text-xs">No attendance logs found for ${escapeHtml(selectedEmployee.name)}</div>`;
+                summaryText.textContent = '0 attendance logs found';
+                updateAttendanceModalButtons();
+                return;
+            }
+
+            summaryText.textContent = `Found ${entries.length} attendance log entry(ies)`;
+
+            let html = `<div class="overflow-x-auto scrollbar-thin max-h-60 border themed-border rounded-lg">
+                <table class="w-full text-xs">
+                    <thead class="sticky top-0 themed-bg border-b themed-border">
+                        <tr class="themed-text-muted">
+                            <th class="py-2 px-2 text-center w-8">
+                                <input type="checkbox" onchange="selectAllAttendanceLogs(this.checked)" class="rounded border-slate-600 text-emerald-600 focus:ring-emerald-500">
+                            </th>
+                            <th class="text-left py-2 px-2 font-semibold">Event / Title</th>
+                            <th class="text-left py-2 px-2 font-semibold">Open Date</th>
+                            <th class="text-left py-2 px-2 font-semibold">Tapped Entry Time</th>
+                            <th class="text-left py-2 px-2 font-semibold">Area</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            entries.forEach(item => {
+                const checked = selectedAttendanceInfoIds.has(item.id) ? 'checked' : '';
+                html += `<tr class="border-b themed-border-subtle hover:bg-emerald-500/5 transition-colors cursor-pointer" onclick="toggleAttendanceRowClick(event, ${item.id})">
+                    <td class="py-2 px-2 text-center" onclick="event.stopPropagation()">
+                        <input type="checkbox" value="${item.id}" ${checked} onchange="toggleAttendanceLogSelection(${item.id})" class="rounded border-slate-600 text-emerald-600 focus:ring-emerald-500">
+                    </td>
+                    <td class="py-2 px-2 font-medium themed-text-primary">
+                        <span class="text-emerald-500 font-semibold mr-1.5"><i class="fas fa-calendar-check"></i></span>
+                        ${escapeHtml(item.event_title)}
+                    </td>
+                    <td class="py-2 px-2 font-mono text-blue-400 font-medium">${escapeHtml(item.open_date || item.dtr_date)}</td>
+                    <td class="py-2 px-2 font-mono text-emerald-500 font-semibold">${escapeHtml(item.first_entry ? item.first_entry.split(' ')[1] || item.dtr_time : item.dtr_time)}</td>
+                    <td class="py-2 px-2 themed-text-muted">${escapeHtml(item.area || item.areacode || 'N/A')}</td>
+                </tr>`;
+            });
+
+            html += '</tbody></table></div>';
+            resultsDiv.innerHTML = html;
+            updateAttendanceModalButtons();
+        }
+
+        function toggleAttendanceRowClick(e, id) {
+            if (e.target.tagName === 'INPUT') return;
+            toggleAttendanceLogSelection(id);
+            renderAttendanceLogsTable(cachedAttendanceLogs);
+        }
+
+        function toggleAttendanceLogSelection(id) {
+            if (selectedAttendanceInfoIds.has(id)) {
+                selectedAttendanceInfoIds.delete(id);
+            } else {
+                selectedAttendanceInfoIds.add(id);
+            }
+            updateAttendanceModalButtons();
+        }
+
+        function selectAllAttendanceLogs(checked) {
+            if (checked) {
+                cachedAttendanceLogs.forEach(i => selectedAttendanceInfoIds.add(i.id));
+            } else {
+                selectedAttendanceInfoIds.clear();
+            }
+            renderAttendanceLogsTable(cachedAttendanceLogs);
+        }
+
+        function updateAttendanceModalButtons() {
+            const hasSelected = selectedAttendanceInfoIds.size > 0;
+            document.getElementById('btnApplyAttLogs').disabled = !hasSelected;
+            document.getElementById('btnPrintAttLogsDirect').disabled = !hasSelected;
+        }
+
+        function applyAttendanceLogsToPreview() {
+            if (selectedAttendanceInfoIds.size === 0) return;
+
+            isViaAttendanceMode = true;
+
+            cachedAttendanceLogs.forEach(item => {
+                if (selectedAttendanceInfoIds.has(item.id)) {
+                    const date = item.open_date || item.dtr_date;
+                    if (date) selectedPrintDates.add(date);
+                }
+            });
+
+            renderDateChips();
+            closeAttendanceLogsModal();
+            updatePrintPreview();
+        }
+
+        function printAttendanceLogsDirect() {
+            if (selectedAttendanceInfoIds.size === 0 || !selectedEmployee) return;
+
+            const datesSet = new Set();
+            cachedAttendanceLogs.forEach(item => {
+                if (selectedAttendanceInfoIds.has(item.id)) {
+                    const date = item.open_date || item.dtr_date;
+                    if (date) datesSet.add(date);
+                }
+            });
+            const datesArr = Array.from(datesSet).sort();
+
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/logs/alert/print';
+            form.target = '_blank';
+
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+            if (csrfToken) {
+                const csrfInput = document.createElement('input');
+                csrfInput.type = 'hidden';
+                csrfInput.name = '_token';
+                csrfInput.value = csrfToken;
+                form.appendChild(csrfInput);
+            }
+
+            const bioInput = document.createElement('input');
+            bioInput.type = 'hidden';
+            bioInput.name = 'biometric_id';
+            bioInput.value = selectedEmployee.bioId;
+            form.appendChild(bioInput);
+
+            const nameInput = document.createElement('input');
+            nameInput.type = 'hidden';
+            nameInput.name = 'name';
+            nameInput.value = selectedEmployee.name;
+            form.appendChild(nameInput);
+
+            const viaInput = document.createElement('input');
+            viaInput.type = 'hidden';
+            viaInput.name = 'is_via_attendance_logs';
+            viaInput.value = '1';
+            form.appendChild(viaInput);
+
+            selectedAttendanceInfoIds.forEach(id => {
+                const idInput = document.createElement('input');
+                idInput.type = 'hidden';
+                idInput.name = 'attendance_info_ids[]';
+                idInput.value = id;
+                form.appendChild(idInput);
+            });
+
+            datesArr.forEach(d => {
+                const dateInput = document.createElement('input');
+                dateInput.type = 'hidden';
+                dateInput.name = 'dates[]';
+                dateInput.value = d;
+                form.appendChild(dateInput);
+            });
+
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
         }
 
         document.getElementById('printModalClose').addEventListener('click', closePrintModal);
         document.getElementById('printModal').addEventListener('click', (e) => {
             if (e.target.id === 'printModal') closePrintModal();
+        });
+        document.getElementById('attendanceLogsModal').addEventListener('click', (e) => {
+            if (e.target.id === 'attendanceLogsModal') closeAttendanceLogsModal();
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#printEmpSearch') && !e.target.closest('#printEmpDropdown')) {
+                document.getElementById('printEmpDropdown')?.classList.add('hidden');
+            }
         });
     </script>
 </body>
