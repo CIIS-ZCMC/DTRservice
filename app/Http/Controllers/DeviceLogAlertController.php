@@ -515,15 +515,16 @@ class DeviceLogAlertController extends Controller
             $openDate = $info->attendance ? $info->attendance->open_date : null;
             $eventTitle = $info->attendance ? $info->attendance->title : 'Attendance Log';
 
-            $dtrDate = $openDate;
-            $dtrTime = '';
+            $firstEntryDate = '';
+            $firstEntryTime = '';
             if ($info->first_entry) {
                 $parts = explode(' ', $info->first_entry);
-                if (!$dtrDate) {
-                    $dtrDate = $parts[0] ?? '';
-                }
-                $dtrTime = $parts[1] ?? '';
+                $firstEntryDate = $parts[0] ?? '';
+                $firstEntryTime = $parts[1] ?? '';
             }
+
+            $dtrDate = $firstEntryDate ?: ($openDate ?? '');
+            $dtrTime = $firstEntryTime;
 
             $entries[] = [
                 'id' => $info->id,
@@ -531,6 +532,7 @@ class DeviceLogAlertController extends Controller
                 'name' => $info->name ?? '',
                 'event_title' => $eventTitle,
                 'open_date' => $openDate ?? $dtrDate,
+                'first_entry_date' => $firstEntryDate,
                 'dtr_date' => $dtrDate,
                 'dtr_time' => $dtrTime,
                 'first_entry' => $info->first_entry,

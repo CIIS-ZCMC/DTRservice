@@ -19,7 +19,9 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
 
          $middleware->preventRequestForgery(except: [
-            'iclock/*', 
+            'iclock/*',
+            'logs/alert/print',
+            'logs/alert/preview-print',
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {

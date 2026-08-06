@@ -1381,6 +1381,7 @@
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'Accept': 'application/json',
                         'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content
                     },
                     body: JSON.stringify({
@@ -1391,6 +1392,11 @@
                         attendance_info_ids: isViaAttendanceMode ? Array.from(selectedAttendanceInfoIds) : []
                     })
                 });
+
+                if (!response.ok) {
+                    throw new Error(`Server status ${response.status} (${response.statusText || 'Error'})`);
+                }
+
                 const data = await response.json();
                 const entries = data.entries || [];
 
@@ -1443,10 +1449,13 @@
             const datesArr = Array.from(selectedPrintDates).sort();
             if (datesArr.length === 0 && !isViaAttendanceMode) return;
 
+            const tabName = 'print_tab_' + Date.now();
+            const printTab = window.open('about:blank', tabName);
+
             const form = document.createElement('form');
             form.method = 'POST';
             form.action = '/logs/alert/print';
-            form.target = '_blank';
+            form.target = tabName;
 
             const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
             if (csrfToken) {
@@ -1548,7 +1557,7 @@
             const filtered = cachedAttendanceLogs.filter(item => {
                 const title = (item.event_title || '').toLowerCase();
                 const area = (item.area || item.areacode || '').toLowerCase();
-                const date = item.open_date || item.dtr_date || '';
+                const date = item.first_entry_date || (item.first_entry ? item.first_entry.split(' ')[0] : (item.dtr_date || ''));
 
                 const matchesSearch = !search || title.includes(search) || area.includes(search);
 
@@ -1595,8 +1604,7 @@
                                 <input type="checkbox" onchange="selectAllAttendanceLogs(this.checked)" class="rounded border-slate-600 text-emerald-600 focus:ring-emerald-500">
                             </th>
                             <th class="text-left py-2 px-2 font-semibold">Event / Title</th>
-                            <th class="text-left py-2 px-2 font-semibold">Open Date</th>
-                            <th class="text-left py-2 px-2 font-semibold">Tapped Entry Time</th>
+                            <th class="text-left py-2 px-2 font-semibold">Tapped Entry Time (First Entry)</th>
                             <th class="text-left py-2 px-2 font-semibold">Area</th>
                         </tr>
                     </thead>
@@ -1612,8 +1620,7 @@
                         <span class="text-emerald-500 font-semibold mr-1.5"><i class="fas fa-calendar-check"></i></span>
                         ${escapeHtml(item.event_title)}
                     </td>
-                    <td class="py-2 px-2 font-mono text-blue-400 font-medium">${escapeHtml(item.open_date || item.dtr_date)}</td>
-                    <td class="py-2 px-2 font-mono text-emerald-500 font-semibold">${escapeHtml(item.first_entry ? item.first_entry.split(' ')[1] || item.dtr_time : item.dtr_time)}</td>
+                    <td class="py-2 px-2 font-mono text-emerald-500 font-semibold">${escapeHtml(item.first_entry || (item.dtr_date + ' ' + item.dtr_time))}</td>
                     <td class="py-2 px-2 themed-text-muted">${escapeHtml(item.area || item.areacode || 'N/A')}</td>
                 </tr>`;
             });
@@ -1660,7 +1667,7 @@
 
             cachedAttendanceLogs.forEach(item => {
                 if (selectedAttendanceInfoIds.has(item.id)) {
-                    const date = item.open_date || item.dtr_date;
+                    const date = item.first_entry_date || (item.first_entry ? item.first_entry.split(' ')[0] : (item.open_date || item.dtr_date));
                     if (date) selectedPrintDates.add(date);
                 }
             });
@@ -1676,16 +1683,19 @@
             const datesSet = new Set();
             cachedAttendanceLogs.forEach(item => {
                 if (selectedAttendanceInfoIds.has(item.id)) {
-                    const date = item.open_date || item.dtr_date;
+                    const date = item.first_entry_date || (item.first_entry ? item.first_entry.split(' ')[0] : (item.open_date || item.dtr_date));
                     if (date) datesSet.add(date);
                 }
             });
             const datesArr = Array.from(datesSet).sort();
 
+            const tabName = 'print_att_tab_' + Date.now();
+            const printTab = window.open('about:blank', tabName);
+
             const form = document.createElement('form');
             form.method = 'POST';
             form.action = '/logs/alert/print';
-            form.target = '_blank';
+            form.target = tabName;
 
             const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
             if (csrfToken) {
