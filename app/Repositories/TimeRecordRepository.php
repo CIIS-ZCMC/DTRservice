@@ -36,20 +36,23 @@ class TimeRecordRepository implements TimeRecordRepositoryInterface
      */
     public function getEmployeeSchedule(int $biometricId, string $date): ?Schedule
     {
-        $employeeProfile = Biometrics::where('biometric_id', $biometricId)
-            ->with('employeeProfile')
-            ->first();
+        $profileIds = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
 
-        if (!$employeeProfile || !$employeeProfile->employeeProfile) {
-            return null;
+        if (!empty($profileIds)) {
+            return Schedule::where('date', $date)
+                ->whereNull('deleted_at')
+                ->whereHas('employeeSchedules', function ($query) use ($profileIds) {
+                    $query->whereIn('employee_profile_id', $profileIds);
+                })
+                ->with('timeShift')
+                ->orderBy('id', 'desc')
+                ->first();
         }
 
-        return Schedule::where('date', $date)
-            ->whereHas('employeeSchedules', function ($query) use ($employeeProfile) {
-                $query->where('employee_profile_id', $employeeProfile->employeeProfile->id);
-            })
-            ->with('timeShift')
-            ->first();
+        return null;
     }
 
     /**

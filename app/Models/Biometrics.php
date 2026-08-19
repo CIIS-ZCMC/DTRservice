@@ -10,7 +10,12 @@ class Biometrics extends Model
 
    public function employeeProfile()
     {
-        return $this->hasOne(EmployeeProfile::class, 'biometric_id', 'biometric_id');
+        return $this->hasOne(EmployeeProfile::class, 'biometric_id', 'biometric_id')->latest('id');
+    }
+
+    public function employeeProfiles()
+    {
+        return $this->hasMany(EmployeeProfile::class, 'biometric_id', 'biometric_id');
     }
 
     public function externalProfile(){

@@ -207,25 +207,36 @@ class LogsRepository implements LogsRepositoryInterface
 
      public function getEmployeeNameAndStatus(int $biometricId): array
     {
-         $isExternal = false;
-         $name = null;
-            $user = Biometrics::join('employee_profiles', 'biometrics.biometric_id', '=', 'employee_profiles.biometric_id')
-                ->where('biometrics.biometric_id', $biometricId)
-                ->select('biometrics.*')
+        $isExternal = false;
+        $name = null;
+
+        $profile = EmployeeProfile::where('biometric_id', $biometricId)
+            ->whereNull('deleted_at')
+            ->whereNull('deactivated_at')
+            ->latest('id')
+            ->first();
+
+        if (!$profile) {
+            $profile = EmployeeProfile::where('biometric_id', $biometricId)
+                ->whereNull('deleted_at')
+                ->latest('id')
                 ->first();
-            if (!$user) {
-                $externalEmployee = ExternalEmployees::where('biometric_id', $biometricId)->first();
-                if ($externalEmployee) {
-                    $name = $externalEmployee->getFullNameAttribute();
-                    $isExternal = true;
-                }
-            } else {
-                $name = $user->employeeProfile->name();
+        }
+
+        if ($profile) {
+            $name = $profile->personalInformation?->employeeName() ?? $profile->name();
+        } else {
+            $externalEmployee = ExternalEmployees::where('biometric_id', $biometricId)->first();
+            if ($externalEmployee) {
+                $name = $externalEmployee->getFullNameAttribute();
+                $isExternal = true;
             }
-            return [
-                'name' => $name,
-                'is_external' => $isExternal
-            ];
+        }
+
+        return [
+            'name' => $name,
+            'is_external' => $isExternal
+        ];
     }
 
     public function saveForAttendance(array $data): bool
@@ -276,7 +287,19 @@ class LogsRepository implements LogsRepositoryInterface
             }
 
             // 2. Get employee profile
-            $employee = EmployeeProfile::where('biometric_id', $data['biometric_id'])->first();
+            $employee = EmployeeProfile::where('biometric_id', $data['biometric_id'])
+                ->whereNull('deleted_at')
+                ->whereNull('deactivated_at')
+                ->latest('id')
+                ->first();
+
+            if (!$employee) {
+                $employee = EmployeeProfile::where('biometric_id', $data['biometric_id'])
+                    ->whereNull('deleted_at')
+                    ->latest('id')
+                    ->first();
+            }
+
             if (!$employee) {
                 Log::channel('attendance_logs')->error('Employee not found', ['biometric_id' => $data['biometric_id']]);
                 Log::channel('failed_attendancelogs')->warning('Failed attendance log', [
@@ -294,21 +317,10 @@ class LogsRepository implements LogsRepositoryInterface
             $employeeNameData = $this->getEmployeeNameAndStatus((int)$data['biometric_id']);
             $employeeName = $employeeNameData['name'] ?? 'Unknown';
 
-            // Get user with biometric data and email
-            $user = Biometrics::join('employee_profiles', 'biometrics.biometric_id', '=', 'employee_profiles.biometric_id')
-                ->where('biometrics.biometric_id', $data['biometric_id'])
-                ->select('biometrics.*')
-                ->first();
-
             $email = null;
-            $assignedArea = null;
-            if ($user && $user->employeeProfile) {
-                $profile = $user->employeeProfile;
-                $assignedArea = $profile->assignArea ?? null;
-
-                if ($profile->personalInformation && $profile->personalInformation->contact) {
-                    $email = $profile->personalInformation->contact->email_address ?? null;
-                }
+            $assignedArea = $employee->assignArea ?? null;
+            if ($employee->personalInformation && $employee->personalInformation->contact) {
+                $email = $employee->personalInformation->contact->email_address ?? null;
             }
 
             // 3. Get area details

@@ -24,7 +24,12 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             ->with('employeeProfile', 'externalProfile')
             ->first();
 
-        if (!$employee) {
+        $hasInternal = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+            ->whereNull('deleted_at')
+            ->exists();
+        $hasExternal = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->exists();
+
+        if (!$employee && !$hasInternal && !$hasExternal) {
             return [];
         }
 
@@ -36,7 +41,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             ->toArray();
 
         // Batch-fetch all schedules for the date range
-        $scheduleMap = $this->batchGetSchedules($employee, $dateFrom, $dateTo);
+        $scheduleMap = $this->batchGetSchedules($employee, $dateFrom, $dateTo, $biometricId);
 
         // Group logs by date and include schedule/time_shift
         $records = [];
@@ -78,16 +83,36 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
         $employeeName = 'Unknown';
         $department = 'N/A';
+        $employeeProfileId = null;
 
-        if ($employee->employeeProfile) {
-            $employeeName = $employee->employeeProfile->personalInformation->employeeName() ?? 'Unknown';
-            $department = $employee->employeeProfile->assignArea->area_name ?? 'N/A';
-        } elseif ($employee->externalProfile) {
-            $employeeName = trim(($employee->externalProfile->first_name ?? '') . ' ' . ($employee->externalProfile->last_name ?? '')) ?: 'Unknown';
-            $department = $employee->externalProfile->department ?? 'N/A';
+        // Try getting active/latest internal profile
+        $internalProfile = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+            ->whereNull('deleted_at')
+            ->whereNull('deactivated_at')
+            ->latest('id')
+            ->first();
+
+        if (!$internalProfile) {
+            $internalProfile = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+                ->whereNull('deleted_at')
+                ->latest('id')
+                ->first();
         }
 
-        $employeeProfileId = $employee->employeeProfile?->id;
+        if ($internalProfile) {
+            $employeeName = $internalProfile->personalInformation?->employeeName() ?? $internalProfile->name() ?? 'Unknown';
+            $department = $internalProfile->assignArea?->area_name ?? 'N/A';
+            $employeeProfileId = $internalProfile->id;
+        } elseif ($employee && $employee->externalProfile) {
+            $employeeName = trim(($employee->externalProfile->first_name ?? '') . ' ' . ($employee->externalProfile->last_name ?? '')) ?: 'Unknown';
+            $department = $employee->externalProfile->department ?? 'N/A';
+        } else {
+            $externalEmployee = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->first();
+            if ($externalEmployee) {
+                $employeeName = trim(($externalEmployee->first_name ?? '') . ' ' . ($externalEmployee->last_name ?? '')) ?: 'Unknown';
+                $department = $externalEmployee->department ?? 'N/A';
+            }
+        }
 
         return [
             'employee' => [
@@ -105,23 +130,31 @@ class DtrReportRepository implements DtrReportRepositoryInterface
     /**
      * Batch-fetch all schedules for a date range, indexed by date
      */
-    private function batchGetSchedules($employee, string $dateFrom, string $dateTo): array
+    private function batchGetSchedules($employee, string $dateFrom, string $dateTo, ?int $biometricId = null): array
     {
         $map = [];
+        $bioId = $biometricId ?? ($employee?->biometric_id);
 
-        if ($employee->employeeProfile) {
+        $profileIds = \App\Models\EmployeeProfile::where('biometric_id', $bioId)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        if (!empty($profileIds)) {
             $schedules = \App\Models\Schedule::whereBetween('date', [$dateFrom, $dateTo])
-                ->whereHas('employeeSchedules', function ($query) use ($employee) {
-                    $query->where('employee_profile_id', $employee->employeeProfile->id);
+                ->whereNull('deleted_at')
+                ->whereHas('employeeSchedules', function ($query) use ($profileIds) {
+                    $query->whereIn('employee_profile_id', $profileIds);
                 })
                 ->with('timeShift')
+                ->orderBy('id', 'asc')
                 ->get()
                 ->keyBy('date');
 
             foreach ($schedules as $date => $schedule) {
                 $map[$date] = $schedule;
             }
-        } elseif ($employee->externalProfile) {
+        } elseif ($employee && $employee->externalProfile) {
             // External profiles use getSchedules per date — fetch all dates
             $period = new \DatePeriod(
                 new \DateTime($dateFrom),
@@ -135,6 +168,24 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                     $map[$date] = $schedule;
                 }
             }
+        } else {
+            $externalEmployee = \App\Models\ExternalEmployee::where('biometric_id', $bioId)->first();
+            if ($externalEmployee) {
+                $period = new \DatePeriod(
+                    new \DateTime($dateFrom),
+                    new \DateInterval('P1D'),
+                    (new \DateTime($dateTo))->modify('+1 day')
+                );
+                foreach ($period as $dt) {
+                    $date = $dt->format('Y-m-d');
+                    $schedule = \App\Models\ExternalSchedule::where('external_employee_id', $externalEmployee->id)
+                        ->where('dtr_date', $date)
+                        ->first();
+                    if ($schedule) {
+                        $map[$date] = $schedule;
+                    }
+                }
+            }
         }
 
         return $map;
@@ -145,25 +196,40 @@ class DtrReportRepository implements DtrReportRepositoryInterface
      */
     private function getEmployeeSchedule(int $biometricId, string $date, ?\App\Models\Biometrics $employee = null)
     {
-        if ($employee === null) {
-            $employee = Biometrics::where('biometric_id', $biometricId)
-                ->with('employeeProfile', 'externalProfile')
+        $profileIds = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+            ->whereNull('deleted_at')
+            ->pluck('id')
+            ->toArray();
+
+        if (!empty($profileIds)) {
+            return \App\Models\Schedule::where('date', $date)
+                ->whereNull('deleted_at')
+                ->whereHas('employeeSchedules', function ($query) use ($profileIds) {
+                    $query->whereIn('employee_profile_id', $profileIds);
+                })
+                ->with('timeShift')
+                ->orderBy('id', 'desc')
                 ->first();
         }
 
-        if (!$employee || !$employee->employeeProfile) {
-                if($employee && $employee->externalProfile){  
-                return $employee->getSchedules($date);
-               }
-            return null;
+        if ($employee === null) {
+            $employee = Biometrics::where('biometric_id', $biometricId)
+                ->with('externalProfile')
+                ->first();
         }
 
-        return \App\Models\Schedule::where('date', $date)
-            ->whereHas('employeeSchedules', function ($query) use ($employee) {
-                $query->where('employee_profile_id', $employee->employeeProfile->id);
-            })
-            ->with('timeShift')
-            ->first();
+        if ($employee && $employee->externalProfile) {
+            return $employee->getSchedules($date);
+        }
+
+        $externalEmployee = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->first();
+        if ($externalEmployee) {
+            return \App\Models\ExternalSchedule::where('external_employee_id', $externalEmployee->id)
+                ->where('dtr_date', $date)
+                ->first();
+        }
+
+        return null;
     }
 
     /**
@@ -210,31 +276,40 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             return $map;
         }
 
+        $profile = \App\Models\EmployeeProfile::find($employeeProfileId);
+        $profileIds = ($profile && $profile->biometric_id)
+            ? \App\Models\EmployeeProfile::where('biometric_id', $profile->biometric_id)->whereNull('deleted_at')->pluck('id')->toArray()
+            : [$employeeProfileId];
+
+        if (empty($profileIds)) {
+            $profileIds = [$employeeProfileId];
+        }
+
         $leaveApps = LeaveApplication::with('leaveType')
-            ->where('employee_profile_id', $employeeProfileId)
+            ->whereIn('employee_profile_id', $profileIds)
             ->where('status', 'received')
             ->whereDate('date_from', '<=', $dateTo)
             ->whereDate('date_to', '>=', $dateFrom)
             ->get();
 
-        $obApps = OfficialBusinessApplication::where('employee_profile_id', $employeeProfileId)
+        $obApps = OfficialBusinessApplication::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereDate('date_from', '<=', $dateTo)
             ->whereDate('date_to', '>=', $dateFrom)
             ->get();
 
-        $otApps = OfficialTimeApplication::where('employee_profile_id', $employeeProfileId)
+        $otApps = OfficialTimeApplication::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereDate('date_from', '<=', $dateTo)
             ->whereDate('date_to', '>=', $dateFrom)
             ->get();
 
-        $ctoApps = CtoApplication::where('employee_profile_id', $employeeProfileId)
+        $ctoApps = CtoApplication::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereBetween('date', [$dateFrom, $dateTo])
             ->get();
 
-        $timeAdjustments = TimeAdjustment::where('employee_profile_id', $employeeProfileId)
+        $timeAdjustments = TimeAdjustment::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereBetween('date', [$dateFrom, $dateTo])
             ->get()
@@ -311,8 +386,17 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             return $empty;
         }
 
+        $profile = \App\Models\EmployeeProfile::find($employeeProfileId);
+        $profileIds = ($profile && $profile->biometric_id)
+            ? \App\Models\EmployeeProfile::where('biometric_id', $profile->biometric_id)->whereNull('deleted_at')->pluck('id')->toArray()
+            : [$employeeProfileId];
+
+        if (empty($profileIds)) {
+            $profileIds = [$employeeProfileId];
+        }
+
         $leaveApps = LeaveApplication::with('leaveType')
-            ->where('employee_profile_id', $employeeProfileId)
+            ->whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereDate('date_from', '<=', $date)
             ->whereDate('date_to', '>=', $date)
@@ -323,27 +407,27 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             ]))
             ->toArray();
 
-        $obApps = OfficialBusinessApplication::where('employee_profile_id', $employeeProfileId)
+        $obApps = OfficialBusinessApplication::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereDate('date_from', '<=', $date)
             ->whereDate('date_to', '>=', $date)
             ->get()
             ->toArray();
 
-        $otApps = OfficialTimeApplication::where('employee_profile_id', $employeeProfileId)
+        $otApps = OfficialTimeApplication::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereDate('date_from', '<=', $date)
             ->whereDate('date_to', '>=', $date)
             ->get()
             ->toArray();
 
-        $ctoApps = CtoApplication::where('employee_profile_id', $employeeProfileId)
+        $ctoApps = CtoApplication::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereDate('date', $date)
             ->get()
             ->toArray();
 
-        $timeAdjustment = TimeAdjustment::where('employee_profile_id', $employeeProfileId)
+        $timeAdjustment = TimeAdjustment::whereIn('employee_profile_id', $profileIds)
             ->where('status', 'approved')
             ->whereDate('date', $date)
             ->first();
@@ -1251,7 +1335,12 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             ->with('employeeProfile', 'externalProfile')
             ->first();
 
-        if (!$employee) {
+        $hasInternal = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+            ->whereNull('deleted_at')
+            ->exists();
+        $hasExternal = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->exists();
+
+        if (!$employee && !$hasInternal && !$hasExternal) {
             return [];
         }
 
