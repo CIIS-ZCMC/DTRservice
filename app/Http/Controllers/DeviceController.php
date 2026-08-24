@@ -3,8 +3,14 @@
 namespace App\Http\Controllers;
 
 use App\Contracts\LogsRepositoryInterface;
+use App\Models\Biometrics;
+use App\Models\Devices;
+use App\Services\BiometricSyncService;
+use App\Services\DeviceCommandService;
 use App\Services\DeviceService;
 use App\Services\LogsService;
+use App\Services\RegistrationLogger;
+use App\Services\ZkPushParser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
@@ -14,8 +20,12 @@ class DeviceController extends Controller
     
     public function __construct( 
         protected DeviceService $deviceService,
-        protected LogsService $logsService
-        ){}
+        protected LogsService $logsService,
+        protected BiometricSyncService $syncService,
+        protected ?DeviceCommandService $commandService = null
+    ){
+        $this->commandService = $commandService ?? app(DeviceCommandService::class);
+    }
 
     /**
      * Get all devices
@@ -146,11 +156,204 @@ class DeviceController extends Controller
     public function handleDevicePush(Request $request)
     {
         try {
-            return $this->logsService->storeLog($request);
+            $sn = $request->input('SN') ?? $request->input('sn') ?? $request->query('SN') ?? $request->query('sn');
+
+            if ($sn) {
+                Devices::where('serial_number', $sn)->update([
+                    'last_seen_at' => now(),
+                    'ip_address' => $request->ip(),
+                ]);
+            }
+
+            // Extract path segment after /iclock/
+            $rawPath = $request->route('any') ?? basename($request->path());
+            $path = strtolower(explode('/', trim($rawPath, '/'))[0]);
+
+            switch ($path) {
+                case 'cdata':
+                    return $this->handleCdata($request, $sn);
+
+                case 'fdata':
+                    return $this->handleFdata($request, $sn);
+
+                case 'getrequest':
+                    return $this->handleGetRequest($request, $sn);
+
+                case 'devicecmd':
+                    return $this->handleDeviceCmd($request);
+
+                default:
+                    // If no explicit path matched, default to logsService
+                    return $this->logsService->storeLog($request);
+            }
         } catch (\Throwable $th) {
-            Log::channel('device_logs')->error($th->getMessage());
+            Log::channel('device_logs')->error('handleDevicePush error: ' . $th->getMessage(), [
+                'trace' => $th->getTraceAsString(),
+            ]);
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
         }
     }
 
-    
+    /**
+     * Handle /iclock/cdata pushes (attendance, user registration, biometric templates)
+     */
+    protected function handleCdata(Request $request, ?string $sn)
+    {
+        if ($request->isMethod('GET')) {
+            // Handshake / options request
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        $table = strtoupper($request->input('table') ?? $request->query('table', ''));
+        $raw = $request->getContent();
+
+        // User registration push
+        if ($table === 'USER') {
+            $records = ZkPushParser::parseKeyValues($raw);
+            foreach ($records as $record) {
+                $pin = $record['PIN'] ?? null;
+                $name = $record['Name'] ?? null;
+                $queuedCount = (int)$this->syncService->syncUserToAll($sn, $record);
+
+                if ($pin) {
+                    RegistrationLogger::logUserRegistration(
+                        $pin,
+                        $name,
+                        $record,
+                        $request->ip(),
+                        $sn,
+                        $queuedCount
+                    );
+                }
+            }
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        // Biometric template registration push
+        if (in_array($table, ['TEMPLATEV10', 'FINGERTMP', 'BIOPHOTO', 'BIODATA', 'FACE', 'USERPIC', 'BIOPIC', 'FINGERTMPV10', 'FP', 'FPDATA', 'TEMPLATE'])) {
+            $records = ZkPushParser::parseKeyValues($raw);
+            foreach ($records as $record) {
+                $pin = $record['PIN'] ?? null;
+                $fid = $record['Finger_ID'] ?? $record['FID'] ?? $record['FingerID'] ?? null;
+                $size = $record['Size'] ?? strlen($record['Template'] ?? $record['TMP'] ?? '');
+                $valid = $record['Valid'] ?? 1;
+                $template = $record['Template'] ?? $record['TMP'] ?? null;
+
+                $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, $table, $record);
+
+                if ($pin && $fid !== null && $template) {
+                    Biometrics::saveFingerprintTemplate(
+                        (int)$pin,
+                        $fid,
+                        $size,
+                        $valid,
+                        $template,
+                        $request->ip(),
+                        $sn,
+                        $queuedCount
+                    );
+                }
+            }
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        // Attendance and operation logs (ATTLOG, OPERLOG, OPLOG, etc.) - delegate to existing LogsService
+        return $this->logsService->storeLog($request);
+    }
+
+    /**
+     * Handle /iclock/fdata pushes (fingerprint biometric templates)
+     */
+    protected function handleFdata(Request $request, ?string $sn)
+    {
+        if ($request->isMethod('GET')) {
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        $raw = $request->getContent();
+        $records = ZkPushParser::parseKeyValues($raw);
+
+        foreach ($records as $record) {
+            $pin = $record['PIN'] ?? null;
+            $fid = $record['Finger_ID'] ?? $record['FID'] ?? $record['FingerID'] ?? null;
+            $size = $record['Size'] ?? strlen($record['Template'] ?? $record['TMP'] ?? '');
+            $valid = $record['Valid'] ?? 1;
+            $template = $record['Template'] ?? $record['TMP'] ?? null;
+
+            $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, 'FINGERTMP', $record);
+
+            if ($pin && $fid !== null && $template) {
+                Biometrics::saveFingerprintTemplate(
+                    (int)$pin,
+                    $fid,
+                    $size,
+                    $valid,
+                    $template,
+                    $request->ip(),
+                    $sn,
+                    $queuedCount
+                );
+            }
+        }
+
+        return response("OK\n", 200)->header('Content-Type', 'text/plain');
+    }
+
+    /**
+     * Handle /iclock/getrequest polling from devices
+     */
+    protected function handleGetRequest(Request $request, ?string $sn)
+    {
+        if (empty($sn)) {
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        // Fetch up to 10 pending commands at a time from file-based command storage
+        $commands = $this->commandService->getPendingCommands($sn, 10);
+
+        if (empty($commands)) {
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        $responseLines = [];
+        $sentIds = [];
+        foreach ($commands as $cmd) {
+            $responseLines[] = "C:{$cmd['id']}:{$cmd['command']}";
+            $sentIds[] = $cmd['id'];
+        }
+
+        $this->commandService->markCommandsAsSent($sentIds);
+
+        Log::channel('device_logs')->info('Dispatched commands to device', [
+            'device_sn' => $sn,
+            'count' => count($responseLines),
+        ]);
+
+        return response(implode("\n", $responseLines) . "\n", 200)
+            ->header('Content-Type', 'text/plain');
+    }
+
+    /**
+     * Handle /iclock/devicecmd execution results from devices
+     */
+    protected function handleDeviceCmd(Request $request)
+    {
+        $raw = $request->getContent();
+        $results = ZkPushParser::parseQueryStringLines($raw);
+
+        foreach ($results as $result) {
+            if (isset($result['ID'])) {
+                $returnCode = (int)($result['Return'] ?? -1);
+                $this->commandService->recordCommandAck($result['ID'], $returnCode);
+
+                Log::channel('device_logs')->info('Device command ACK received', [
+                    'command_id' => $result['ID'],
+                    'return_code' => $returnCode,
+                    'status' => $returnCode >= 0 ? 'SUCCESS' : 'FAILED',
+                ]);
+            }
+        }
+
+        return response("OK\n", 200)->header('Content-Type', 'text/plain');
+    }
 }

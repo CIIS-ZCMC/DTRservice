@@ -79,6 +79,13 @@ return [
             'replace_placeholders' => true,
         ],
 
+        'registration_logs' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/registration_logs.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'replace_placeholders' => true,
+        ],
+
         'failed_attendancelogs' => [
             'driver' => 'daily',
             'path' => storage_path('logs/failed_attendancelogs.log'),

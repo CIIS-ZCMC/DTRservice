@@ -99,7 +99,7 @@
 
     <!-- Main Content -->
     <main class="p-6">
-        <div class="grid grid-cols-2 gap-6 h-[calc(100vh-140px)]">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-[calc(100vh-140px)]">
             <!-- Laravel Logs Panel -->
             <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex flex-col glow-blue">
                 <div class="panel-header px-4 py-3 border-b border-slate-700">
@@ -163,6 +163,38 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Registration Logs Panel -->
+            <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden flex flex-col shadow-lg shadow-emerald-500/10">
+                <div class="panel-header px-4 py-3 border-b border-slate-700" style="background: linear-gradient(135deg, #064e3b 0%, #0f172a 100%);">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center">
+                                <i class="fas fa-fingerprint text-white"></i>
+                            </div>
+                            <div>
+                                <h2 class="text-sm font-semibold text-white">Registration Logs</h2>
+                                <div class="flex items-center gap-2 text-xs text-slate-400">
+                                    <span id="registrationStatus">Loading...</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3 text-xs text-slate-400">
+                            <span id="registrationSize">--</span>
+                            <span id="registrationModified">--</span>
+                            <button onclick="clearLog('registration_logs.log')" class="text-red-400 hover:text-red-300 hover:bg-red-900/30 px-2 py-1 rounded transition-colors">
+                                <i class="fas fa-trash-alt"></i> Clear
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div id="registrationContent" class="flex-1 overflow-y-auto scrollbar-thin p-3">
+                    <div class="text-slate-500 text-center py-8">
+                        <i class="fas fa-spinner fa-spin text-2xl mb-2"></i>
+                        <p>Loading logs...</p>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Footer Status -->
@@ -178,6 +210,9 @@
                     <span class="w-3 h-3 bg-blue-500 rounded-full"></span> INFO
                 </span>
                 <span class="flex items-center gap-2">
+                    <span class="w-3 h-3 bg-emerald-500 rounded-full"></span> REGISTRATION
+                </span>
+                <span class="flex items-center gap-2">
                     <span class="w-3 h-3 bg-gray-500 rounded-full"></span> DEBUG
                 </span>
             </div>
@@ -191,6 +226,7 @@
         function getLogColor(line) {
             if (line.includes('.ERROR')) return 'log-error';
             if (line.includes('.WARNING') || line.includes('.WARN')) return 'log-warning';
+            if (line.includes('Registration Verified') || line.includes('VERIFIED') || line.includes('FINGERPRINT_REGISTRATION')) return 'log-info border-emerald-500 text-emerald-300 bg-emerald-950/20';
             if (line.includes('.INFO')) return 'log-info';
             if (line.includes('.DEBUG')) return 'log-debug';
             return 'log-default';
@@ -247,10 +283,21 @@
                 document.getElementById('deviceSize').textContent = data.device.exists ? data.device.size : '--';
                 document.getElementById('deviceModified').textContent = data.device.exists ? data.device.modified : '--';
                 
+                // Render Registration logs
+                if (data.registration) {
+                    renderLogs('registrationContent', data.registration);
+                    document.getElementById('registrationStatus').textContent = data.registration.exists 
+                        ? `${data.registration.lines.length} / ${data.registration.total_lines} lines`
+                        : 'Not found';
+                    document.getElementById('registrationSize').textContent = data.registration.exists ? data.registration.size : '--';
+                    document.getElementById('registrationModified').textContent = data.registration.exists ? data.registration.modified : '--';
+                }
+
                 document.getElementById('lastUpdated').textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
             } catch (error) {
                 document.getElementById('laravelContent').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to load: ${escapeHtml(error.message)}</p></div>`;
                 document.getElementById('deviceContent').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to load: ${escapeHtml(error.message)}</p></div>`;
+                document.getElementById('registrationContent').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to load: ${escapeHtml(error.message)}</p></div>`;
             }
         }
 
