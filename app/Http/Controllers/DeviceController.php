@@ -213,7 +213,16 @@ class DeviceController extends Controller
             foreach ($records as $record) {
                 $pin = $record['PIN'] ?? null;
                 $name = $record['Name'] ?? null;
+                $pri = $record['Pri'] ?? $record['Privilege'] ?? null;
                 $queuedCount = (int)$this->syncService->syncUserToAll($sn, $record);
+
+                if ($pin && $pri !== null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+                    $devAdmin = ((int)$pri === 1 || (int)$pri === 14) ? 1 : 0;
+                    $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                    if ($bioRecord) {
+                        $bioRecord->update(['privilege' => $devAdmin]);
+                    }
+                }
 
                 if ($pin) {
                     RegistrationLogger::logUserRegistration(

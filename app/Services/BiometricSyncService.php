@@ -22,7 +22,15 @@ class BiometricSyncService
      */
     public function syncUserToAll(?string $sourceSn, array $userData): int
     {
-        $pin = $userData['PIN'] ?? $userData['Pin'] ?? $userData['pin'] ?? null;
+        $pin = $userData['PIN'] ?? $userData['Pin'] ?? $userData['pin'] ?? $userData['FP PIN'] ?? null;
+        if (!$pin) {
+            foreach ($userData as $k => $v) {
+                if (str_contains(strtoupper($k), 'PIN')) {
+                    $pin = $v;
+                    break;
+                }
+            }
+        }
         if (!$pin) {
             return 0;
         }
@@ -32,18 +40,20 @@ class BiometricSyncService
             return 0;
         }
 
-        // Build key-value segments preserving all attributes sent by the terminal
-        $segments = [];
-        foreach ($userData as $k => $v) {
-            $segments[] = "{$k}={$v}";
+        $name = $userData['Name'] ?? $userData['name'] ?? null;
+        if (!$name && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            $bioModel = \App\Models\Biometrics::where('biometric_id', $pin)->first();
+            $name = $bioModel?->name;
         }
+        $name = $name ?? 'Unknown';
 
-        // Ensure critical fields exist if not present in payload
-        if (!isset($userData['PIN']) && !isset($userData['Pin'])) {
-            array_unshift($segments, "PIN={$pin}");
-        }
+        $pri = $userData['Pri'] ?? $userData['pri'] ?? $userData['Privilege'] ?? 0;
+        $devicePri = ((int)$pri === 1 || (int)$pri === 14) ? 14 : 0;
+        $passwd = $userData['Passwd'] ?? $userData['Password'] ?? '';
+        $card = $userData['Card'] ?? 0;
+        $grp = $userData['Grp'] ?? $userData['Group'] ?? 1;
 
-        $command = "DATA USER " . implode("\t", $segments);
+        $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}";
         $queuedCount = 0;
 
         foreach ($targetDevices as $device) {
@@ -98,7 +108,7 @@ class BiometricSyncService
             $userCommand = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1";
             foreach ($targetDevices as $device) {
                 // Avoid duplicate consecutive pending user commands
-                $hasPendingUser = $this->commandService->hasPendingCommand($device->serial_number, $userCommand);
+                $hasPendingUser = $this->commandService->hasPendingUserCommand($device->serial_number, (int)$pin);
 
                 if (!$hasPendingUser) {
                     $this->commandService->queueCommand($device->serial_number, $userCommand);
@@ -236,6 +246,28 @@ class BiometricSyncService
 
         foreach ($targetDevices as $device) {
             $totalQueued += $this->syncUserAndTemplatesToDevice($device->serial_number, $pin);
+        }
+
+        return $totalQueued;
+    }
+
+    /**
+     * Sync all registered users and their enrolled templates from the database to a specific device.
+     *
+     * @param string $deviceSn
+     * @return int Total commands queued
+     */
+    public function syncAllUsersToDevice(string $deviceSn): int
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            return 0;
+        }
+
+        $allUsers = \App\Models\Biometrics::whereNotNull('biometric_id')->get();
+        $totalQueued = 0;
+
+        foreach ($allUsers as $user) {
+            $totalQueued += $this->syncUserAndTemplatesToDevice($deviceSn, (int)$user->biometric_id);
         }
 
         return $totalQueued;

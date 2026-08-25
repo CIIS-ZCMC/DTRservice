@@ -9,7 +9,7 @@ beforeEach(function () {
     if (file_exists($this->testFilePath)) {
         unlink($this->testFilePath);
     }
-    $this->service = new DeviceCommandService($this->testFilePath, 10485760);
+    $this->service = new DeviceCommandService($this->testFilePath);
 });
 
 afterEach(function () {
@@ -93,7 +93,7 @@ test('hasPendingCommand correctly identifies existing pending command', function
     expect($this->service->hasPendingCommand('DEV_002', 'DATA USER PIN=500'))->toBeFalse();
 });
 
-test('file is cleared when it exceeds the maximum size limit (10MB threshold check)', function () {
+test('file is cleared when it exceeds the maximum size limit (threshold check)', function () {
     // Create a service with a tiny size limit of 150 bytes to test the threshold clearing
     $smallLimitService = new DeviceCommandService($this->testFilePath, 150);
 

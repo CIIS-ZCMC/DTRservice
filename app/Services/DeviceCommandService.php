@@ -11,16 +11,20 @@ class DeviceCommandService
 
     /**
      * @param string|null $filePath Path to the command storage file. Defaults to storage/app/device_commands.json
-     * @param int $maxSizeBytes Maximum size before auto-clearing. Defaults to 10MB (10,485,760 bytes)
+     * @param int $maxSizeBytes Maximum size before auto-clearing. Defaults to 500MB (524,288,000 bytes)
      */
-    public function __construct(?string $filePath = null, int $maxSizeBytes = 10485760)
+    public function __construct(?string $filePath = null, int $maxSizeBytes = 524288000)
     {
-        $this->filePath = $filePath ?? storage_path('app/device_commands.json');
+        if (app()->runningUnitTests() || config('app.env') === 'testing') {
+            $this->filePath = $filePath ?? storage_path('framework/testing/test_device_commands.json');
+        } else {
+            $this->filePath = $filePath ?? storage_path('app/device_commands.json');
+        }
         $this->maxSizeBytes = $maxSizeBytes;
     }
 
     /**
-     * Check if file exceeds the maximum size limit (10MB) and clear it if so.
+     * Check if file exceeds the maximum size limit (500MB) and clear it if so.
      */
     public function checkAndRotateSize(): void
     {
@@ -49,6 +53,18 @@ class DeviceCommandService
         $newRecord = [];
 
         $this->withFileLock(function (array &$commands) use ($deviceSn, $command, &$newRecord) {
+            // Avoid queuing identical pending command for the same device
+            foreach ($commands as $existing) {
+                if (isset($existing['device_sn'], $existing['command'], $existing['status']) &&
+                    $existing['device_sn'] === $deviceSn &&
+                    $existing['command'] === $command &&
+                    $existing['status'] === 'PENDING'
+                ) {
+                    $newRecord = $existing;
+                    return;
+                }
+            }
+
             $nextId = 1;
             if (!empty($commands)) {
                 $ids = array_column($commands, 'id');
@@ -154,8 +170,8 @@ class DeviceCommandService
     }
 
     /**
-     * Check if a pending command already exists for a device.
-     * Useful to prevent queuing duplicate DATA USER commands.
+     * Check if a pending command matching an exact string exists for a device.
+     * Useful to prevent queuing duplicate commands.
      *
      * @param string $deviceSn
      * @param string $command
@@ -171,6 +187,33 @@ class DeviceCommandService
                     $cmd['device_sn'] === $deviceSn &&
                     $cmd['status'] === 'PENDING' &&
                     $cmd['command'] === $command
+                ) {
+                    $exists = true;
+                    break;
+                }
+            }
+        });
+
+        return $exists;
+    }
+
+    /**
+     * Check if any pending DATA USER command exists for a specific PIN on a device.
+     *
+     * @param string $deviceSn
+     * @param int $pin
+     * @return bool
+     */
+    public function hasPendingUserCommand(string $deviceSn, int $pin): bool
+    {
+        $exists = false;
+
+        $this->withFileLock(function (array &$commands) use ($deviceSn, $pin, &$exists) {
+            foreach ($commands as $cmd) {
+                if (isset($cmd['device_sn'], $cmd['status'], $cmd['command']) &&
+                    $cmd['device_sn'] === $deviceSn &&
+                    $cmd['status'] === 'PENDING' &&
+                    str_contains($cmd['command'], "DATA USER PIN={$pin}")
                 ) {
                     $exists = true;
                     break;

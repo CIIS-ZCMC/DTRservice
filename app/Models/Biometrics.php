@@ -19,36 +19,91 @@ class Biometrics extends Model
 
     protected static function booted(): void
     {
+        static::created(function (self $model) {
+            if (!\Illuminate\Support\Facades\Schema::hasTable('devices')) {
+                return;
+            }
+
+            try {
+                app(\App\Services\BiometricSyncService::class)->syncUserAndTemplatesToAll(null, (int)$model->biometric_id);
+            } catch (\Throwable $th) {
+                \Illuminate\Support\Facades\Log::channel('device_logs')->error('Biometrics::created sync error: ' . $th->getMessage());
+            }
+        });
+
         static::updated(function (self $model) {
             if (!\Illuminate\Support\Facades\Schema::hasTable('devices')) {
                 return;
             }
 
-            // Automatically detect if any FIDs were deleted from the biometric JSON column
-            if ($model->wasChanged('biometric')) {
-                $original = $model->getOriginal('biometric');
-                $current = $model->biometric;
+            try {
+                $syncService = app(\App\Services\BiometricSyncService::class);
 
-                $oldFids = [];
-                if (!empty($original) && $original !== 'NOT_YET_REGISTERED') {
-                    $decodedOld = json_decode($original, true);
-                    if (is_array($decodedOld)) {
-                        $oldFids = array_column($decodedOld, 'Finger_ID');
+                // 1. Sync name or privilege changes
+                if ($model->wasChanged(['name', 'privilege'])) {
+                    $syncService->syncUserToAll(null, [
+                        'PIN' => (int)$model->biometric_id,
+                        'Name' => $model->name,
+                        'Pri' => $model->privilege,
+                    ]);
+                }
+
+                // 2. Sync template changes (additions, updates, deletions)
+                if ($model->wasChanged('biometric')) {
+                    $original = $model->getOriginal('biometric');
+                    $current = $model->biometric;
+
+                    $oldTemplates = [];
+                    if (!empty($original) && $original !== 'NOT_YET_REGISTERED') {
+                        $decodedOld = json_decode($original, true);
+                        if (is_array($decodedOld)) {
+                            foreach ($decodedOld as $item) {
+                                $fid = $item['Finger_ID'] ?? $item['FID'] ?? null;
+                                if ($fid !== null) {
+                                    $oldTemplates[(string)$fid] = $item;
+                                }
+                            }
+                        }
+                    }
+
+                    $newTemplates = [];
+                    if (!empty($current) && $current !== 'NOT_YET_REGISTERED') {
+                        $decodedNew = json_decode($current, true);
+                        if (is_array($decodedNew)) {
+                            foreach ($decodedNew as $item) {
+                                $fid = $item['Finger_ID'] ?? $item['FID'] ?? null;
+                                if ($fid !== null) {
+                                    $newTemplates[(string)$fid] = $item;
+                                }
+                            }
+                        }
+                    }
+
+                    // A. Delete removed fingerprints
+                    $deletedFids = array_diff(array_keys($oldTemplates), array_keys($newTemplates));
+                    foreach ($deletedFids as $fid) {
+                        $syncService->deleteFingerprintFromAll(null, (int)$model->biometric_id, $fid);
+                    }
+
+                    // B. Queue new or modified fingerprints
+                    foreach ($newTemplates as $fid => $item) {
+                        $oldItem = $oldTemplates[$fid] ?? null;
+                        $oldTemplate = $oldItem['Template'] ?? $oldItem['TMP'] ?? null;
+                        $newTemplate = $item['Template'] ?? $item['TMP'] ?? null;
+
+                        if (!$oldItem || $oldTemplate !== $newTemplate) {
+                            $syncService->syncBiometricToAll(null, 'FINGERTMP', [
+                                'PIN' => (int)$model->biometric_id,
+                                'FID' => $fid,
+                                'Size' => $item['Size'] ?? strlen($newTemplate ?? ''),
+                                'Valid' => $item['Valid'] ?? '1',
+                                'Template' => $newTemplate ?? '',
+                            ]);
+                        }
                     }
                 }
-
-                $newFids = [];
-                if (!empty($current) && $current !== 'NOT_YET_REGISTERED') {
-                    $decodedNew = json_decode($current, true);
-                    if (is_array($decodedNew)) {
-                        $newFids = array_column($decodedNew, 'Finger_ID');
-                    }
-                }
-
-                $deletedFids = array_diff($oldFids, $newFids);
-                foreach ($deletedFids as $fid) {
-                    app(\App\Services\BiometricSyncService::class)->deleteFingerprintFromAll(null, (int)$model->biometric_id, $fid);
-                }
+            } catch (\Throwable $th) {
+                \Illuminate\Support\Facades\Log::channel('device_logs')->error('Biometrics::updated sync error: ' . $th->getMessage());
             }
         });
 
@@ -56,7 +111,12 @@ class Biometrics extends Model
             if (!\Illuminate\Support\Facades\Schema::hasTable('devices')) {
                 return;
             }
-            app(\App\Services\BiometricSyncService::class)->deleteUserFromAll(null, (int)$model->biometric_id);
+
+            try {
+                app(\App\Services\BiometricSyncService::class)->deleteUserFromAll(null, (int)$model->biometric_id);
+            } catch (\Throwable $th) {
+                \Illuminate\Support\Facades\Log::channel('device_logs')->error('Biometrics::deleted sync error: ' . $th->getMessage());
+            }
         });
     }
 
@@ -134,7 +194,7 @@ class Biometrics extends Model
        }
 
        $record->addOrUpdateFingerprint($fingerId, $size, $valid, $template);
-       $record->save();
+       $record->saveQuietly();
 
        $currentFids = [];
        $newDecoded = json_decode($record->biometric, true);
