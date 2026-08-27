@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\Biometrics;
 use App\Models\Devices;
 use App\Services\BiometricSyncService;
+use App\Services\DeviceCommandService;
 use Illuminate\Console\Command;
 
 class SyncBiometricsToDevice extends Command
@@ -26,13 +27,17 @@ class SyncBiometricsToDevice extends Command
      */
     protected $description = 'Provision/sync user profile(s) and all enrolled biometric templates to a specific device or all devices';
 
-    public function __construct(protected BiometricSyncService $syncService)
-    {
+    public function __construct(
+        protected BiometricSyncService $syncService,
+        protected DeviceCommandService $commandService
+    ) {
         parent::__construct();
     }
 
     public function handle(): int
     {
+        @ini_set('memory_limit', '512M');
+
         $deviceSn = $this->argument('device_sn');
         $pin = $this->option('pin');
         $allDevices = $this->option('all-devices');
@@ -64,38 +69,61 @@ class SyncBiometricsToDevice extends Command
         }
 
         // Get users to sync
-        $usersQuery = Biometrics::whereNotNull('biometric')
-            ->where('biometric', '!=', 'NOT_YET_REGISTERED')
-            ->where('biometric', '!=', '');
+        $usersQuery = Biometrics::where(function ($q) {
+            $q->where(function ($sub) {
+                $sub->whereNotNull('biometric')
+                    ->where('biometric', '!=', 'NOT_YET_REGISTERED')
+                    ->where('biometric', '!=', '');
+            })->orWhere(function ($sub) {
+                $sub->whereNotNull('face')
+                    ->where('face', '!=', '');
+            })->orWhere(function ($sub) {
+                $sub->whereNotNull('biophoto')
+                    ->where('biophoto', '!=', '');
+            });
+        });
 
         if ($pin) {
             $usersQuery->where('biometric_id', $pin);
         }
 
-        $users = $usersQuery->get();
-        $this->info("Found {$users->count()} user(s) to sync to " . $devices->count() . " device(s).");
+        $totalUsers = (clone $usersQuery)->count();
+        $totalDevices = $devices->count();
+        $this->info("Found {$totalUsers} user(s) to sync to {$totalDevices} device(s).");
 
-        if ($users->isEmpty()) {
+        if ($totalUsers === 0) {
             return 0;
         }
 
-        $bar = $this->output->createProgressBar($users->count() * $devices->count());
+        $bar = $this->output->createProgressBar($totalUsers * $totalDevices);
         $bar->start();
 
         $totalCommands = 0;
 
-        foreach ($devices as $device) {
-            foreach ($users as $user) {
-                $count = $this->syncService->syncUserAndTemplatesToDevice($device->serial_number, (int)$user->biometric_id);
-                $totalCommands += $count;
-                $bar->advance();
+        $usersQuery->chunk(100, function ($usersChunk) use ($devices, &$totalCommands, $bar) {
+            $batch = [];
+            foreach ($usersChunk as $user) {
+                $commandStrings = $this->syncService->generateUserProvisionCommands($user);
+                foreach ($devices as $device) {
+                    foreach ($commandStrings as $cmd) {
+                        $batch[] = [
+                            'device_sn' => $device->serial_number,
+                            'command' => $cmd,
+                        ];
+                    }
+                    $bar->advance();
+                }
             }
-        }
+
+            if (!empty($batch)) {
+                $totalCommands += $this->commandService->queueCommandsBatch($batch);
+            }
+        });
 
         $bar->finish();
         $this->newLine(2);
 
-        $this->info("Successfully queued {$totalCommands} command(s) (USER + FINGERTMP) for " . $devices->count() . " device(s).");
+        $this->info("Successfully queued {$totalCommands} command(s) for {$totalDevices} device(s).");
         $this->line("Target devices will download and install the user profiles and templates automatically upon their next poll.");
 
         return 0;

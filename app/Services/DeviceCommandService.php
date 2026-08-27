@@ -53,8 +53,12 @@ class DeviceCommandService
         $newRecord = [];
 
         $this->withFileLock(function (array &$commands) use ($deviceSn, $command, &$newRecord) {
-            // Avoid queuing identical pending command for the same device
+            $maxId = 0;
             foreach ($commands as $existing) {
+                $id = (int)($existing['id'] ?? 0);
+                if ($id > $maxId) {
+                    $maxId = $id;
+                }
                 if (isset($existing['device_sn'], $existing['command'], $existing['status']) &&
                     $existing['device_sn'] === $deviceSn &&
                     $existing['command'] === $command &&
@@ -65,12 +69,7 @@ class DeviceCommandService
                 }
             }
 
-            $nextId = 1;
-            if (!empty($commands)) {
-                $ids = array_column($commands, 'id');
-                $nextId = empty($ids) ? 1 : (int)max($ids) + 1;
-            }
-
+            $nextId = $maxId + 1;
             $now = now()->toDateTimeString();
             $newRecord = [
                 'id' => $nextId,
@@ -86,6 +85,67 @@ class DeviceCommandService
         });
 
         return $newRecord;
+    }
+
+    /**
+     * Queue multiple commands in a single atomic batch with deduplication and high performance.
+     *
+     * @param array $entries Array of ['device_sn' => string, 'command' => string]
+     * @return int Number of newly queued commands
+     */
+    public function queueCommandsBatch(array $entries): int
+    {
+        if (empty($entries)) {
+            return 0;
+        }
+
+        $queuedCount = 0;
+
+        $this->withFileLock(function (array &$commands) use ($entries, &$queuedCount) {
+            $pendingMap = [];
+            $maxId = 0;
+
+            foreach ($commands as $cmd) {
+                $id = (int)($cmd['id'] ?? 0);
+                if ($id > $maxId) {
+                    $maxId = $id;
+                }
+                if (($cmd['status'] ?? '') === 'PENDING' && isset($cmd['device_sn'], $cmd['command'])) {
+                    $pendingMap[$cmd['device_sn'] . "\0" . $cmd['command']] = true;
+                }
+            }
+
+            $nextId = $maxId + 1;
+            $now = now()->toDateTimeString();
+
+            foreach ($entries as $entry) {
+                $deviceSn = $entry['device_sn'] ?? null;
+                $command = $entry['command'] ?? null;
+
+                if (!$deviceSn || !$command) {
+                    continue;
+                }
+
+                $key = $deviceSn . "\0" . $command;
+                if (isset($pendingMap[$key])) {
+                    continue;
+                }
+
+                $pendingMap[$key] = true;
+                $commands[] = [
+                    'id' => $nextId++,
+                    'device_sn' => $deviceSn,
+                    'command' => $command,
+                    'status' => 'PENDING',
+                    'return_code' => null,
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+                $queuedCount++;
+            }
+        });
+
+        return $queuedCount;
     }
 
     /**
@@ -301,7 +361,11 @@ class DeviceCommandService
 
                 ftruncate($fp, 0);
                 rewind($fp);
-                fwrite($fp, json_encode($commands, JSON_PRETTY_PRINT));
+                $flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
+                if (count($commands) <= 500) {
+                    $flags |= JSON_PRETTY_PRINT;
+                }
+                fwrite($fp, json_encode($commands, $flags));
                 fflush($fp);
                 flock($fp, LOCK_UN);
 

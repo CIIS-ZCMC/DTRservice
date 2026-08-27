@@ -178,58 +178,111 @@ class BiometricSyncService
     }
 
     /**
-     * Sync a complete user profile and all their enrolled biometric templates to a specific device.
-     * Use this to provision an employee onto a specific terminal where they do not yet exist.
+     * Generate all ZKTeco provision commands (USER + FINGERTMP + BIODATA + BIOPHOTO) for a user model.
      *
-     * @param string $deviceSn Target device serial number
-     * @param int $pin Biometric ID / PIN
-     * @return int Number of commands queued
+     * @param \App\Models\Biometrics $bioModel
+     * @return array Array of command strings
      */
-    public function syncUserAndTemplatesToDevice(string $deviceSn, int $pin): int
+    public function generateUserProvisionCommands(\App\Models\Biometrics $bioModel): array
     {
-        $bioModel = \App\Models\Biometrics::where('biometric_id', $pin)->first();
-        if (!$bioModel) {
-            return 0;
-        }
-
+        $pin = (int)$bioModel->biometric_id;
         $name = $bioModel->name ?? 'Unknown';
         $privilege = $bioModel->privilege ?? 0;
         $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
-        $queuedCount = 0;
+        $commands = [];
 
-        // 1. Create or ensure user profile exists on the device
-        $this->commandService->queueCommand(
-            $deviceSn,
-            "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1"
-        );
-        $queuedCount++;
+        // 1. Create or ensure user profile exists on device
+        $commands[] = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1";
 
-        // 2. Queue all enrolled fingerprint templates for this user
+        // 2. Fingerprints
         if (!empty($bioModel->biometric) && $bioModel->biometric !== 'NOT_YET_REGISTERED') {
-            $templates = json_decode($bioModel->biometric, true);
+            $templates = is_array($bioModel->biometric) ? $bioModel->biometric : json_decode($bioModel->biometric, true);
+            if (is_string($templates)) {
+                $templates = json_decode($templates, true);
+            }
             if (is_array($templates)) {
                 foreach ($templates as $t) {
                     $fid = $t['Finger_ID'] ?? $t['FID'] ?? '0';
                     $size = $t['Size'] ?? strlen($t['Template'] ?? '');
                     $valid = $t['Valid'] ?? '1';
                     $tmp = $t['Template'] ?? $t['TMP'] ?? '';
-
-                    $this->commandService->queueCommand(
-                        $deviceSn,
-                        "DATA UPDATE fingertmp\tPIN={$pin}\tFID={$fid}\tSize={$size}\tValid={$valid}\tTMP={$tmp}"
-                    );
-                    $queuedCount++;
+                    $commands[] = "DATA UPDATE fingertmp\tPIN={$pin}\tFID={$fid}\tSize={$size}\tValid={$valid}\tTMP={$tmp}";
                 }
             }
         }
 
+        // 3. NIR Face (table BIODATA Type 9)
+        if (!empty($bioModel->face)) {
+            $faceData = is_array($bioModel->face) ? $bioModel->face : json_decode($bioModel->face, true);
+            if (is_array($faceData)) {
+                $segments = [];
+                foreach ($faceData as $k => $v) {
+                    if ($k === 'type' || str_starts_with($k, '_') || str_contains($k, ' ')) continue;
+                    $segments[] = "{$k}={$v}";
+                }
+                if (!isset($faceData['PIN']) && !isset($faceData['Pin'])) {
+                    array_unshift($segments, "PIN={$pin}");
+                }
+                $payload = implode("\t", $segments);
+                $commands[] = "DATA UPDATE biodata\t{$payload}";
+            }
+        }
+
+        // 4. Visible Light BioPhoto (table BIOPHOTO)
+        if (!empty($bioModel->biophoto)) {
+            $photoData = is_array($bioModel->biophoto) ? $bioModel->biophoto : json_decode($bioModel->biophoto, true);
+            if (is_array($photoData)) {
+                $fileName = $photoData['FileName'] ?? "{$pin}.jpg";
+                $size = $photoData['Size'] ?? strlen($photoData['Content'] ?? '');
+                $content = $photoData['Content'] ?? '';
+                $commands[] = "DATA UPDATE biophoto\tPIN={$pin}\tFileName={$fileName}\tSize={$size}\tContent={$content}";
+            }
+        }
+
+        return $commands;
+    }
+
+    /**
+     * Sync a complete user profile and all their enrolled biometric templates to a specific device.
+     * Use this to provision an employee onto a specific terminal where they do not yet exist.
+     *
+     * @param string $deviceSn Target device serial number
+     * @param int|\App\Models\Biometrics $pin Biometric ID / PIN or Model instance
+     * @return int Number of commands queued
+     */
+    public function syncUserAndTemplatesToDevice(string $deviceSn, int|\App\Models\Biometrics $pin): int
+    {
+        $bioModel = $pin instanceof \App\Models\Biometrics
+            ? $pin
+            : \App\Models\Biometrics::where('biometric_id', $pin)->first();
+
+        if (!$bioModel) {
+            return 0;
+        }
+
+        $commandStrings = $this->generateUserProvisionCommands($bioModel);
+        if (empty($commandStrings)) {
+            return 0;
+        }
+
+        $entries = [];
+        foreach ($commandStrings as $cmd) {
+            $entries[] = [
+                'device_sn' => $deviceSn,
+                'command' => $cmd,
+            ];
+        }
+
+        $queuedCount = $this->commandService->queueCommandsBatch($entries);
+
         Log::channel('device_logs')->info('BiometricSyncService :: Provisioned user & all templates to device', [
             'device_sn' => $deviceSn,
-            'pin' => $pin,
-            'commands_count' => $queuedCount,
+            'pin' => $bioModel->biometric_id,
+            'commands_count' => count($commandStrings),
+            'newly_queued' => $queuedCount,
         ]);
 
-        return $queuedCount;
+        return count($commandStrings);
     }
 
     /**
