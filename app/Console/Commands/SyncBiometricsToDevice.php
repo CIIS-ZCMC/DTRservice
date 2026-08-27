@@ -69,18 +69,29 @@ class SyncBiometricsToDevice extends Command
         }
 
         // Get users to sync
-        $usersQuery = Biometrics::where(function ($q) {
+        $hasFaceCol = \Illuminate\Support\Facades\Schema::hasColumn('biometrics', 'face');
+        $hasPhotoCol = \Illuminate\Support\Facades\Schema::hasColumn('biometrics', 'biophoto');
+
+        $usersQuery = Biometrics::where(function ($q) use ($hasFaceCol, $hasPhotoCol) {
             $q->where(function ($sub) {
                 $sub->whereNotNull('biometric')
                     ->where('biometric', '!=', 'NOT_YET_REGISTERED')
                     ->where('biometric', '!=', '');
-            })->orWhere(function ($sub) {
-                $sub->whereNotNull('face')
-                    ->where('face', '!=', '');
-            })->orWhere(function ($sub) {
-                $sub->whereNotNull('biophoto')
-                    ->where('biophoto', '!=', '');
             });
+
+            if ($hasFaceCol) {
+                $q->orWhere(function ($sub) {
+                    $sub->whereNotNull('face')
+                        ->where('face', '!=', '');
+                });
+            }
+
+            if ($hasPhotoCol) {
+                $q->orWhere(function ($sub) {
+                    $sub->whereNotNull('biophoto')
+                        ->where('biophoto', '!=', '');
+                });
+            }
         });
 
         if ($pin) {
