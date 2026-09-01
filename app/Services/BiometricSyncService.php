@@ -51,9 +51,9 @@ class BiometricSyncService
         $devicePri = ((int)$pri === 1 || (int)$pri === 14) ? 14 : 0;
         $passwd = $userData['Passwd'] ?? $userData['Password'] ?? '';
         $card = $userData['Card'] ?? 0;
-        $grp = $userData['Grp'] ?? $userData['Group'] ?? 1;
+        $tz = $userData['TZ'] ?? $userData['Tz'] ?? $userData['Timezone'] ?? 1;
 
-        $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}";
+        $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
         $queuedCount = 0;
 
         foreach ($targetDevices as $device) {
@@ -105,7 +105,7 @@ class BiometricSyncService
             $privilege = $bioModel?->privilege ?? ($bioData['Pri'] ?? 0);
             $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
 
-            $userCommand = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1";
+            $userCommand = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
             foreach ($targetDevices as $device) {
                 // Avoid duplicate consecutive pending user commands
                 $hasPendingUser = $this->commandService->hasPendingUserCommand($device->serial_number, (int)$pin);
@@ -192,7 +192,7 @@ class BiometricSyncService
         $commands = [];
 
         // 1. Create or ensure user profile exists on device
-        $commands[] = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1";
+        $commands[] = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
 
         // 2. Fingerprints
         if (!empty($bioModel->biometric) && $bioModel->biometric !== 'NOT_YET_REGISTERED') {
