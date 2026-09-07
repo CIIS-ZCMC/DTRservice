@@ -559,6 +559,7 @@ class DeviceCommandService
 
     /**
      * Mark dispatched commands as SENT across all files where they reside.
+     * Updates in-place under exclusive lock without creating any temporary files.
      *
      * @param array $commandIds Array of command IDs
      */
@@ -576,17 +577,13 @@ class DeviceCommandService
                 continue;
             }
 
-            $fp = @fopen($file, 'r');
+            $fp = @fopen($file, 'c+');
             if (!$fp) {
                 continue;
             }
 
-            // Check if file contains any of the IDs first
-            $fileModified = false;
-            $tempFile = $file . '.tmp.' . uniqid();
-            $out = fopen($tempFile, 'w');
+            flock($fp, LOCK_EX);
 
-            // Check if legacy JSON array
             $firstChar = '';
             while (($char = fgetc($fp)) !== false) {
                 if (!ctype_space($char)) {
@@ -595,6 +592,8 @@ class DeviceCommandService
                 }
             }
             rewind($fp);
+
+            $fileModified = false;
 
             if ($firstChar === '[') {
                 $content = stream_get_contents($fp);
@@ -607,12 +606,21 @@ class DeviceCommandService
                             $fileModified = true;
                         }
                     }
-                    fwrite($out, json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+                    if ($fileModified) {
+                        rewind($fp);
+                        ftruncate($fp, 0);
+                        fwrite($fp, json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+                        fflush($fp);
+                    }
                 }
             } else {
+                $lines = [];
                 while (($line = fgets($fp)) !== false) {
                     $trimmed = trim($line);
-                    if ($trimmed === '') continue;
+                    if ($trimmed === '') {
+                        $lines[] = $line;
+                        continue;
+                    }
 
                     $cmd = json_decode($trimmed, true);
                     if ($cmd && isset($cmd['id']) && isset($lookup[(string)$cmd['id']])) {
@@ -621,24 +629,27 @@ class DeviceCommandService
                         $line = json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
                         $fileModified = true;
                     }
-                    fwrite($out, $line);
+                    $lines[] = $line;
+                }
+
+                if ($fileModified) {
+                    rewind($fp);
+                    ftruncate($fp, 0);
+                    foreach ($lines as $outLine) {
+                        fwrite($fp, $outLine);
+                    }
+                    fflush($fp);
                 }
             }
 
+            flock($fp, LOCK_UN);
             fclose($fp);
-            fclose($out);
-
-            if ($fileModified) {
-                @unlink($file);
-                @rename($tempFile, $file);
-            } else {
-                @unlink($tempFile);
-            }
         }
     }
 
     /**
      * Record device execution acknowledgment (ACK) from /iclock/devicecmd across all files.
+     * Updates in-place under exclusive lock without creating any temporary files.
      *
      * @param int|string $commandId Command ID
      * @param int $returnCode Return code from device (>= 0 is success)
@@ -657,14 +668,12 @@ class DeviceCommandService
                 continue;
             }
 
-            $fp = @fopen($file, 'r');
+            $fp = @fopen($file, 'c+');
             if (!$fp) {
                 continue;
             }
 
-            $fileModified = false;
-            $tempFile = $file . '.tmp.' . uniqid();
-            $out = fopen($tempFile, 'w');
+            flock($fp, LOCK_EX);
 
             $firstChar = '';
             while (($char = fgetc($fp)) !== false) {
@@ -674,6 +683,8 @@ class DeviceCommandService
                 }
             }
             rewind($fp);
+
+            $fileModified = false;
 
             if ($firstChar === '[') {
                 $content = stream_get_contents($fp);
@@ -689,12 +700,21 @@ class DeviceCommandService
                             $matchedCmd = $cmd;
                         }
                     }
-                    fwrite($out, json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+                    if ($fileModified) {
+                        rewind($fp);
+                        ftruncate($fp, 0);
+                        fwrite($fp, json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+                        fflush($fp);
+                    }
                 }
             } else {
+                $lines = [];
                 while (($line = fgets($fp)) !== false) {
                     $trimmed = trim($line);
-                    if ($trimmed === '') continue;
+                    if ($trimmed === '') {
+                        $lines[] = $line;
+                        continue;
+                    }
 
                     $cmd = json_decode($trimmed, true);
                     if ($cmd && isset($cmd['id']) && (string)$cmd['id'] === $cmdIdStr) {
@@ -706,21 +726,33 @@ class DeviceCommandService
                         $updated = true;
                         $matchedCmd = $cmd;
                     }
-                    fwrite($out, $line);
+                    $lines[] = $line;
+                }
+
+                if ($fileModified) {
+                    rewind($fp);
+                    ftruncate($fp, 0);
+                    foreach ($lines as $outLine) {
+                        fwrite($fp, $outLine);
+                    }
+                    fflush($fp);
                 }
             }
 
+            flock($fp, LOCK_UN);
             fclose($fp);
-            fclose($out);
 
-            if ($fileModified) {
-                @unlink($file);
-                @rename($tempFile, $file);
-                break; // Found and updated in this file
-            } else {
-                @unlink($tempFile);
+            if ($updated) {
+                break; // Found and updated in this file; no need to scan remaining files
             }
         }
+
+        if ($updated && $matchedCmd) {
+            \App\Services\RegistrationLogger::logCommandAck($matchedCmd, $returnCode);
+        }
+
+        return $updated;
+    }
 
         if ($updated && $matchedCmd) {
             \App\Services\RegistrationLogger::logCommandAck($matchedCmd, $returnCode);
