@@ -164,3 +164,37 @@ test('biometrics:sync-device logs push sync with BiometricID, Device Name, and T
     expect($content)->toContain('Device 1 (Target)');
     expect($content)->toContain('SYNC_SN_001');
 });
+
+test('device command ACK logs confirmed sync to sync_ack log file', function () {
+    $today = now()->format('Y-m-d');
+    $logFile = storage_path("logs/sync_ack_{$today}.txt");
+    if (file_exists($logFile)) {
+        @unlink($logFile);
+    }
+
+    $commandService = app(DeviceCommandService::class);
+    $cmd = $commandService->queueCommand('SYNC_SN_001', "DATA UPDATE fingertmp\tPIN=9905\tFID=6\tSize=500\tValid=1\tTMP=BASE64TMP");
+
+    // Simulate Device sending ACK with return code 0 (success)
+    $commandService->recordCommandAck($cmd['id'], 0);
+
+    expect(file_exists($logFile))->toBeTrue();
+    $content = file_get_contents($logFile);
+    expect($content)->toContain('SUCCESS');
+    expect($content)->toContain('PIN=9905');
+    expect($content)->toContain('SYNC_SN_001');
+    expect($content)->toContain('FINGERPRINT_UPDATE (FID 6)');
+});
+
+test('biometrics:command-status command displays real-time sync status overview', function () {
+    $commandService = app(DeviceCommandService::class);
+    $cmd1 = $commandService->queueCommand('SYNC_SN_001', "DATA UPDATE fingertmp\tPIN=9906\tFID=1\tSize=500\tValid=1\tTMP=TMP1");
+    $cmd2 = $commandService->queueCommand('SYNC_SN_001', "DATA UPDATE fingertmp\tPIN=9906\tFID=2\tSize=500\tValid=1\tTMP=TMP2");
+
+    $commandService->recordCommandAck($cmd1['id'], 0);
+
+    $this->artisan('biometrics:command-status')
+        ->expectsOutputToContain('DEVICE COMMAND QUEUE & SYNC STATUS')
+        ->expectsOutputToContain('Total Commands')
+        ->assertExitCode(0);
+});

@@ -178,6 +178,113 @@ class RegistrationLogger
     }
 
     /**
+     * Log a command ACK confirmation received from a device.
+     */
+    public static function logCommandAck(array $cmd, int $returnCode): void
+    {
+        $commandId = $cmd['id'] ?? 'Unknown';
+        $deviceSn = $cmd['device_sn'] ?? 'Unknown';
+        $rawCommand = $cmd['command'] ?? '';
+        $status = $returnCode >= 0 ? 'SUCCESS' : 'FAILED';
+        $timestamp = now()->format('Y-m-d H:i:s');
+
+        // Extract PIN, Name, and Command Type summary
+        $pin = null;
+        if (preg_match('/PIN=(\d+)/i', $rawCommand, $m)) {
+            $pin = $m[1];
+        }
+
+        $commandType = 'OTHER';
+        if (str_contains($rawCommand, 'DATA USER')) {
+            $commandType = 'USER_PROFILE';
+        } elseif (str_contains($rawCommand, 'DATA UPDATE fingertmp')) {
+            preg_match('/FID=(\d+)/i', $rawCommand, $fm);
+            $fid = $fm[1] ?? '?';
+            $commandType = "FINGERPRINT_UPDATE (FID {$fid})";
+        } elseif (str_contains($rawCommand, 'DATA DELETE FINGERTMP')) {
+            preg_match('/FID=(\d+)/i', $rawCommand, $fm);
+            $fid = $fm[1] ?? '?';
+            $commandType = "FINGERPRINT_DELETE (FID {$fid})";
+        } elseif (str_contains($rawCommand, 'DATA UPDATE biodata')) {
+            $commandType = 'FACE_NIR_UPDATE';
+        } elseif (str_contains($rawCommand, 'DATA UPDATE biophoto')) {
+            $commandType = 'FACE_PHOTO_UPDATE';
+        } elseif (str_contains($rawCommand, 'DATA DELETE USER')) {
+            $commandType = 'USER_DELETE';
+        }
+
+        $deviceInfo = self::resolveDeviceInfo(null, $deviceSn);
+
+        $name = 'Unknown';
+        if ($pin && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            $bio = \App\Models\Biometrics::where('biometric_id', $pin)->first();
+            if ($bio?->name) {
+                $name = $bio->name;
+            }
+        }
+
+        $logData = [
+            'event' => 'COMMAND_EXECUTION_ACK',
+            'command_id' => $commandId,
+            'status' => $status,
+            'return_code' => $returnCode,
+            'biometric_id' => $pin,
+            'name' => $name,
+            'device_name' => $deviceInfo['name'],
+            'device_sn' => $deviceInfo['sn'],
+            'device_ip' => $deviceInfo['ip'],
+            'command_type' => $commandType,
+            'raw_command' => substr($rawCommand, 0, 100),
+            'timestamp' => $timestamp,
+        ];
+
+        // 1. Monolog log channel
+        try {
+            $msg = "[{$status}] Command #{$commandId} on Device {$deviceInfo['name']} (SN: {$deviceInfo['sn']}) -> {$commandType}" . ($pin ? " for PIN {$pin} ({$name})" : "") . " (Return={$returnCode})";
+            if ($status === 'SUCCESS') {
+                Log::channel('registration_logs')->info($msg, $logData);
+                Log::channel('device_logs')->info($msg, $logData);
+            } else {
+                Log::channel('registration_logs')->error($msg, $logData);
+                Log::channel('device_logs')->error($msg, $logData);
+            }
+        } catch (\Throwable) {
+            // Ignore
+        }
+
+        // 2. Audit file storage/logs/sync_ack_YYYY-MM-DD.txt
+        try {
+            $today = now()->format('Y-m-d');
+            $filePath = storage_path("logs/sync_ack_{$today}.txt");
+
+            if (!file_exists($filePath)) {
+                $header = "========================================================================================\n"
+                    . "  DEVICE COMMAND EXECUTION / SYNC ACKNOWLEDGMENT LOG - {$today}\n"
+                    . "  Format: [Timestamp] Status (Return) | ID | PIN | Name | Device Name (SN) | Command Type\n"
+                    . "========================================================================================\n\n";
+                File::put($filePath, $header);
+            }
+
+            $line = sprintf(
+                "[%s] [%-7s] (Ret=%-2d) | CmdID=%-5s | PIN=%-6s | Name=%-22s | Device=%-22s (SN:%s) | %s\n",
+                $timestamp,
+                $status,
+                $returnCode,
+                $commandId,
+                $pin ?? '-',
+                substr($name, 0, 22),
+                substr($deviceInfo['name'], 0, 22),
+                $deviceInfo['sn'],
+                $commandType
+            );
+
+            File::append($filePath, $line);
+        } catch (\Throwable) {
+            // Ignore
+        }
+    }
+
+    /**
      * Log a self-healing auto-restoration event when a device deleted a user or template.
      */
     public static function logAutoRestore(

@@ -212,8 +212,9 @@ class DeviceCommandService
     public function recordCommandAck(int|string $commandId, int $returnCode): bool
     {
         $updated = false;
+        $matchedCmd = null;
 
-        $this->withFileLock(function (array &$commands) use ($commandId, $returnCode, &$updated) {
+        $this->withFileLock(function (array &$commands) use ($commandId, $returnCode, &$updated, &$matchedCmd) {
             $now = now()->toDateTimeString();
             foreach ($commands as &$cmd) {
                 if (isset($cmd['id']) && (string)$cmd['id'] === (string)$commandId) {
@@ -221,10 +222,15 @@ class DeviceCommandService
                     $cmd['return_code'] = $returnCode;
                     $cmd['updated_at'] = $now;
                     $updated = true;
+                    $matchedCmd = $cmd;
                     break;
                 }
             }
         });
+
+        if ($updated && $matchedCmd) {
+            \App\Services\RegistrationLogger::logCommandAck($matchedCmd, $returnCode);
+        }
 
         return $updated;
     }
