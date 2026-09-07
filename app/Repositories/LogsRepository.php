@@ -137,24 +137,43 @@ class LogsRepository implements LogsRepositoryInterface
     }
 
     /**
-     * Check if a log already exists using fast database queries.
+     * Check if a log already exists by scanning log files instead of querying the DB.
+     * Scans current device_logs.log + 2 most recent rotated files.
      */
     public function logExists(int $biometricId, string $dateTime): bool
     {
-        try {
-            if (\Illuminate\Support\Facades\Schema::hasTable('device_logs')) {
-                if (DeviceLogs::where('biometric_id', $biometricId)->where('date_time', $dateTime)->exists()) {
-                    return true;
-                }
+        $date = substr($dateTime, 0, 10);
+        $time = substr($dateTime, 11, 8);
+        $searchPattern = '"biometric_id":"' . $biometricId . '"';
+        $searchPatternNumeric = '"biometric_id":' . $biometricId;
+        $datePattern = '"dtr_date":"' . $date . '"';
+        $timePattern = '"dtr_time":"' . $time . '"';
+
+        $files = glob(storage_path('logs/device_logs*.log'));
+        if (!$files) {
+            return false;
+        }
+
+        usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
+        $files = array_slice($files, 0, 3);
+
+        foreach ($files as $file) {
+            $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+            if (!$lines) {
+                continue;
             }
 
-            if (\Illuminate\Support\Facades\Schema::hasTable('attendance_information')) {
-                if (AttendanceInformation::where('biometric_id', $biometricId)->where('first_entry', $dateTime)->exists()) {
+            for ($i = count($lines) - 1; $i >= 0; $i--) {
+                $line = $lines[$i];
+                if (strpos($line, 'Device log entry') === false) {
+                    continue;
+                }
+                if ((strpos($line, $searchPattern) !== false || strpos($line, $searchPatternNumeric) !== false)
+                    && strpos($line, $datePattern) !== false
+                    && strpos($line, $timePattern) !== false) {
                     return true;
                 }
             }
-        } catch (\Throwable $e) {
-            // If database lookup fails, return false to let processing continue
         }
 
         return false;
