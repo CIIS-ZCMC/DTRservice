@@ -11,9 +11,9 @@ class DeviceCommandService
 
     /**
      * @param string|null $filePath Path to the command storage file. Defaults to storage/app/device_commands.json
-     * @param int $maxSizeBytes Maximum size before auto-clearing. Defaults to 50MB (52,428,800 bytes)
+     * @param int $maxSizeBytes Maximum size before auto-clearing. Defaults to 500MB (524,288,000 bytes)
      */
-    public function __construct(?string $filePath = null, int $maxSizeBytes = 52428800)
+    public function __construct(?string $filePath = null, int $maxSizeBytes = 524288000)
     {
         if (app()->runningUnitTests() || config('app.env') === 'testing') {
             $this->filePath = $filePath ?? storage_path('framework/testing/test_device_commands.json');
@@ -24,7 +24,7 @@ class DeviceCommandService
     }
 
     /**
-     * Check if file exceeds the maximum size limit (50MB) and clear it if so.
+     * Check if file exceeds the maximum size limit (500MB) and clear it if so.
      */
     public function checkAndRotateSize(): void
     {
