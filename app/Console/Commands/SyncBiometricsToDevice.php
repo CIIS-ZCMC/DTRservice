@@ -39,7 +39,8 @@ class SyncBiometricsToDevice extends Command
 
     public function handle(): int
     {
-        @ini_set('memory_limit', '512M');
+        @ini_set('memory_limit', '2048M');
+        \Illuminate\Support\Facades\DB::disableQueryLog();
 
         $deviceSn = $this->argument('device_sn');
         $pin = $this->option('pin');
@@ -159,7 +160,9 @@ class SyncBiometricsToDevice extends Command
 
             if (!empty($batch)) {
                 $totalCommands += $this->commandService->queueCommandsBatch($batch);
+                unset($batch);
             }
+            gc_collect_cycles();
         });
 
         $bar->finish();

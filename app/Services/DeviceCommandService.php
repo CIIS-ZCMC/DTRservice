@@ -10,30 +10,44 @@ class DeviceCommandService
     protected int $maxSizeBytes;
 
     /**
-     * @param string|null $filePath Path to the command storage file. Defaults to storage/app/device_commands.json
+     * @param string|null $filePath Path to the command storage file. Defaults to storage/app/device_commands.sqlite
      * @param int $maxSizeBytes Maximum size before auto-clearing. Defaults to 500MB (524,288,000 bytes)
      */
     public function __construct(?string $filePath = null, int $maxSizeBytes = 524288000)
     {
-        if (app()->runningUnitTests() || config('app.env') === 'testing') {
-            $this->filePath = $filePath ?? storage_path('framework/testing/test_device_commands.json');
+        if ($filePath !== null) {
+            $this->filePath = $filePath;
+        } elseif (app()->runningUnitTests() || config('app.env') === 'testing') {
+            $this->filePath = storage_path('framework/testing/test_device_commands.sqlite');
         } else {
-            $this->filePath = $filePath ?? storage_path('app/device_commands.json');
+            $sqlitePath = storage_path('app/device_commands.sqlite');
+            $legacyJson = storage_path('app/device_commands.json');
+
+            // Seamless one-time migration from legacy JSON if sqlite does not exist yet
+            if (!file_exists($sqlitePath) && file_exists($legacyJson) && filesize($legacyJson) > 0) {
+                $this->filePath = $legacyJson;
+                $this->migrateLegacyJsonFile();
+                if (file_exists($legacyJson)) {
+                    @rename($legacyJson, $sqlitePath);
+                }
+            }
+            $this->filePath = $sqlitePath;
         }
+
         $this->maxSizeBytes = $maxSizeBytes;
     }
 
     /**
-     * Check if file exceeds the maximum size limit (500MB) and clear it if so.
+     * Check if storage exceeds maximum size limit and clear it if so.
      */
     public function checkAndRotateSize(): void
     {
         if (file_exists($this->filePath)) {
             clearstatcache(true, $this->filePath);
             if (filesize($this->filePath) >= $this->maxSizeBytes) {
-                file_put_contents($this->filePath, json_encode([], JSON_PRETTY_PRINT), LOCK_EX);
+                $this->clearCommands();
                 try {
-                    Log::channel('device_logs')->info("DeviceCommandService :: device_commands.json exceeded size limit ({$this->maxSizeBytes} bytes) and was cleared.");
+                    Log::channel('device_logs')->info("DeviceCommandService :: {$this->filePath} exceeded size limit ({$this->maxSizeBytes} bytes) and was cleared.");
                 } catch (\Throwable) {
                     // Ignore log errors if container/config is not booted
                 }
@@ -50,29 +64,26 @@ class DeviceCommandService
      */
     public function queueCommand(string $deviceSn, string $command): array
     {
-        $newRecord = [];
+        $this->checkAndRotateSize();
 
-        $this->withFileLock(function (array &$commands) use ($deviceSn, $command, &$newRecord) {
-            $maxId = 0;
-            foreach ($commands as $existing) {
-                $id = (int)($existing['id'] ?? 0);
-                if ($id > $maxId) {
-                    $maxId = $id;
-                }
-                if (isset($existing['device_sn'], $existing['command'], $existing['status']) &&
-                    $existing['device_sn'] === $deviceSn &&
-                    $existing['command'] === $command &&
-                    $existing['status'] === 'PENDING'
-                ) {
-                    $newRecord = $existing;
-                    return;
-                }
+        return $this->withPdo(function (\PDO $pdo) use ($deviceSn, $command) {
+            $stmt = $pdo->prepare("SELECT id, device_sn, command, status, return_code, created_at, updated_at FROM device_commands WHERE device_sn = ? AND status = 'PENDING' AND command = ? LIMIT 1");
+            $stmt->execute([$deviceSn, $command]);
+            $existing = $stmt->fetch(\PDO::FETCH_ASSOC);
+
+            if ($existing) {
+                $existing['id'] = (int)$existing['id'];
+                $existing['return_code'] = $existing['return_code'] !== null ? (int)$existing['return_code'] : null;
+                return $existing;
             }
 
-            $nextId = $maxId + 1;
             $now = now()->toDateTimeString();
-            $newRecord = [
-                'id' => $nextId,
+            $insert = $pdo->prepare("INSERT INTO device_commands (device_sn, command, status, return_code, created_at, updated_at) VALUES (?, ?, 'PENDING', NULL, ?, ?)");
+            $insert->execute([$deviceSn, $command, $now, $now]);
+            $id = (int)$pdo->lastInsertId();
+
+            return [
+                'id' => $id,
                 'device_sn' => $deviceSn,
                 'command' => $command,
                 'status' => 'PENDING',
@@ -80,11 +91,7 @@ class DeviceCommandService
                 'created_at' => $now,
                 'updated_at' => $now,
             ];
-
-            $commands[] = $newRecord;
         });
-
-        return $newRecord;
     }
 
     /**
@@ -99,53 +106,52 @@ class DeviceCommandService
             return 0;
         }
 
-        $queuedCount = 0;
+        $this->checkAndRotateSize();
 
-        $this->withFileLock(function (array &$commands) use ($entries, &$queuedCount) {
-            $pendingMap = [];
-            $maxId = 0;
-
-            foreach ($commands as $cmd) {
-                $id = (int)($cmd['id'] ?? 0);
-                if ($id > $maxId) {
-                    $maxId = $id;
-                }
-                if (($cmd['status'] ?? '') === 'PENDING' && isset($cmd['device_sn'], $cmd['command'])) {
-                    $pendingMap[$cmd['device_sn'] . "\0" . $cmd['command']] = true;
-                }
-            }
-
-            $nextId = $maxId + 1;
+        return $this->withPdo(function (\PDO $pdo) use ($entries) {
             $now = now()->toDateTimeString();
+            $queuedCount = 0;
 
-            foreach ($entries as $entry) {
-                $deviceSn = $entry['device_sn'] ?? null;
-                $command = $entry['command'] ?? null;
+            $pdo->beginTransaction();
+            try {
+                $checkStmt = $pdo->prepare("SELECT 1 FROM device_commands WHERE device_sn = ? AND status = 'PENDING' AND command = ? LIMIT 1");
+                $insertStmt = $pdo->prepare("INSERT INTO device_commands (device_sn, command, status, return_code, created_at, updated_at) VALUES (?, ?, 'PENDING', NULL, ?, ?)");
 
-                if (!$deviceSn || !$command) {
-                    continue;
+                $seenInBatch = [];
+
+                foreach ($entries as $entry) {
+                    $deviceSn = $entry['device_sn'] ?? null;
+                    $command = $entry['command'] ?? null;
+
+                    if (!$deviceSn || !$command) {
+                        continue;
+                    }
+
+                    $key = $deviceSn . "\0" . $command;
+                    if (isset($seenInBatch[$key])) {
+                        continue;
+                    }
+                    $seenInBatch[$key] = true;
+
+                    $checkStmt->execute([$deviceSn, $command]);
+                    if ($checkStmt->fetchColumn()) {
+                        continue;
+                    }
+
+                    $insertStmt->execute([$deviceSn, $command, $now, $now]);
+                    $queuedCount++;
                 }
 
-                $key = $deviceSn . "\0" . $command;
-                if (isset($pendingMap[$key])) {
-                    continue;
+                $pdo->commit();
+            } catch (\Throwable $t) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
                 }
-
-                $pendingMap[$key] = true;
-                $commands[] = [
-                    'id' => $nextId++,
-                    'device_sn' => $deviceSn,
-                    'command' => $command,
-                    'status' => 'PENDING',
-                    'return_code' => null,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ];
-                $queuedCount++;
+                throw $t;
             }
-        });
 
-        return $queuedCount;
+            return $queuedCount;
+        });
     }
 
     /**
@@ -157,25 +163,20 @@ class DeviceCommandService
      */
     public function getPendingCommands(string $deviceSn, int $limit = 10): array
     {
-        $pending = [];
+        return $this->withPdo(function (\PDO $pdo) use ($deviceSn, $limit) {
+            $stmt = $pdo->prepare("SELECT id, device_sn, command, status, return_code, created_at, updated_at FROM device_commands WHERE device_sn = ? AND status = 'PENDING' ORDER BY id ASC LIMIT ?");
+            $stmt->bindValue(1, $deviceSn, \PDO::PARAM_STR);
+            $stmt->bindValue(2, $limit, \PDO::PARAM_INT);
+            $stmt->execute();
 
-        $this->withFileLock(function (array &$commands) use ($deviceSn, $limit, &$pending) {
-            $count = 0;
-            foreach ($commands as $cmd) {
-                if (isset($cmd['device_sn'], $cmd['status']) && 
-                    $cmd['device_sn'] === $deviceSn && 
-                    $cmd['status'] === 'PENDING'
-                ) {
-                    $pending[] = $cmd;
-                    $count++;
-                    if ($count >= $limit) {
-                        break;
-                    }
-                }
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+            foreach ($rows as &$r) {
+                $r['id'] = (int)$r['id'];
+                $r['return_code'] = $r['return_code'] !== null ? (int)$r['return_code'] : null;
             }
-        });
 
-        return $pending;
+            return $rows;
+        });
     }
 
     /**
@@ -189,16 +190,12 @@ class DeviceCommandService
             return;
         }
 
-        $lookup = array_flip(array_map('strval', $commandIds));
-
-        $this->withFileLock(function (array &$commands) use ($lookup) {
+        $this->withPdo(function (\PDO $pdo) use ($commandIds) {
             $now = now()->toDateTimeString();
-            foreach ($commands as &$cmd) {
-                if (isset($cmd['id']) && isset($lookup[(string)$cmd['id']])) {
-                    $cmd['status'] = 'SENT';
-                    $cmd['updated_at'] = $now;
-                }
-            }
+            $placeholders = implode(',', array_fill(0, count($commandIds), '?'));
+            $stmt = $pdo->prepare("UPDATE device_commands SET status = 'SENT', updated_at = ? WHERE id IN ({$placeholders})");
+            $params = array_merge([$now], array_values($commandIds));
+            $stmt->execute($params);
         });
     }
 
@@ -214,16 +211,21 @@ class DeviceCommandService
         $updated = false;
         $matchedCmd = null;
 
-        $this->withFileLock(function (array &$commands) use ($commandId, $returnCode, &$updated, &$matchedCmd) {
+        $this->withPdo(function (\PDO $pdo) use ($commandId, $returnCode, &$updated, &$matchedCmd) {
             $now = now()->toDateTimeString();
-            foreach ($commands as &$cmd) {
-                if (isset($cmd['id']) && (string)$cmd['id'] === (string)$commandId) {
-                    $cmd['status'] = $returnCode >= 0 ? 'SUCCESS' : 'FAILED';
-                    $cmd['return_code'] = $returnCode;
-                    $cmd['updated_at'] = $now;
-                    $updated = true;
-                    $matchedCmd = $cmd;
-                    break;
+            $status = $returnCode >= 0 ? 'SUCCESS' : 'FAILED';
+
+            $stmt = $pdo->prepare("UPDATE device_commands SET status = ?, return_code = ?, updated_at = ? WHERE id = ?");
+            $stmt->execute([$status, $returnCode, $now, $commandId]);
+
+            if ($stmt->rowCount() > 0) {
+                $updated = true;
+                $select = $pdo->prepare("SELECT id, device_sn, command, status, return_code, created_at, updated_at FROM device_commands WHERE id = ? LIMIT 1");
+                $select->execute([$commandId]);
+                $matchedCmd = $select->fetch(\PDO::FETCH_ASSOC);
+                if ($matchedCmd) {
+                    $matchedCmd['id'] = (int)$matchedCmd['id'];
+                    $matchedCmd['return_code'] = (int)$matchedCmd['return_code'];
                 }
             }
         });
@@ -245,22 +247,11 @@ class DeviceCommandService
      */
     public function hasPendingCommand(string $deviceSn, string $command): bool
     {
-        $exists = false;
-
-        $this->withFileLock(function (array &$commands) use ($deviceSn, $command, &$exists) {
-            foreach ($commands as $cmd) {
-                if (isset($cmd['device_sn'], $cmd['status'], $cmd['command']) &&
-                    $cmd['device_sn'] === $deviceSn &&
-                    $cmd['status'] === 'PENDING' &&
-                    $cmd['command'] === $command
-                ) {
-                    $exists = true;
-                    break;
-                }
-            }
+        return $this->withPdo(function (\PDO $pdo) use ($deviceSn, $command) {
+            $stmt = $pdo->prepare("SELECT 1 FROM device_commands WHERE device_sn = ? AND status = 'PENDING' AND command = ? LIMIT 1");
+            $stmt->execute([$deviceSn, $command]);
+            return (bool)$stmt->fetchColumn();
         });
-
-        return $exists;
     }
 
     /**
@@ -272,22 +263,11 @@ class DeviceCommandService
      */
     public function hasPendingUserCommand(string $deviceSn, int $pin): bool
     {
-        $exists = false;
-
-        $this->withFileLock(function (array &$commands) use ($deviceSn, $pin, &$exists) {
-            foreach ($commands as $cmd) {
-                if (isset($cmd['device_sn'], $cmd['status'], $cmd['command']) &&
-                    $cmd['device_sn'] === $deviceSn &&
-                    $cmd['status'] === 'PENDING' &&
-                    str_contains($cmd['command'], "DATA USER PIN={$pin}")
-                ) {
-                    $exists = true;
-                    break;
-                }
-            }
+        return $this->withPdo(function (\PDO $pdo) use ($deviceSn, $pin) {
+            $stmt = $pdo->prepare("SELECT 1 FROM device_commands WHERE device_sn = ? AND status = 'PENDING' AND command LIKE ? LIMIT 1");
+            $stmt->execute([$deviceSn, "%DATA USER PIN={$pin}%"]);
+            return (bool)$stmt->fetchColumn();
         });
-
-        return $exists;
     }
 
     /**
@@ -298,23 +278,26 @@ class DeviceCommandService
      */
     public function getAllCommands(?string $deviceSn = null): array
     {
-        $result = [];
-
-        $this->withFileLock(function (array &$commands) use ($deviceSn, &$result) {
-            if ($deviceSn === null) {
-                $result = $commands;
+        return $this->withPdo(function (\PDO $pdo) use ($deviceSn) {
+            if ($deviceSn !== null) {
+                $stmt = $pdo->prepare("SELECT id, device_sn, command, status, return_code, created_at, updated_at FROM device_commands WHERE device_sn = ? ORDER BY id ASC");
+                $stmt->execute([$deviceSn]);
             } else {
-                $result = array_values(array_filter($commands, function ($cmd) use ($deviceSn) {
-                    return isset($cmd['device_sn']) && $cmd['device_sn'] === $deviceSn;
-                }));
+                $stmt = $pdo->query("SELECT id, device_sn, command, status, return_code, created_at, updated_at FROM device_commands ORDER BY id ASC");
             }
-        });
 
-        return $result;
+            $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+            foreach ($rows as &$r) {
+                $r['id'] = (int)$r['id'];
+                $r['return_code'] = $r['return_code'] !== null ? (int)$r['return_code'] : null;
+            }
+
+            return $rows;
+        });
     }
 
     /**
-     * Clear all stored commands in the file.
+     * Clear all stored commands.
      */
     public function clearCommands(): void
     {
@@ -323,64 +306,122 @@ class DeviceCommandService
             mkdir($dir, 0755, true);
         }
 
-        file_put_contents($this->filePath, json_encode([], JSON_PRETTY_PRINT), LOCK_EX);
+        if (file_exists($this->filePath)) {
+            $this->withPdo(function (\PDO $pdo) {
+                $pdo->exec("DELETE FROM device_commands;");
+                $pdo->exec("DELETE FROM sqlite_sequence WHERE name='device_commands';");
+                $pdo->exec("VACUUM;");
+            });
+        }
     }
 
     /**
-     * Execute a callback under an exclusive file lock to read and atomically update commands.
+     * Execute a callback with a lightweight SQLite PDO instance.
+     * Automatically handles connection setup, WAL mode, concurrency timeout, and cleanup.
      *
-     * @param callable $callback function(array &$commands)
+     * @param callable $callback function(\PDO $pdo)
      * @return mixed
      */
-    protected function withFileLock(callable $callback)
+    protected function withPdo(callable $callback)
     {
         $dir = dirname($this->filePath);
         if (!is_dir($dir)) {
             mkdir($dir, 0755, true);
         }
 
-        // Pre-check size limit before opening
-        $this->checkAndRotateSize();
+        $this->ensureSqliteInitialized();
 
-        $fp = fopen($this->filePath, 'c+');
-        if (!$fp) {
-            $empty = [];
-            return $callback($empty);
-        }
+        $pdo = new \PDO("sqlite:{$this->filePath}");
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        $pdo->exec("PRAGMA journal_mode = WAL;");
+        $pdo->exec("PRAGMA synchronous = NORMAL;");
+        $pdo->exec("PRAGMA busy_timeout = 5000;");
 
         try {
-            if (flock($fp, LOCK_EX)) {
-                clearstatcache(true, $this->filePath);
-                $size = filesize($this->filePath);
-                $commands = [];
-
-                if ($size > 0) {
-                    rewind($fp);
-                    $content = stream_get_contents($fp);
-                    $decoded = json_decode($content, true);
-                    if (is_array($decoded)) {
-                        $commands = $decoded;
-                    }
-                }
-
-                $result = $callback($commands);
-
-                ftruncate($fp, 0);
-                rewind($fp);
-                $flags = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
-                if (count($commands) <= 500) {
-                    $flags |= JSON_PRETTY_PRINT;
-                }
-                fwrite($fp, json_encode($commands, $flags));
-                fflush($fp);
-                flock($fp, LOCK_UN);
-
-                return $result;
-            }
+            return $callback($pdo);
         } finally {
-            fclose($fp);
+            $pdo = null;
+        }
+    }
+
+    /**
+     * Ensure database schema and indexes exist.
+     */
+    protected function ensureSqliteInitialized(): void
+    {
+        if (file_exists($this->filePath) && filesize($this->filePath) > 0) {
+            $handle = @fopen($this->filePath, 'r');
+            if ($handle) {
+                $firstBytes = fread($handle, 16);
+                fclose($handle);
+
+                if (!str_starts_with($firstBytes, 'SQLite format 3')) {
+                    $this->migrateLegacyJsonFile();
+                    return;
+                }
+            }
         }
 
-        return null;
+        $pdo = new \PDO("sqlite:{$this->filePath}");
+        $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        $pdo->exec("CREATE TABLE IF NOT EXISTS device_commands (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_sn TEXT NOT NULL,
+            command TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            return_code INTEGER DEFAULT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_dev_status_id ON device_commands(device_sn, status, id);");
+        $pdo->exec("CREATE INDEX IF NOT EXISTS idx_dev_status_cmd ON device_commands(device_sn, status, command);");
+        $pdo = null;
+    }
+
+    /**
+     * Migrate legacy JSON commands file to SQLite without data loss.
+     */
+    protected function migrateLegacyJsonFile(): void
+    {
+        try {
+            $content = file_get_contents($this->filePath);
+            $decoded = json_decode($content, true);
+
+            @unlink($this->filePath);
+
+            $pdo = new \PDO("sqlite:{$this->filePath}");
+            $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+            $pdo->exec("CREATE TABLE IF NOT EXISTS device_commands (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_sn TEXT NOT NULL,
+                command TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'PENDING',
+                return_code INTEGER DEFAULT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );");
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_dev_status_id ON device_commands(device_sn, status, id);");
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_dev_status_cmd ON device_commands(device_sn, status, command);");
+
+            if (is_array($decoded) && !empty($decoded)) {
+                $pdo->beginTransaction();
+                $stmt = $pdo->prepare("INSERT INTO device_commands (id, device_sn, command, status, return_code, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)");
+                foreach ($decoded as $cmd) {
+                    $stmt->execute([
+                        $cmd['id'] ?? null,
+                        $cmd['device_sn'] ?? '',
+                        $cmd['command'] ?? '',
+                        $cmd['status'] ?? 'PENDING',
+                        isset($cmd['return_code']) ? (int)$cmd['return_code'] : null,
+                        $cmd['created_at'] ?? now()->toDateTimeString(),
+                        $cmd['updated_at'] ?? now()->toDateTimeString(),
+                    ]);
+                }
+                $pdo->commit();
+            }
+            $pdo = null;
+        } catch (\Throwable) {
+            @unlink($this->filePath);
+        }
     }
 }
