@@ -35,6 +35,13 @@ class BiometricSyncService
             return 0;
         }
 
+        if (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
+            $sourceDevice = Devices::where('serial_number', $sourceSn)->first();
+            if ($sourceDevice && !$sourceDevice->is_registration) {
+                return 0;
+            }
+        }
+
         $targetDevices = $this->getTargetDevices($sourceSn);
         if ($targetDevices->isEmpty()) {
             return 0;
@@ -87,6 +94,13 @@ class BiometricSyncService
         $pin = $bioData['PIN'] ?? $bioData['Pin'] ?? $bioData['pin'] ?? $bioData['FP PIN'] ?? null;
         if (!$pin) {
             return 0;
+        }
+
+        if (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
+            $sourceDevice = Devices::where('serial_number', $sourceSn)->first();
+            if ($sourceDevice && !$sourceDevice->is_registration) {
+                return 0;
+            }
         }
 
         $targetDevices = $this->getTargetDevices($sourceSn);

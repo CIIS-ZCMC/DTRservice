@@ -46,6 +46,7 @@ beforeEach(function () {
         'serial_number' => 'DEV_SN_SOURCE',
         'ip_address' => '192.168.1.50',
         'is_active' => 1,
+        'is_registration' => 1,
     ]);
 
     // Target device

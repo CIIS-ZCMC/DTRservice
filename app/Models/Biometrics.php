@@ -193,6 +193,14 @@ class Biometrics extends Model
                : 'APPENDED_NEW_FINGER';
        }
 
+       // Attendance devices (is_registration == 0) must NOT overwrite existing master templates
+       if ($action === 'UPDATED_EXISTING_FINGER' && !empty($deviceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
+           $device = Devices::where('serial_number', $deviceSn)->first();
+           if ($device && !$device->is_registration) {
+               return $record;
+           }
+       }
+
        $record->addOrUpdateFingerprint($fingerId, $size, $valid, $template);
        $record->saveQuietly();
 
