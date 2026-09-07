@@ -66,23 +66,26 @@ return [
         ],
 
         'device_logs' => [
-            'driver' => 'single',
+            'driver' => 'daily',
             'path' => storage_path('logs/device_logs.log'),
             'level' => env('LOG_LEVEL', 'debug'),
+            'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
         ],
 
-          'attendance_logs' => [
-            'driver' => 'single',
+        'attendance_logs' => [
+            'driver' => 'daily',
             'path' => storage_path('logs/attendance_logs.log'),
             'level' => env('LOG_LEVEL', 'debug'),
+            'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
         ],
 
         'registration_logs' => [
-            'driver' => 'single',
+            'driver' => 'daily',
             'path' => storage_path('logs/registration_logs.log'),
             'level' => env('LOG_LEVEL', 'debug'),
+            'days' => env('LOG_DAILY_DAYS', 14),
             'replace_placeholders' => true,
         ],
 

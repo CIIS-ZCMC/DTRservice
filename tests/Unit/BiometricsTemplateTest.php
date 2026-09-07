@@ -226,3 +226,45 @@ test('removeFingerprintTemplate removes specific FID and updates database', func
 
     $user->delete();
 });
+
+test('isFingerprintIdentical returns true for matching template and false for new/changed template', function () {
+    $templates = [
+        ['Finger_ID' => '0', 'Size' => '650', 'Valid' => '1', 'Template' => 'EXACT_TMP_STRING'],
+    ];
+
+    $user = Biometrics::create([
+        'biometric_id' => 99555,
+        'name' => 'Deduplication Test User',
+        'privilege' => 0,
+        'biometric' => json_encode($templates),
+    ]);
+
+    // Exact match
+    expect(Biometrics::isFingerprintIdentical(99555, 0, 'EXACT_TMP_STRING'))->toBeTrue();
+
+    // Different template content
+    expect(Biometrics::isFingerprintIdentical(99555, 0, 'DIFFERENT_TMP_STRING'))->toBeFalse();
+
+    // Different finger ID
+    expect(Biometrics::isFingerprintIdentical(99555, 1, 'EXACT_TMP_STRING'))->toBeFalse();
+
+    // Non-existent user
+    expect(Biometrics::isFingerprintIdentical(999999, 0, 'EXACT_TMP_STRING'))->toBeFalse();
+
+    $user->delete();
+});
+
+test('isUserIdentical returns true when profile matches and false when name or privilege differs', function () {
+    $user = Biometrics::create([
+        'biometric_id' => 99666,
+        'name' => 'John Smith',
+        'privilege' => 0,
+    ]);
+
+    expect(Biometrics::isUserIdentical(99666, ['Name' => 'John Smith', 'Pri' => 0]))->toBeTrue();
+    expect(Biometrics::isUserIdentical(99666, ['Name' => 'Jane Smith', 'Pri' => 0]))->toBeFalse();
+    expect(Biometrics::isUserIdentical(99666, ['Name' => 'John Smith', 'Pri' => 14]))->toBeFalse();
+
+    $user->delete();
+});
+

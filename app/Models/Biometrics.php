@@ -219,6 +219,79 @@ class Biometrics extends Model
        return $record;
    }
 
+    /**
+     * Check if a specific fingerprint template is already stored and identical.
+     *
+     * @param int|string $biometricId
+     * @param int|string $fingerId
+     * @param string $template
+     * @return bool True if exact template already exists in database
+     */
+    public static function isFingerprintIdentical(int|string $biometricId, int|string $fingerId, string $template): bool
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            return false;
+        }
+
+        $record = self::where('biometric_id', (int)$biometricId)->first();
+        if (!$record || empty($record->biometric) || $record->biometric === 'NOT_YET_REGISTERED') {
+            return false;
+        }
+
+        $templates = json_decode($record->biometric, true);
+        if (!is_array($templates)) {
+            return false;
+        }
+
+        $fingerIdStr = (string)$fingerId;
+        $templateStr = (string)$template;
+
+        foreach ($templates as $t) {
+            if (isset($t['Finger_ID']) && (string)$t['Finger_ID'] === $fingerIdStr) {
+                $existingTemplate = $t['Template'] ?? $t['TMP'] ?? '';
+                if ($existingTemplate === $templateStr) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if user profile data from device is already identical to database.
+     *
+     * @param int|string $pin
+     * @param array $userData
+     * @return bool True if user exists and name/privilege match
+     */
+    public static function isUserIdentical(int|string $pin, array $userData): bool
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            return false;
+        }
+
+        $record = self::where('biometric_id', (int)$pin)->first();
+        if (!$record) {
+            return false;
+        }
+
+        $incomingName = $userData['Name'] ?? $userData['name'] ?? null;
+        if ($incomingName !== null && trim($incomingName) !== '' && $incomingName !== $record->name) {
+            return false;
+        }
+
+        $incomingPri = $userData['Pri'] ?? $userData['pri'] ?? $userData['Privilege'] ?? null;
+        if ($incomingPri !== null) {
+            $expectedPri = ((int)$incomingPri === 1 || (int)$incomingPri === 14) ? 1 : 0;
+            if ((int)$record->privilege !== $expectedPri) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
    /**
     * Add or update fingerprint template on the current model instance.
     */

@@ -30,8 +30,6 @@ class LogsService
 
         $this->deviceRepository->markAsConnected($clientIp);
 
-        $this->rotateLogsIfNeeded();
-
         if (!empty($rawBody)) {
             // Device may push multiple records in a single request, separated by newlines.
             // Process each line individually so past/unsaved logs are not skipped.
@@ -78,18 +76,21 @@ class LogsService
                 $template = $record['Template'] ?? $record['TMP'] ?? null;
 
                 if ($pin && $fid !== null && $template) {
-                    $queuedCount = (int)($this->syncService?->syncBiometricToAll($sourceSn, 'FINGERTMP', $record) ?? 0);
+                    $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template);
+                    if (!$isIdentical) {
+                        $queuedCount = (int)($this->syncService?->syncBiometricToAll($sourceSn, 'FINGERTMP', $record) ?? 0);
 
-                    Biometrics::saveFingerprintTemplate(
-                        (int)$pin,
-                        $fid,
-                        $size,
-                        $valid,
-                        $template,
-                        $clientIp,
-                        $sourceSn,
-                        $queuedCount
-                    );
+                        Biometrics::saveFingerprintTemplate(
+                            (int)$pin,
+                            $fid,
+                            $size,
+                            $valid,
+                            $template,
+                            $clientIp,
+                            $sourceSn,
+                            $queuedCount
+                        );
+                    }
                 }
             }
             return "OK";
@@ -104,17 +105,20 @@ class LogsService
             foreach ($parsedRecords as $record) {
                 $pin = $record['PIN'] ?? null;
                 $name = $record['Name'] ?? null;
-                $queuedCount = (int)($this->syncService?->syncUserToAll($sourceSn, $record) ?? 0);
 
                 if ($pin) {
-                    RegistrationLogger::logUserRegistration(
-                        $pin,
-                        $name,
-                        $record,
-                        $clientIp,
-                        $sourceSn,
-                        $queuedCount
-                    );
+                    $isIdentical = Biometrics::isUserIdentical($pin, $record);
+                    if (!$isIdentical) {
+                        $queuedCount = (int)($this->syncService?->syncUserToAll($sourceSn, $record) ?? 0);
+                        RegistrationLogger::logUserRegistration(
+                            $pin,
+                            $name,
+                            $record,
+                            $clientIp,
+                            $sourceSn,
+                            $queuedCount
+                        );
+                    }
                 }
             }
             return "OK";
@@ -122,7 +126,7 @@ class LogsService
 
         // Parse tab-separated format.
         $parts = preg_split('/\t/', $line);
-        Log::channel('device_logs')->info('Parts', ['parts' => $parts]);
+        Log::channel('device_logs')->debug('Parts', ['parts' => $parts]);
 
         if (count($parts) < 3) {
             Log::channel('device_logs')->error('Invalid device data format', ['line' => $line]);
@@ -159,8 +163,8 @@ class LogsService
         }
 
         // Self-Healing Auto-Restore from Database
-        // If an OPLOG reports deletion/modification of user (2), password (3), fingerprint (4), card (5), clear (8), privilege change/delete (9), delete admin (10), face (24), bio clear (36), user clear (71):
-        if ($isOplog && $opCode !== null && in_array($opCode, [2, 3, 4, 5, 8, 9, 10, 24, 36, 71])) {
+        // Trigger only on actual deletion/clear opcodes: Delete User (2), Delete Fingerprint (4), Clear Data (8), Delete Admin (10), Delete Face (24), Bio Clear (36), User Clear (71)
+        if ($isOplog && $opCode !== null && in_array($opCode, [2, 4, 8, 10, 24, 36, 71])) {
             $device = $this->deviceRepository->findByIP($clientIp);
             if ($device && !empty($device->serial_number)) {
                 // Collect candidate PINs from parts[1] (operator PIN), parts[3] (target PIN), parts[4] (param)
@@ -176,7 +180,13 @@ class LogsService
                 }
                 $candidatePins = array_unique($candidatePins);
 
+                $commandService = app(\App\Services\DeviceCommandService::class);
                 foreach ($candidatePins as $pinToRestore) {
+                    // Prevent duplicate queueing if device already has pending restore commands
+                    if ($commandService->hasPendingUserCommand($device->serial_number, $pinToRestore)) {
+                        continue;
+                    }
+
                     $bioUser = null;
                     if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
                         $bioUser = Biometrics::where('biometric_id', $pinToRestore)->first();
@@ -269,30 +279,5 @@ class LogsService
         $this->logsRepository->writeStructuredLog($logData, $line);
 
         return "OK";
-    }
-
-    private function rotateLogsIfNeeded(): void
-    {
-        $maxSize = 10 * 1024 * 1024; // 10MB
-        $logs = [
-            storage_path('logs/device_logs.log'),
-            storage_path('logs/attendance_logs.log'),
-        ];
-
-        foreach ($logs as $logPath) {
-            if (!file_exists($logPath)) {
-                continue;
-            }
-
-            if (filesize($logPath) < $maxSize) {
-                continue;
-            }
-
-            $date = date('Y-m-d');
-            $info = pathinfo($logPath);
-            $newPath = $info['dirname'] . '/' . $info['filename'] . '_' . $date . '.' . $info['extension'];
-
-            rename($logPath, $newPath);
-        }
     }
 }

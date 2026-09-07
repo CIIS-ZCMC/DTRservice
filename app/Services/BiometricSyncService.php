@@ -51,6 +51,7 @@ class BiometricSyncService
         $devicePri = ((int)$pri === 1 || (int)$pri === 14) ? 14 : 0;
         $passwd = $userData['Passwd'] ?? $userData['Password'] ?? '';
         $card = $userData['Card'] ?? 0;
+        $grp = $userData['Grp'] ?? $userData['grp'] ?? $userData['Group'] ?? 1;
         $tz = $userData['TZ'] ?? $userData['Tz'] ?? $userData['Timezone'] ?? 1;
 
         $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";

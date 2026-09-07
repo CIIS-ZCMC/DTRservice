@@ -214,25 +214,30 @@ class DeviceController extends Controller
                 $pin = $record['PIN'] ?? null;
                 $name = $record['Name'] ?? null;
                 $pri = $record['Pri'] ?? $record['Privilege'] ?? null;
-                $queuedCount = (int)$this->syncService->syncUserToAll($sn, $record);
-
-                if ($pin && $pri !== null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
-                    $devAdmin = ((int)$pri === 1 || (int)$pri === 14) ? 1 : 0;
-                    $bioRecord = Biometrics::where('biometric_id', $pin)->first();
-                    if ($bioRecord) {
-                        $bioRecord->update(['privilege' => $devAdmin]);
-                    }
-                }
 
                 if ($pin) {
-                    RegistrationLogger::logUserRegistration(
-                        $pin,
-                        $name,
-                        $record,
-                        $request->ip(),
-                        $sn,
-                        $queuedCount
-                    );
+                    $isIdentical = Biometrics::isUserIdentical($pin, $record);
+
+                    if ($pri !== null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+                        $devAdmin = ((int)$pri === 1 || (int)$pri === 14) ? 1 : 0;
+                        $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                        if ($bioRecord && (int)$bioRecord->privilege !== $devAdmin) {
+                            $bioRecord->update(['privilege' => $devAdmin]);
+                            $isIdentical = false;
+                        }
+                    }
+
+                    if (!$isIdentical) {
+                        $queuedCount = (int)$this->syncService->syncUserToAll($sn, $record);
+                        RegistrationLogger::logUserRegistration(
+                            $pin,
+                            $name,
+                            $record,
+                            $request->ip(),
+                            $sn,
+                            $queuedCount
+                        );
+                    }
                 }
             }
             return response("OK\n", 200)->header('Content-Type', 'text/plain');
@@ -248,19 +253,22 @@ class DeviceController extends Controller
                 $valid = $record['Valid'] ?? 1;
                 $template = $record['Template'] ?? $record['TMP'] ?? null;
 
-                $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, $table, $record);
-
                 if ($pin && $fid !== null && $template) {
-                    Biometrics::saveFingerprintTemplate(
-                        (int)$pin,
-                        $fid,
-                        $size,
-                        $valid,
-                        $template,
-                        $request->ip(),
-                        $sn,
-                        $queuedCount
-                    );
+                    $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template);
+
+                    if (!$isIdentical) {
+                        $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, $table, $record);
+                        Biometrics::saveFingerprintTemplate(
+                            (int)$pin,
+                            $fid,
+                            $size,
+                            $valid,
+                            $template,
+                            $request->ip(),
+                            $sn,
+                            $queuedCount
+                        );
+                    }
                 }
             }
             return response("OK\n", 200)->header('Content-Type', 'text/plain');
@@ -289,19 +297,22 @@ class DeviceController extends Controller
             $valid = $record['Valid'] ?? 1;
             $template = $record['Template'] ?? $record['TMP'] ?? null;
 
-            $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, 'FINGERTMP', $record);
-
             if ($pin && $fid !== null && $template) {
-                Biometrics::saveFingerprintTemplate(
-                    (int)$pin,
-                    $fid,
-                    $size,
-                    $valid,
-                    $template,
-                    $request->ip(),
-                    $sn,
-                    $queuedCount
-                );
+                $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template);
+
+                if (!$isIdentical) {
+                    $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, 'FINGERTMP', $record);
+                    Biometrics::saveFingerprintTemplate(
+                        (int)$pin,
+                        $fid,
+                        $size,
+                        $valid,
+                        $template,
+                        $request->ip(),
+                        $sn,
+                        $queuedCount
+                    );
+                }
             }
         }
 

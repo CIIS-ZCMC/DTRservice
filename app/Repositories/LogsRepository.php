@@ -101,21 +101,12 @@ class LogsRepository implements LogsRepositoryInterface
             $format = implode(' | ', array_fill(0, count($logData), '%s'));
             $dataString = vsprintf($format, array_values($logData));
 
-            // Check if file exists and get content
-            $fileExists = Storage::disk('local')->exists($fileName);
-            $existingContent = $fileExists ? Storage::disk('local')->get($fileName) : '';
-
-            // Skip duplicate entries
-            if (strpos($existingContent, $dataString) !== false) {
-                return;
-            }
-
             // Create file with headers if it doesn't exist
-            if (! $fileExists) {
+            if (!Storage::disk('local')->exists($fileName)) {
                 Storage::disk('local')->put($fileName, $header . $separator . $columns . $separator);
             }
 
-            // Append new log entry
+            // Append new log entry directly
             Storage::disk('local')->append($fileName, $dataString);
         } catch (\Exception $e) {
             Log::channel('device_logs')->error('SaveLogsLocal :: Error processing record: ' . $e->getMessage());
@@ -126,7 +117,7 @@ class LogsRepository implements LogsRepositoryInterface
     {
         try {
             $device = $this->deviceRepository->findByIP($data['ip_address']);
-            $employee = $this->getEmployeeNameAndStatus($data['biometric_id']);
+            $employee = $this->getEmployeeNameAndStatus((int)$data['biometric_id']);
 
             $logData = [
                 'biometric_id' => $data['biometric_id'],
@@ -146,42 +137,24 @@ class LogsRepository implements LogsRepositoryInterface
     }
 
     /**
-     * Check if a log already exists by scanning log files instead of querying the DB.
-     * Scans current device_logs.log + 2 most recent rotated files.
+     * Check if a log already exists using fast database queries.
      */
     public function logExists(int $biometricId, string $dateTime): bool
     {
-        $date = substr($dateTime, 0, 10);
-        $time = substr($dateTime, 11, 8);
-        $searchPattern = '"biometric_id":"' . $biometricId . '"';
-        $datePattern = '"dtr_date":"' . $date . '"';
-        $timePattern = '"dtr_time":"' . $time . '"';
-
-        $files = glob(storage_path('logs/device_logs*.log'));
-        if (!$files) {
-            return false;
-        }
-
-        usort($files, fn($a, $b) => filemtime($b) - filemtime($a));
-        $files = array_slice($files, 0, 3);
-
-        foreach ($files as $file) {
-            $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            if (!$lines) {
-                continue;
-            }
-
-            for ($i = count($lines) - 1; $i >= 0; $i--) {
-                $line = $lines[$i];
-                if (strpos($line, 'Device log entry') === false) {
-                    continue;
-                }
-                if (strpos($line, $searchPattern) !== false
-                    && strpos($line, $datePattern) !== false
-                    && strpos($line, $timePattern) !== false) {
+        try {
+            if (\Illuminate\Support\Facades\Schema::hasTable('device_logs')) {
+                if (DeviceLogs::where('biometric_id', $biometricId)->where('date_time', $dateTime)->exists()) {
                     return true;
                 }
             }
+
+            if (\Illuminate\Support\Facades\Schema::hasTable('attendance_information')) {
+                if (AttendanceInformation::where('biometric_id', $biometricId)->where('first_entry', $dateTime)->exists()) {
+                    return true;
+                }
+            }
+        } catch (\Throwable $e) {
+            // If database lookup fails, return false to let processing continue
         }
 
         return false;
