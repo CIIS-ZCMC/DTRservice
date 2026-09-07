@@ -104,6 +104,24 @@ class Biometrics extends Model
                         }
                     }
                 }
+
+                // 3. Sync face template changes
+                if ($model->wasChanged('face') && !empty($model->face)) {
+                    $faceData = is_array($model->face) ? $model->face : json_decode($model->face, true);
+                    if (is_array($faceData)) {
+                        $faceData['PIN'] = (int)$model->biometric_id;
+                        $syncService->syncBiometricToAll(null, 'BIODATA', $faceData);
+                    }
+                }
+
+                // 4. Sync biophoto changes
+                if ($model->wasChanged('biophoto') && !empty($model->biophoto)) {
+                    $photoData = is_array($model->biophoto) ? $model->biophoto : json_decode($model->biophoto, true);
+                    if (is_array($photoData)) {
+                        $photoData['PIN'] = (int)$model->biometric_id;
+                        $syncService->syncBiometricToAll(null, 'BIOPHOTO', $photoData);
+                    }
+                }
             } catch (\Throwable $th) {
                 \Illuminate\Support\Facades\Log::channel('device_logs')->error('Biometrics::updated sync error: ' . $th->getMessage());
             }
@@ -195,13 +213,14 @@ class Biometrics extends Model
                : 'APPENDED_NEW_FINGER';
        }
 
-       // Attendance devices (is_registration == 0) must NOT overwrite existing master templates
-       if ($action === 'UPDATED_EXISTING_FINGER' && !empty($deviceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
-           $device = Devices::where('serial_number', $deviceSn)->first();
-           if ($device && !$device->is_registration) {
-               return $record;
-           }
-       }
+        // Attendance devices (is_registration == 0) must NOT overwrite existing master templates
+        if ($action === 'UPDATED_EXISTING_FINGER' && !empty($deviceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
+            $isReg = Devices::where('serial_number', $deviceSn)->where('is_registration', 1)->exists();
+            $hasDev = Devices::where('serial_number', $deviceSn)->exists();
+            if ($hasDev && !$isReg) {
+                return $record;
+            }
+        }
 
        $record->addOrUpdateFingerprint($fingerId, $size, $valid, $template);
        $record->saveQuietly();

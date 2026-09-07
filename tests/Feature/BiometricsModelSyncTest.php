@@ -1,4 +1,4 @@
-﻿<?php
+<?php
 
 use App\Models\Biometrics;
 use App\Models\Devices;
@@ -32,9 +32,22 @@ beforeEach(function () {
             $table->string('name')->nullable();
             $table->integer('privilege')->default(0);
             $table->longText('biometric')->nullable();
+            $table->longText('face')->nullable();
+            $table->longText('biophoto')->nullable();
             $table->string('name_with_biometric')->nullable();
             $table->timestamps();
         });
+    } else {
+        if (!Schema::hasColumn('biometrics', 'face')) {
+            Schema::table('biometrics', function (Blueprint $table) {
+                $table->longText('face')->nullable();
+            });
+        }
+        if (!Schema::hasColumn('biometrics', 'biophoto')) {
+            Schema::table('biometrics', function (Blueprint $table) {
+                $table->longText('biophoto')->nullable();
+            });
+        }
     }
 
     app(DeviceCommandService::class)->clearCommands();
@@ -161,3 +174,36 @@ test('deleting Biometrics record automatically queues DATA DELETE USER to all de
     expect($cmds1[0]['command'])->toBe("DATA DELETE USER PIN=7714");
     expect($cmds2[0]['command'])->toBe("DATA DELETE USER PIN=7714");
 });
+
+test('updating face or biophoto on Biometrics model automatically queues update commands to all devices', function () {
+    $bio = Biometrics::create([
+        'biometric_id' => 7715,
+        'name' => 'Face User',
+        'privilege' => 0,
+        'biometric' => null,
+    ]);
+
+    $commandService = app(DeviceCommandService::class);
+    $commandService->clearCommands();
+
+    $bio->update([
+        'face' => json_encode(['Size' => '1500', 'Valid' => '1', 'FaceData' => 'TEST_FACE']),
+    ]);
+
+    $cmds1 = $commandService->getAllCommands('SYNC_SN_001');
+    $faceCmds = array_filter($cmds1, fn($c) => str_contains($c['command'], 'DATA UPDATE biodata'));
+    expect($faceCmds)->toHaveCount(1);
+    expect(array_values($faceCmds)[0]['command'])->toContain('PIN=7715');
+
+    $commandService->clearCommands();
+
+    $bio->update([
+        'biophoto' => json_encode(['FileName' => '7715.jpg', 'Size' => '500', 'Content' => 'BASE64_PHOTO']),
+    ]);
+
+    $cmdsPhoto = $commandService->getAllCommands('SYNC_SN_001');
+    $photoCmds = array_filter($cmdsPhoto, fn($c) => str_contains($c['command'], 'DATA UPDATE biophoto'));
+    expect($photoCmds)->toHaveCount(1);
+    expect(array_values($photoCmds)[0]['command'])->toContain('PIN=7715');
+});
+

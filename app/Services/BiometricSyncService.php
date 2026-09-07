@@ -36,8 +36,9 @@ class BiometricSyncService
         }
 
         if (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
-            $sourceDevice = Devices::where('serial_number', $sourceSn)->first();
-            if ($sourceDevice && !$sourceDevice->is_registration) {
+            $isRegistration = Devices::where('serial_number', $sourceSn)->where('is_registration', 1)->exists();
+            $hasDeviceRecord = Devices::where('serial_number', $sourceSn)->exists();
+            if ($hasDeviceRecord && !$isRegistration) {
                 return 0;
             }
         }
@@ -97,8 +98,9 @@ class BiometricSyncService
         }
 
         if (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
-            $sourceDevice = Devices::where('serial_number', $sourceSn)->first();
-            if ($sourceDevice && !$sourceDevice->is_registration) {
+            $isRegistration = Devices::where('serial_number', $sourceSn)->where('is_registration', 1)->exists();
+            $hasDeviceRecord = Devices::where('serial_number', $sourceSn)->exists();
+            if ($hasDeviceRecord && !$isRegistration) {
                 return 0;
             }
         }
@@ -199,7 +201,7 @@ class BiometricSyncService
      * @param bool $cleanUnusedFingers Whether to delete unenrolled finger slots (0-9)
      * @return array Array of command strings
      */
-    public function generateUserProvisionCommands(\App\Models\Biometrics $bioModel, bool $cleanUnusedFingers = false): array
+    public function generateUserProvisionCommands(\App\Models\Biometrics $bioModel, bool $cleanUnusedFingers = true): array
     {
         $pin = (int)$bioModel->biometric_id;
         $name = $bioModel->name ?? 'Unknown';
@@ -229,7 +231,8 @@ class BiometricSyncService
         }
 
         // Clean out any finger slots (0-9) that are not enrolled in DB
-        if ($cleanUnusedFingers) {
+        // When $cleanUnusedFingers is true and the user has fingerprint records
+        if ($cleanUnusedFingers && !empty($enrolledFids)) {
             for ($slot = 0; $slot <= 9; $slot++) {
                 if (!isset($enrolledFids[$slot])) {
                     $commands[] = "DATA DELETE FINGERTMP\tPIN={$pin}\tFID={$slot}";
@@ -442,12 +445,13 @@ class BiometricSyncService
     {
         $query = Devices::where('is_active', 1)
             ->whereNotNull('serial_number')
-            ->where('serial_number', '!=', '');
+            ->where('serial_number', '!=', '')
+            ->where('serial_number', '!=', 'Fail!');
 
         if (!empty($sourceSn)) {
             $query->where('serial_number', '!=', $sourceSn);
         }
 
-        return $query->get();
+        return $query->get()->unique('serial_number');
     }
 }

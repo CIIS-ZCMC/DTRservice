@@ -198,3 +198,94 @@ test('biometrics:command-status command displays real-time sync status overview'
         ->expectsOutputToContain('Total Commands')
         ->assertExitCode(0);
 });
+
+test('biometrics:sync-device with --no-clean does not generate DATA DELETE FINGERTMP', function () {
+    $templates = [
+        ['Finger_ID' => '6', 'Size' => '1200', 'Valid' => '1', 'Template' => 'BASE64_TEMPLATE_FINGER_6'],
+    ];
+
+    $bio = Biometrics::create([
+        'biometric_id' => 9910,
+        'name' => 'No Clean User',
+        'privilege' => 0,
+        'biometric' => json_encode($templates),
+    ]);
+
+    $commandService = app(DeviceCommandService::class);
+    $commandService->clearCommands();
+
+    $this->artisan('biometrics:sync-device', [
+        '--all-devices' => true,
+        '--pin' => 9910,
+        '--no-clean' => true,
+    ])->assertExitCode(0);
+
+    $cmds = $commandService->getAllCommands('SYNC_SN_001');
+
+    // Expected: 1x DATA USER, 1x DATA UPDATE fingertmp, 0x DELETE
+    $deleteCmds = array_filter($cmds, fn($c) => str_contains($c['command'], 'DATA DELETE FINGERTMP'));
+    expect($deleteCmds)->toBeEmpty();
+
+    $updateCmds = array_filter($cmds, fn($c) => str_contains($c['command'], 'DATA UPDATE fingertmp'));
+    expect($updateCmds)->toHaveCount(1);
+});
+
+test('biometrics:sync-device for face-only user does not generate DATA DELETE FINGERTMP', function () {
+    $bio = Biometrics::create([
+        'biometric_id' => 9911,
+        'name' => 'Face Only User',
+        'privilege' => 0,
+        'biometric' => null,
+        'face' => json_encode(['PIN' => '9911', 'Size' => '2000', 'Valid' => '1', 'FaceData' => 'FACE_ONLY']),
+    ]);
+
+    $commandService = app(DeviceCommandService::class);
+    $commandService->clearCommands();
+
+    $this->artisan('biometrics:sync-device', [
+        '--all-devices' => true,
+        '--pin' => 9911,
+    ])->assertExitCode(0);
+
+    $cmds = $commandService->getAllCommands('SYNC_SN_001');
+    $deleteCmds = array_filter($cmds, fn($c) => str_contains($c['command'], 'DATA DELETE FINGERTMP'));
+    expect($deleteCmds)->toBeEmpty();
+
+    $faceCmds = array_filter($cmds, fn($c) => str_contains($c['command'], 'DATA UPDATE biodata'));
+    expect($faceCmds)->toHaveCount(1);
+});
+
+test('biometrics:sync-device deduplicates devices with same serial number', function () {
+    // Create duplicate device with same serial number
+    Devices::create([
+        'device_name' => 'Device 1 Duplicate',
+        'serial_number' => 'SYNC_SN_001',
+        'ip_address' => '192.168.1.102',
+        'is_active' => 1,
+        'is_registration' => 0,
+    ]);
+
+    $templates = [
+        ['Finger_ID' => '6', 'Size' => '1200', 'Valid' => '1', 'Template' => 'BASE64_TEMPLATE_FINGER_6'],
+    ];
+
+    $bio = Biometrics::create([
+        'biometric_id' => 9912,
+        'name' => 'Dedup Test User',
+        'privilege' => 0,
+        'biometric' => json_encode($templates),
+    ]);
+
+    $commandService = app(DeviceCommandService::class);
+    $commandService->clearCommands();
+
+    $this->artisan('biometrics:sync-device', [
+        '--all-devices' => true,
+        '--pin' => 9912,
+    ])->assertExitCode(0);
+
+    // Commands should only be queued ONCE for SYNC_SN_001 (11 commands, not 22)
+    $cmds = $commandService->getAllCommands('SYNC_SN_001');
+    expect($cmds)->toHaveCount(11);
+});
+

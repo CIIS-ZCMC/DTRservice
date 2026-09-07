@@ -248,12 +248,35 @@ class DeviceController extends Controller
             $records = ZkPushParser::parseKeyValues($raw);
             foreach ($records as $record) {
                 $pin = $record['PIN'] ?? null;
+                if (!$pin) continue;
+
+                // A. Face templates (BIODATA, FACE)
+                if (in_array($table, ['BIODATA', 'FACE'])) {
+                    $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                    if ($bioRecord) {
+                        $bioRecord->update(['face' => json_encode($record)]);
+                    }
+                    $this->syncService->syncBiometricToAll($sn, 'BIODATA', $record);
+                    continue;
+                }
+
+                // B. BioPhoto / User picture (BIOPHOTO, USERPIC, BIOPIC)
+                if (in_array($table, ['BIOPHOTO', 'USERPIC', 'BIOPIC'])) {
+                    $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                    if ($bioRecord) {
+                        $bioRecord->update(['biophoto' => json_encode($record)]);
+                    }
+                    $this->syncService->syncBiometricToAll($sn, 'BIOPHOTO', $record);
+                    continue;
+                }
+
+                // C. Fingerprints (FINGERTMP, TEMPLATEV10, etc.)
                 $fid = $record['Finger_ID'] ?? $record['FID'] ?? $record['FingerID'] ?? null;
                 $size = $record['Size'] ?? strlen($record['Template'] ?? $record['TMP'] ?? '');
                 $valid = $record['Valid'] ?? 1;
                 $template = $record['Template'] ?? $record['TMP'] ?? null;
 
-                if ($pin && $fid !== null && $template) {
+                if ($fid !== null && $template) {
                     $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template);
 
                     if (!$isIdentical) {

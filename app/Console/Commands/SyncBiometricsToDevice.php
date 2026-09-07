@@ -19,6 +19,7 @@ class SyncBiometricsToDevice extends Command
                             {device_sn? : Target device serial number}
                             {--pin= : Specific biometric ID / PIN to sync}
                             {--all-devices : Push to all active registered devices}
+                            {--clean-unused-fingers : Delete unenrolled finger slots from devices (default behavior)}
                             {--no-clean : Do not delete unenrolled finger slots from devices}
                             {--table : Display full summary table of pushed biometrics in console}';
 
@@ -57,7 +58,9 @@ class SyncBiometricsToDevice extends Command
             $devices = Devices::where('is_active', 1)
                 ->whereNotNull('serial_number')
                 ->where('serial_number', '!=', '')
-                ->get();
+                ->where('serial_number', '!=', 'Fail!')
+                ->get()
+                ->unique('serial_number');
         } else {
             $device = Devices::where('serial_number', $deviceSn)->first();
             if (!$device) {
