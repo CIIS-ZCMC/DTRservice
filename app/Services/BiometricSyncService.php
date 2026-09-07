@@ -196,9 +196,10 @@ class BiometricSyncService
      * Generate all ZKTeco provision commands (USER + FINGERTMP + BIODATA + BIOPHOTO) for a user model.
      *
      * @param \App\Models\Biometrics $bioModel
+     * @param bool $cleanUnusedFingers Whether to delete unenrolled finger slots (0-9)
      * @return array Array of command strings
      */
-    public function generateUserProvisionCommands(\App\Models\Biometrics $bioModel): array
+    public function generateUserProvisionCommands(\App\Models\Biometrics $bioModel, bool $cleanUnusedFingers = false): array
     {
         $pin = (int)$bioModel->biometric_id;
         $name = $bioModel->name ?? 'Unknown';
@@ -206,24 +207,43 @@ class BiometricSyncService
         $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
         $commands = [];
 
-        // 1. Create or ensure user profile exists on device
+        // 1. Create or ensure user profile exists on device (TZ=1 for 24/7 all-access, Grp=1)
         $commands[] = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
 
         // 2. Fingerprints
+        $enrolledFids = [];
+        $templates = [];
+
         if (!empty($bioModel->biometric) && $bioModel->biometric !== 'NOT_YET_REGISTERED') {
-            $templates = is_array($bioModel->biometric) ? $bioModel->biometric : json_decode($bioModel->biometric, true);
-            if (is_string($templates)) {
-                $templates = json_decode($templates, true);
+            $parsed = is_array($bioModel->biometric) ? $bioModel->biometric : json_decode($bioModel->biometric, true);
+            if (is_string($parsed)) {
+                $parsed = json_decode($parsed, true);
             }
-            if (is_array($templates)) {
+            if (is_array($parsed)) {
+                $templates = $parsed;
                 foreach ($templates as $t) {
-                    $fid = $t['Finger_ID'] ?? $t['FID'] ?? '0';
-                    $size = $t['Size'] ?? strlen($t['Template'] ?? '');
-                    $valid = $t['Valid'] ?? '1';
-                    $tmp = $t['Template'] ?? $t['TMP'] ?? '';
-                    $commands[] = "DATA UPDATE fingertmp\tPIN={$pin}\tFID={$fid}\tSize={$size}\tValid={$valid}\tTMP={$tmp}";
+                    $fid = (int)($t['Finger_ID'] ?? $t['FID'] ?? 0);
+                    $enrolledFids[$fid] = true;
                 }
             }
+        }
+
+        // Clean out any finger slots (0-9) that are not enrolled in DB
+        if ($cleanUnusedFingers) {
+            for ($slot = 0; $slot <= 9; $slot++) {
+                if (!isset($enrolledFids[$slot])) {
+                    $commands[] = "DATA DELETE FINGERTMP\tPIN={$pin}\tFID={$slot}";
+                }
+            }
+        }
+
+        // Update/overwrite enrolled fingers
+        foreach ($templates as $t) {
+            $fid = $t['Finger_ID'] ?? $t['FID'] ?? '0';
+            $size = $t['Size'] ?? strlen($t['Template'] ?? '');
+            $valid = $t['Valid'] ?? '1';
+            $tmp = $t['Template'] ?? $t['TMP'] ?? '';
+            $commands[] = "DATA UPDATE fingertmp\tPIN={$pin}\tFID={$fid}\tSize={$size}\tValid={$valid}\tTMP={$tmp}";
         }
 
         // 3. NIR Face (table BIODATA Type 9)
@@ -263,9 +283,10 @@ class BiometricSyncService
      *
      * @param string $deviceSn Target device serial number
      * @param int|\App\Models\Biometrics $pin Biometric ID / PIN or Model instance
+     * @param bool $cleanUnusedFingers Whether to delete unenrolled finger slots (0-9)
      * @return int Number of commands queued
      */
-    public function syncUserAndTemplatesToDevice(string $deviceSn, int|\App\Models\Biometrics $pin): int
+    public function syncUserAndTemplatesToDevice(string $deviceSn, int|\App\Models\Biometrics $pin, bool $cleanUnusedFingers = false): int
     {
         $bioModel = $pin instanceof \App\Models\Biometrics
             ? $pin
@@ -275,7 +296,7 @@ class BiometricSyncService
             return 0;
         }
 
-        $commandStrings = $this->generateUserProvisionCommands($bioModel);
+        $commandStrings = $this->generateUserProvisionCommands($bioModel, $cleanUnusedFingers);
         if (empty($commandStrings)) {
             return 0;
         }
@@ -305,15 +326,16 @@ class BiometricSyncService
      *
      * @param string|null $sourceSn Serial number of the source device (optional)
      * @param int $pin Biometric ID / PIN
+     * @param bool $cleanUnusedFingers Whether to delete unenrolled finger slots (0-9)
      * @return int Number of commands queued
      */
-    public function syncUserAndTemplatesToAll(?string $sourceSn, int $pin): int
+    public function syncUserAndTemplatesToAll(?string $sourceSn, int $pin, bool $cleanUnusedFingers = false): int
     {
         $targetDevices = $this->getTargetDevices($sourceSn);
         $totalQueued = 0;
 
         foreach ($targetDevices as $device) {
-            $totalQueued += $this->syncUserAndTemplatesToDevice($device->serial_number, $pin);
+            $totalQueued += $this->syncUserAndTemplatesToDevice($device->serial_number, $pin, $cleanUnusedFingers);
         }
 
         return $totalQueued;
@@ -323,9 +345,10 @@ class BiometricSyncService
      * Sync all registered users and their enrolled templates from the database to a specific device.
      *
      * @param string $deviceSn
+     * @param bool $cleanUnusedFingers Whether to delete unenrolled finger slots (0-9)
      * @return int Total commands queued
      */
-    public function syncAllUsersToDevice(string $deviceSn): int
+    public function syncAllUsersToDevice(string $deviceSn, bool $cleanUnusedFingers = true): int
     {
         if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
             return 0;
@@ -335,7 +358,7 @@ class BiometricSyncService
         $totalQueued = 0;
 
         foreach ($allUsers as $user) {
-            $totalQueued += $this->syncUserAndTemplatesToDevice($deviceSn, (int)$user->biometric_id);
+            $totalQueued += $this->syncUserAndTemplatesToDevice($deviceSn, (int)$user->biometric_id, $cleanUnusedFingers);
         }
 
         return $totalQueued;

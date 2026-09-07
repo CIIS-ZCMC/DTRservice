@@ -14,6 +14,8 @@ class Biometrics extends Model
        'name',
        'privilege',
        'biometric',
+       'face',
+       'biophoto',
        'name_with_biometric',
    ];
 

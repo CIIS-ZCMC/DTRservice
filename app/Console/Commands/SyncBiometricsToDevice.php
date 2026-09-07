@@ -18,14 +18,15 @@ class SyncBiometricsToDevice extends Command
     protected $signature = 'biometrics:sync-device 
                             {device_sn? : Target device serial number}
                             {--pin= : Specific biometric ID / PIN to sync}
-                            {--all-devices : Push to all active registered devices}';
+                            {--all-devices : Push to all active registered devices}
+                            {--no-clean : Do not delete unenrolled finger slots from devices}';
 
     /**
      * The console command description.
      *
      * @var string
      */
-    protected $description = 'Provision/sync user profile(s) and all enrolled biometric templates to a specific device or all devices';
+    protected $description = 'Provision/sync user profile(s) and all enrolled biometric templates to a specific device or all devices (cleans unenrolled finger slots by default)';
 
     public function __construct(
         protected BiometricSyncService $syncService,
@@ -41,6 +42,7 @@ class SyncBiometricsToDevice extends Command
         $deviceSn = $this->argument('device_sn');
         $pin = $this->option('pin');
         $allDevices = $this->option('all-devices');
+        $cleanUnused = !$this->option('no-clean');
 
         if (!$deviceSn && !$allDevices) {
             $this->error('Please specify a target device serial number or use --all-devices.');
@@ -111,10 +113,10 @@ class SyncBiometricsToDevice extends Command
 
         $totalCommands = 0;
 
-        $usersQuery->chunk(100, function ($usersChunk) use ($devices, &$totalCommands, $bar) {
+        $usersQuery->chunk(100, function ($usersChunk) use ($devices, &$totalCommands, $bar, $cleanUnused) {
             $batch = [];
             foreach ($usersChunk as $user) {
-                $commandStrings = $this->syncService->generateUserProvisionCommands($user);
+                $commandStrings = $this->syncService->generateUserProvisionCommands($user, $cleanUnused);
                 foreach ($devices as $device) {
                     foreach ($commandStrings as $cmd) {
                         $batch[] = [
