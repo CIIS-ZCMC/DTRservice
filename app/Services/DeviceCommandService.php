@@ -754,13 +754,6 @@ class DeviceCommandService
         return $updated;
     }
 
-        if ($updated && $matchedCmd) {
-            \App\Services\RegistrationLogger::logCommandAck($matchedCmd, $returnCode);
-        }
-
-        return $updated;
-    }
-
     /**
      * Check if a pending command matching an exact string exists across all files.
      *
