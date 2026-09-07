@@ -65,6 +65,16 @@ class CheckBiometricCommandStatus extends Command
         $this->info('  DEVICE COMMAND QUEUE & SYNC STATUS');
         $this->info('========================================================================================');
         $this->line("Total Commands: <options=bold>{$total}</> | Pending: <fg=yellow>{$pending}</> | Sent: <fg=cyan>{$sent}</> | Synced/Success: <fg=green>{$success}</> | Failed: <fg=red>{$failed}</>");
+
+        $files = $this->commandService->getAllCommandFiles();
+        $fileInfoList = [];
+        foreach ($files as $f) {
+            if (file_exists($f)) {
+                $fileInfoList[] = basename($f) . ' (' . round(filesize($f) / 1024 / 1024, 2) . ' MB)';
+            }
+        }
+        $fileSummary = !empty($fileInfoList) ? implode(', ', $fileInfoList) : 'device_commands.json';
+        $this->line("Queue Files: <fg=gray>{$fileSummary}</>");
         $this->newLine();
 
         // Device lookup map
