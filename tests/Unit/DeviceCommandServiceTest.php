@@ -6,15 +6,13 @@ uses(Tests\TestCase::class);
 
 beforeEach(function () {
     $this->testFilePath = storage_path('app/test_device_commands.json');
-    if (file_exists($this->testFilePath)) {
-        unlink($this->testFilePath);
-    }
     $this->service = new DeviceCommandService($this->testFilePath);
+    $this->service->clearCommands();
 });
 
 afterEach(function () {
-    if (file_exists($this->testFilePath)) {
-        unlink($this->testFilePath);
+    if (isset($this->service)) {
+        $this->service->clearCommands();
     }
 });
 
@@ -93,22 +91,30 @@ test('hasPendingCommand correctly identifies existing pending command', function
     expect($this->service->hasPendingCommand('DEV_002', 'DATA USER PIN=500'))->toBeFalse();
 });
 
-test('file is cleared when it exceeds the maximum size limit (threshold check)', function () {
-    // Create a service with a tiny size limit of 150 bytes to test the threshold clearing
+test('creates a new numbered file instead of clearing when size limit is reached and checks queue across all files', function () {
+    // Create a service with a tiny size limit of 150 bytes to test file rotation
     $smallLimitService = new DeviceCommandService($this->testFilePath, 150);
 
     $smallLimitService->queueCommand('DEV_001', 'CMD_A_INITIAL_COMMAND');
     expect(file_exists($this->testFilePath))->toBeTrue();
     expect(filesize($this->testFilePath))->toBeGreaterThan(0);
 
-    // Queue more commands so size exceeds 150 bytes
+    // Queue more commands so size exceeds 150 bytes and creates a numbered file
     $smallLimitService->queueCommand('DEV_001', 'CMD_B_LONGER_COMMAND_EXCEEDING_LIMIT_PADDING_1234567890');
     $smallLimitService->queueCommand('DEV_001', 'CMD_C_LONGER_COMMAND_EXCEEDING_LIMIT_PADDING_1234567890');
 
-    // Trigger size rotation / queue next
-    $smallLimitService->checkAndRotateSize();
+    $allFiles = $smallLimitService->getAllCommandFiles();
+    expect(count($allFiles))->toBeGreaterThanOrEqual(2);
 
-    // After clearing, reading commands should show it was reset
+    // Verify existing commands are preserved (NOT cleared) and both files are checked
     $commands = $smallLimitService->getAllCommands();
-    expect($commands)->toHaveCount(0);
+    expect($commands)->toHaveCount(3);
+
+    // Pending commands are also fetched across all numbered files in order
+    $pending = $smallLimitService->getPendingCommands('DEV_001', 10);
+    expect($pending)->toHaveCount(3);
+    expect($pending[0]['command'])->toBe('CMD_A_INITIAL_COMMAND');
+
+    // Clean up numbered files
+    $smallLimitService->clearCommands();
 });
