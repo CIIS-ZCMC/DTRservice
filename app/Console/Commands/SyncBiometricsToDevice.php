@@ -19,7 +19,8 @@ class SyncBiometricsToDevice extends Command
                             {device_sn? : Target device serial number}
                             {--pin= : Specific biometric ID / PIN to sync}
                             {--all-devices : Push to all active registered devices}
-                            {--no-clean : Do not delete unenrolled finger slots from devices}';
+                            {--no-clean : Do not delete unenrolled finger slots from devices}
+                            {--table : Display full summary table of pushed biometrics in console}';
 
     /**
      * The console command description.
@@ -43,6 +44,7 @@ class SyncBiometricsToDevice extends Command
         $pin = $this->option('pin');
         $allDevices = $this->option('all-devices');
         $cleanUnused = !$this->option('no-clean');
+        $showTable = $this->option('table') || !empty($pin);
 
         if (!$deviceSn && !$allDevices) {
             $this->error('Please specify a target device serial number or use --all-devices.');
@@ -112,11 +114,15 @@ class SyncBiometricsToDevice extends Command
         $bar->start();
 
         $totalCommands = 0;
+        $tableRows = [];
+        $pushTime = now()->format('Y-m-d H:i:s');
 
-        $usersQuery->chunk(100, function ($usersChunk) use ($devices, &$totalCommands, $bar, $cleanUnused) {
+        $usersQuery->chunk(100, function ($usersChunk) use ($devices, &$totalCommands, &$tableRows, $bar, $cleanUnused, $showTable, $pushTime) {
             $batch = [];
             foreach ($usersChunk as $user) {
                 $commandStrings = $this->syncService->generateUserProvisionCommands($user, $cleanUnused);
+                $cmdCount = count($commandStrings);
+
                 foreach ($devices as $device) {
                     foreach ($commandStrings as $cmd) {
                         $batch[] = [
@@ -124,6 +130,26 @@ class SyncBiometricsToDevice extends Command
                             'command' => $cmd,
                         ];
                     }
+
+                    // Log each push event
+                    \App\Services\RegistrationLogger::logPushSync(
+                        $user->biometric_id,
+                        $user->name,
+                        $device,
+                        $cmdCount
+                    );
+
+                    if ($showTable && count($tableRows) < 500) {
+                        $tableRows[] = [
+                            'biometric_id' => $user->biometric_id,
+                            'name' => $user->name ?? 'Unknown',
+                            'device_name' => $device->device_name ?? 'Unknown',
+                            'serial_number' => $device->serial_number,
+                            'commands' => $cmdCount,
+                            'time_pushed' => $pushTime,
+                        ];
+                    }
+
                     $bar->advance();
                 }
             }
@@ -136,7 +162,16 @@ class SyncBiometricsToDevice extends Command
         $bar->finish();
         $this->newLine(2);
 
+        if ($showTable && !empty($tableRows)) {
+            $this->table(
+                ['Biometric ID', 'Name', 'Device Name', 'Serial Number', 'Commands', 'Time Pushed'],
+                $tableRows
+            );
+        }
+
+        $today = now()->format('Y-m-d');
         $this->info("Successfully queued {$totalCommands} command(s) for {$totalDevices} device(s).");
+        $this->line("Push audit log written to: storage/logs/sync_pushed_{$today}.txt");
         $this->line("Target devices will download and install the user profiles and templates automatically upon their next poll.");
 
         return 0;

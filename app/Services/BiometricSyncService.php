@@ -311,6 +311,13 @@ class BiometricSyncService
 
         $queuedCount = $this->commandService->queueCommandsBatch($entries);
 
+        \App\Services\RegistrationLogger::logPushSync(
+            $bioModel->biometric_id,
+            $bioModel->name,
+            $deviceSn,
+            count($commandStrings)
+        );
+
         Log::channel('device_logs')->info('BiometricSyncService :: Provisioned user & all templates to device', [
             'device_sn' => $deviceSn,
             'pin' => $bioModel->biometric_id,

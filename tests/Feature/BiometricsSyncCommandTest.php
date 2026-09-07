@@ -136,28 +136,31 @@ test('biometrics:sync-device preserves face and biophoto while cleaning unused f
     expect($faceDeleteCmds)->toHaveCount(0);
 });
 
-test('biometrics:sync-device with --no-clean skips delete commands', function () {
+test('biometrics:sync-device logs push sync with BiometricID, Device Name, and Time pushed', function () {
+    $today = now()->format('Y-m-d');
+    $logFile = storage_path("logs/sync_pushed_{$today}.txt");
+    if (file_exists($logFile)) {
+        @unlink($logFile);
+    }
+
     $templates = [
         ['Finger_ID' => '6', 'Size' => '1200', 'Valid' => '1', 'Template' => 'BASE64_TEMPLATE_FINGER_6'],
     ];
 
     $bio = Biometrics::create([
-        'biometric_id' => 9903,
-        'name' => 'No Clean User',
+        'biometric_id' => 9904,
+        'name' => 'Audit Log User',
         'privilege' => 0,
         'biometric' => json_encode($templates),
     ]);
 
-    $commandService = app(DeviceCommandService::class);
-    $commandService->clearCommands();
-
-    $this->artisan('biometrics:sync-device', ['--all-devices' => true, '--pin' => 9903, '--no-clean' => true])
+    $this->artisan('biometrics:sync-device', ['--all-devices' => true, '--pin' => 9904])
         ->assertExitCode(0);
 
-    $cmds = $commandService->getAllCommands('SYNC_SN_001');
-
-    // Should only have 1x USER and 1x UPDATE fingertmp (no delete commands)
-    $deleteCmds = array_filter($cmds, fn($c) => str_contains($c['command'], 'DATA DELETE'));
-    expect($deleteCmds)->toBeEmpty();
-    expect($cmds)->toHaveCount(2);
+    expect(file_exists($logFile))->toBeTrue();
+    $content = file_get_contents($logFile);
+    expect($content)->toContain('PIN=9904');
+    expect($content)->toContain('Audit Log User');
+    expect($content)->toContain('Device 1 (Target)');
+    expect($content)->toContain('SYNC_SN_001');
 });

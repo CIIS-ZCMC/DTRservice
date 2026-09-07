@@ -107,6 +107,77 @@ class RegistrationLogger
     }
 
     /**
+     * Log a biometric profile/template push sync event to device.
+     */
+    public static function logPushSync(
+        int|string $biometricId,
+        ?string $name,
+        string|Devices $device,
+        int $commandCount = 0,
+        array $details = []
+    ): void {
+        $deviceSn = $device instanceof Devices ? $device->serial_number : $device;
+        $deviceName = $device instanceof Devices ? $device->device_name : null;
+        $deviceIp = $device instanceof Devices ? $device->ip_address : null;
+
+        if (!$deviceName || !$deviceIp) {
+            $deviceInfo = self::resolveDeviceInfo($deviceIp, $deviceSn);
+            $deviceName = $deviceInfo['name'];
+            $deviceIp = $deviceInfo['ip'];
+        }
+
+        $timestamp = now()->format('Y-m-d H:i:s');
+
+        $logData = [
+            'event' => 'BIOMETRIC_PUSH_SYNC',
+            'biometric_id' => $biometricId,
+            'name' => $name ?? 'Unknown',
+            'device_name' => $deviceName,
+            'device_ip' => $deviceIp,
+            'device_sn' => $deviceSn,
+            'commands_queued' => $commandCount,
+            'time_pushed' => $timestamp,
+            'details' => $details,
+        ];
+
+        // 1. Monolog registration & device channels
+        try {
+            Log::channel('registration_logs')->info("Biometric Push Sync: PIN {$biometricId} ({$name}) -> Device {$deviceName} [{$timestamp}]", $logData);
+        } catch (\Throwable $e) {
+            Log::channel('device_logs')->info("Biometric Push Sync: PIN {$biometricId} ({$name}) -> Device {$deviceName} [{$timestamp}]", $logData);
+        }
+
+        // 2. Audit file storage/logs/sync_pushed_YYYY-MM-DD.txt
+        try {
+            $today = now()->format('Y-m-d');
+            $filePath = storage_path("logs/sync_pushed_{$today}.txt");
+
+            if (!file_exists($filePath)) {
+                $header = "========================================================================================\n"
+                    . "  BIOMETRIC PUSH TO DEVICE AUDIT LOG - {$today}\n"
+                    . "  Format: [Time Pushed] | BiometricID | Name | Device Name (SN, IP) | Commands Queued\n"
+                    . "========================================================================================\n\n";
+                File::put($filePath, $header);
+            }
+
+            $line = sprintf(
+                "[%s] PIN=%-6s | Name=%-25s | Device=%-25s | SN=%-16s | IP=%-15s | Commands=%d\n",
+                $timestamp,
+                $biometricId,
+                substr($name ?? 'Unknown', 0, 25),
+                substr($deviceName ?? 'Unknown Device', 0, 25),
+                $deviceSn,
+                $deviceIp,
+                $commandCount
+            );
+
+            File::append($filePath, $line);
+        } catch (\Throwable $e) {
+            // Ignore
+        }
+    }
+
+    /**
      * Log a self-healing auto-restoration event when a device deleted a user or template.
      */
     public static function logAutoRestore(
