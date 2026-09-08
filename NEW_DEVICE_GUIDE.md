@@ -154,6 +154,8 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 | **Recover Templates from Raw Logs** | `php artisan biometrics:import-from-logs --sync-devices` |
 | **Run System Test Suite** | `php artisan test` |
 
+** Added --no-clean flag in case you ever want to sync without deleting unenrolled finger slots (php artisan biometrics:sync-device --no-clean
+
 ---
 
 ## 8. Troubleshooting & Verification
