@@ -118,3 +118,47 @@ test('creates a new numbered file instead of clearing when size limit is reached
     // Clean up numbered files
     $smallLimitService->clearCommands();
 });
+
+test('automatically deletes queue file when all commands in it are SUCCESS and retains if pending', function () {
+    $cleanTestPath = storage_path('framework/testing/test_auto_prune.json');
+    $cleanTestPath1 = storage_path('framework/testing/test_auto_prune_1.json');
+    @unlink($cleanTestPath);
+    @unlink($cleanTestPath1);
+
+    $pruneService = new DeviceCommandService($cleanTestPath, 350);
+
+    // Queue 4 commands that span across 2 files
+    $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=1');
+    $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=2');
+    $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=3');
+    $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=4');
+
+    expect(file_exists($cleanTestPath))->toBeTrue();
+    expect(file_exists($cleanTestPath1))->toBeTrue();
+
+    // ACK commands 1 and 2 (command 3 is still pending in first file)
+    $pruneService->recordCommandAck(1, 0);
+    $pruneService->recordCommandAck(2, 0);
+
+    // First file still has command 3 pending, so it must be retained
+    expect(file_exists($cleanTestPath))->toBeTrue();
+    expect(file_exists($cleanTestPath1))->toBeTrue();
+
+    // ACK command 3 (all commands in first file are now SUCCESS)
+    $pruneService->recordCommandAck(3, 0);
+
+    // First file must now be automatically deleted!
+    expect(file_exists($cleanTestPath))->toBeFalse();
+    // Second file still has command 4 pending, so it must be retained
+    expect(file_exists($cleanTestPath1))->toBeTrue();
+
+    // ACK command 4 (all commands in second file are now SUCCESS)
+    $pruneService->recordCommandAck(4, 0);
+
+    // Second file must now be automatically deleted!
+    expect(file_exists($cleanTestPath1))->toBeFalse();
+
+    @unlink($cleanTestPath);
+    @unlink($cleanTestPath1);
+});
+

@@ -189,6 +189,10 @@ test('target device sends ACK via devicecmd and updates status to SUCCESS', func
         'TEST_SN_002',
         "DATA USER PIN=5001\tName=Test Employee"
     );
+    $cmd2 = $commandService->queueCommand(
+        'TEST_SN_002',
+        "DATA USER PIN=5002\tName=Pending Employee"
+    );
     $commandService->markCommandsAsSent([$cmd['id']]);
 
     $ackPayload = "ID={$cmd['id']}&Return=0&CMD=DATA USER";
@@ -205,8 +209,22 @@ test('target device sends ACK via devicecmd and updates status to SUCCESS', func
 
     $response->assertStatus(200);
     $all = $commandService->getAllCommands('TEST_SN_002');
+    expect($all)->toHaveCount(2);
     expect($all[0]['status'])->toBe('SUCCESS');
     expect($all[0]['return_code'])->toBe(0);
+    expect($all[1]['status'])->toBe('PENDING');
+
+    // When the remaining command is also ACKed, completed file is automatically pruned
+    $this->call(
+        'POST',
+        '/iclock/devicecmd?SN=TEST_SN_002',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        "ID={$cmd2['id']}&Return=0&CMD=DATA USER"
+    );
+    expect($commandService->getAllCommands('TEST_SN_002'))->toBeEmpty();
 });
 
 test('device deletion OPLOG 2 triggers self-healing auto-restore of user and templates from DB', function () {

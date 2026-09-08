@@ -134,7 +134,10 @@ Once the provisioning command is executed:
 3. **Execution Acknowledgment (`ACK`) & In-Place Seeking**:
    - The device reports success back to `/iclock/devicecmd` (`Return=0`).
    - The server marks the command as `SUCCESS` via **in-place byte seeking (`fseek`)** in `< 0.5ms` without rewriting the entire 50MB file, ensuring zero disk I/O bottlenecks and instant responses.
-4. **Live Future Updates**:
+4. **Automatic File Cleanup (Zero Wasted Disk Space)**:
+   - Once every command in a file reaches `SUCCESS`, the file is **automatically deleted** from disk.
+   - Any file that still has commands with status `PENDING`, `SENT`, or non-success is **retained** until all devices finish acknowledging.
+5. **Live Future Updates**:
    - Any time an employee is registered or updated on **any other device** (or in the database), the server **automatically broadcasts** the new profile and templates to this device in real time.
 
 ---

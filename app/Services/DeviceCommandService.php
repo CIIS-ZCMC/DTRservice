@@ -855,9 +855,122 @@ class DeviceCommandService
 
         if ($updated && $matchedCmd) {
             \App\Services\RegistrationLogger::logCommandAck($matchedCmd, $returnCode);
+
+            // Automatically clean up any file where all commands are SUCCESS
+            if ($status === 'SUCCESS') {
+                $this->pruneCompletedFiles();
+            }
         }
 
         return $updated;
+    }
+
+    /**
+     * Check if a command file contains only SUCCESS commands (and at least 1 command).
+     * If it contains any PENDING, SENT, FAILED, or other non-SUCCESS commands, returns false.
+     *
+     * @param string $filePath
+     * @return bool True if all commands in the file are SUCCESS
+     */
+    public function isFileAllSuccess(string $filePath): bool
+    {
+        if (!file_exists($filePath) || filesize($filePath) === 0) {
+            return false;
+        }
+
+        $fp = $this->openWithLock($filePath, 'r', LOCK_SH);
+        if (!$fp) {
+            return false;
+        }
+
+        try {
+            $hasCommands = false;
+
+            // Peek for legacy JSON array
+            $firstChar = '';
+            while (($char = fgetc($fp)) !== false) {
+                if (!ctype_space($char)) {
+                    $firstChar = $char;
+                    break;
+                }
+            }
+            rewind($fp);
+
+            if ($firstChar === '[') {
+                $content = stream_get_contents($fp);
+                $decoded = json_decode($content, true);
+                if (!is_array($decoded) || empty($decoded)) {
+                    return false;
+                }
+                foreach ($decoded as $cmd) {
+                    if (trim($cmd['status'] ?? '') !== 'SUCCESS') {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            // Stream NDJSON line-by-line
+            while (($line = fgets($fp)) !== false) {
+                $trimmed = trim($line);
+                if ($trimmed === '') {
+                    continue;
+                }
+
+                // If line contains PENDING or SENT, it's definitely not completed; retain immediately
+                if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT   "')) {
+                    return false;
+                }
+
+                $cmd = json_decode($trimmed, true);
+                if (!$cmd || !isset($cmd['id'])) {
+                    continue;
+                }
+
+                $hasCommands = true;
+                if (trim($cmd['status'] ?? '') !== 'SUCCESS') {
+                    return false; // Retain file if any command failed or is not SUCCESS
+                }
+            }
+
+            return $hasCommands;
+        } finally {
+            @flock($fp, LOCK_UN);
+            fclose($fp);
+        }
+    }
+
+    /**
+     * Automatically inspect all command queue files and delete any file where all commands are SUCCESS.
+     * Retains any files that still have PENDING, SENT, or non-SUCCESS commands.
+     *
+     * @return array<string> List of deleted file paths
+     */
+    public function pruneCompletedFiles(): array
+    {
+        $deleted = [];
+
+        foreach ($this->getAllCommandFiles() as $file) {
+            if ($this->isFileAllSuccess($file)) {
+                $fp = $this->openWithLock($file, 'c+', LOCK_EX);
+                if ($fp) {
+                    @flock($fp, LOCK_UN);
+                    fclose($fp);
+
+                    if (@unlink($file)) {
+                        $deleted[] = $file;
+                        self::$previousPendingCache = null;
+
+                        \Illuminate\Support\Facades\Log::channel('device_logs')->info(
+                            'DeviceCommandService :: Automatically deleted completed command file (all commands SUCCESS)',
+                            ['file' => basename($file)]
+                        );
+                    }
+                }
+            }
+        }
+
+        return $deleted;
     }
 
     /**

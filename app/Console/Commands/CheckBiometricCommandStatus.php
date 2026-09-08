@@ -39,6 +39,8 @@ class CheckBiometricCommandStatus extends Command
         $statusFilter = $this->option('status') ? strtoupper($this->option('status')) : null;
         $limit = (int)$this->option('limit');
 
+        $this->commandService->pruneCompletedFiles();
+
         $allCommands = $this->commandService->getAllCommands($deviceFilter);
 
         if (empty($allCommands)) {
