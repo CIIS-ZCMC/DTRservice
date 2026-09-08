@@ -103,12 +103,19 @@ php artisan biometrics:sync-device CKFT230860012
 
 ### Option B: Sync a Specific Employee PIN Only
 ```bash
-php artisan biometrics:sync-device CKFT230860012 --pin=493
+php artisan biometrics:sync-device <SERIAL_NUMBER> --pin=493
 ```
 
-### Option C: Push Masterlist to All Active Connected Devices
+### Option C: Push Masterlist to All Active Connected Devices (Full Deep Clean)
+By default, this provisions all profiles, enrolled fingerprints, and cleans out unused finger slots (0-9) so no old ghost fingerprints remain:
 ```bash
 php artisan biometrics:sync-device --all-devices
+```
+
+### Option D: Fast Masterlist Push to All Devices (Skip Unused Finger Cleaning)
+If you want a significantly faster sync (up to 75% fewer commands) that only uploads active enrolled fingerprints without deleting unassigned slots:
+```bash
+php artisan biometrics:sync-device --all-devices --no-clean
 ```
 
 ---
@@ -117,40 +124,54 @@ php artisan biometrics:sync-device --all-devices
 
 Once the provisioning command is executed:
 
-1. **Queueing**: The server compiles all user profiles (`DATA USER`) and fingerprint templates (`DATA UPDATE fingertmp`) into `storage/app/device_commands.json`.
+1. **Queueing & Multi-File Rotation**:
+   - The server compiles all user profiles (`DATA USER`), fingerprint templates (`DATA UPDATE fingertmp`), and deletion commands into `storage/app/device_commands.json`.
+   - **50MB Rotation**: If a file reaches 50MB, it automatically rotates to numbered files (`device_commands_1.json`, `device_commands_2.json`, etc.) while preserving all existing commands.
 2. **Gradual Polling**:
    - The device regularly polls `/iclock/getrequest?SN=<SERIAL_NUMBER>`.
    - The server delivers **10 commands per poll cycle**.
    - The terminal stores each user profile and template in its local memory.
-3. **Execution Acknowledgment (`ACK`)**:
+3. **Execution Acknowledgment (`ACK`) & In-Place Seeking**:
    - The device reports success back to `/iclock/devicecmd` (`Return=0`).
-   - The server marks the command as `SUCCESS`.
+   - The server marks the command as `SUCCESS` via **in-place byte seeking (`fseek`)** in `< 0.5ms` without rewriting the entire 50MB file, ensuring zero disk I/O bottlenecks and instant responses.
 4. **Live Future Updates**:
    - Any time an employee is registered or updated on **any other device** (or in the database), the server **automatically broadcasts** the new profile and templates to this device in real time.
 
 ---
 
-## 6. Self-Healing & Terminal-Tampering Protection
+## 6. Self-Healing & Database as the Source of Truth
 
-The system enforces the **Central Database as the sole Masterlist authority**, not the individual physical terminals:
+The system enforces the **Central Database as the sole Masterlist authority**, not individual physical terminals:
 
-* **Unauthorized Deletion Protection**:
-  If an administrator or user deletes an employee or clears fingerprints directly on the physical terminal screen, the terminal reports an operation log (`OPLOG 2`, `OPLOG 4`, `OPLOG 8`, `OPLOG 9`, `OPLOG 71`).
-* **Automated Self-Healing**:
-  The server inspects the database masterlist. Because the user still exists in the DB, the server **rejects the terminal deletion** and automatically re-queues the user profile and biometric templates back onto that terminal.
-* **Legitimate Deletions**:
+* **Unauthorized Deletion Protection & Self-Healing**:
+  If an administrator or user deletes an employee or clears fingerprints directly on the physical terminal screen, the terminal reports an operation log (`OPLOG 2`, `OPLOG 4`, `OPLOG 8`, `OPLOG 9`, `OPLOG 71`). Because the user still exists in the DB, the server **rejects the terminal deletion** and automatically re-queues the user profile and biometric templates back onto that terminal.
+* **Cleaning Ghost/Unenrolled Finger Slots**:
+  Running `php artisan biometrics:sync-device --all-devices` automatically compares enrolled fingerprints in the DB against slots 0–9, dispatching `DATA DELETE FINGERTMP` commands for unassigned slots so no ghost templates linger on terminals.
+* **Purging Orphan Users from Devices**:
+  If a user profile exists on physical devices that does not exist in the database (or was created during testing), purge it from all devices using:
+  ```bash
+  php artisan biometrics:delete-user <PIN> --all-devices
+  ```
+* **Legitimate Masterlist Deletions**:
   Deletions must be performed from the server/database. When a user or fingerprint is deleted from the DB masterlist (e.g. `php artisan biometrics:delete-finger <pin> <fid>`), the server dispatches `DATA DELETE` commands to all connected devices.
 
 ---
 
 ## 7. Useful Maintenance & Diagnostic Commands
 
+### Command Quick Reference Table
+
 | Task | Command |
 | :--- | :--- |
 | **Sync DB to a New Device** | `php artisan biometrics:sync-device <SERIAL_NUMBER>` |
 | **Sync Single PIN to Device** | `php artisan biometrics:sync-device <SERIAL_NUMBER> --pin=<PIN>` |
-| **Sync DB to ALL Active Devices** | `php artisan biometrics:sync-device --all-devices` |
-| **Delete Fingerprint Across All Devices** | `php artisan biometrics:delete-finger <PIN> <FID>` |
+| **Sync DB to ALL Active Devices (Deep Clean)** | `php artisan biometrics:sync-device --all-devices` |
+| **Sync DB to ALL Devices (Fast / No-Clean)** | `php artisan biometrics:sync-device --all-devices --no-clean` |
+| **Check Live Command Queue & Sync Status** | `php artisan biometrics:command-status` |
+| **Instantly Stop & Clear Command Queue** | `php artisan biometrics:clear-queue` |
+| **Purge User Profile from All Devices** | `php artisan biometrics:delete-user <PIN> --all-devices` |
+| **Delete User from Devices AND Database** | `php artisan biometrics:delete-user <PIN> --all-devices --with-db` |
+| **Delete Specific Fingerprint Across Devices** | `php artisan biometrics:delete-finger <PIN> <FID>` |
 | **Recover Templates from Raw Logs** | `php artisan biometrics:import-from-logs --sync-devices` |
 | **Run System Test Suite** | `php artisan test` |
 
@@ -158,17 +179,71 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 
 ---
 
+### Detailed Command Usage
+
+#### 1. Monitor Queue & Device Execution Status
+Inspect real-time counts of Total, Pending, Sent, Synced/Success, and Failed commands:
+```bash
+# View summary table and latest 50 commands
+php artisan biometrics:command-status
+
+# Filter by a specific device serial number
+php artisan biometrics:command-status --device=CKFT230860012
+
+# Filter by employee PIN
+php artisan biometrics:command-status --pin=1
+
+# Filter by status (PENDING, SENT, SUCCESS, FAILED)
+php artisan biometrics:command-status --status=PENDING --limit=100
+```
+
+#### 2. Stop and Clear the Queue Instantly
+If a large sync is running and you need to stop devices from executing commands immediately:
+```bash
+php artisan biometrics:clear-queue
+```
+*Deletes all numbered queue files, clears in-memory caches, and resets `device_commands.json` to 0 commands. Connected devices immediately stop executing on their next poll.*
+
+#### 3. Delete a User Profile from Devices (Orphan Cleanup)
+```bash
+# Delete user from ALL connected devices:
+php artisan biometrics:delete-user 99499 --all-devices
+
+# Delete user from a specific device only:
+php artisan biometrics:delete-user 99499 CKFT230860012
+
+# Delete from devices AND remove record from the database:
+php artisan biometrics:delete-user 99499 --all-devices --with-db
+```
+
+#### 4. Delete a Specific Fingerprint Template
+```bash
+# Delete finger ID 2 (0-9) for PIN 493 across all devices and database:
+php artisan biometrics:delete-finger 493 2
+```
+
+---
+
 ## 8. Troubleshooting & Verification
 
-### 1. Verify Device Heartbeat & Connection
-* Check the database `devices` table: `last_seen_at` should update within the last 2 minutes when the device is actively polling.
-* Check the Web Log Viewer: Navigate to `/logs/alert` to monitor live incoming attendance and device events.
+### 1. Device Globe Icon Shows an `X` (Disconnected)
+* **Web Server Not Running**: Verify `php artisan serve --host=0.0.0.0 --port=8000` (or Apache/IIS) is active and listening on the server port.
+* **Network Connectivity**: Ping the device IP from the server to verify local routing.
+* **Server Port / IP**: In the physical terminal menu (`Comm. -> Cloud Server`), verify the Server IP and Port match your server.
+* Once the server responds to `/iclock/cdata` with HTTP `200 OK`, the `X` on the globe icon disappears automatically within 15–30 seconds.
 
 ### 2. Verify Command Queue Execution
-* Check `storage/app/device_commands.json` to inspect pending, sent, or acknowledged commands.
-* Check Monolog device logs in `storage/logs/device_logs.log` or Monolog registration logs in `storage/logs/registration_logs.log`.
+* Run `php artisan biometrics:command-status` to inspect live progress.
+* Check Monolog device logs: `storage/logs/device_logs.log`
+* Check Monolog registration logs: `storage/logs/registration_logs.log`
 
-### 3. Verify Daily Audit Logs
-* View the human-readable daily audit trail located at:
+### 3. Verify Real-Time Audit Logs
+* **Device ACK Confirmations**:
+  `storage/logs/sync_ack_YYYY-MM-DD.txt`
+  *(Shows exact timestamp, return code, command ID, PIN, employee name, device name/SN, and command type executed by the terminal).*
+* **Push Sync Dispatches**:
+  `storage/logs/sync_pushed_YYYY-MM-DD.txt`
+  *(Logs each push event dispatched to terminals).*
+* **User Profile & Template Verifications**:
   `storage/logs/registration_verified_YYYY-MM-DD.txt`
-  *(Contains timestamps, PINs, employee names, finger IDs, device IPs/SNs, and synced device counts).*
+  *(Contains employee profiles and fingerprint templates verified and stored in the database).*

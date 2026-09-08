@@ -285,6 +285,9 @@ class DeviceCommandService
                 }
                 $decoded = json_decode($line, true);
                 if (is_array($decoded)) {
+                    if (isset($decoded['status'])) {
+                        $decoded['status'] = trim($decoded['status']);
+                    }
                     $commands[] = $decoded;
                 }
             }
@@ -699,32 +702,36 @@ class DeviceCommandService
                         }
                     }
                 } else {
-                    $lines = [];
-                    while (($line = fgets($fp)) !== false) {
-                        $trimmed = trim($line);
-                        if ($trimmed === '') {
-                            $lines[] = $line;
+                    $remainingLookup = $lookup;
+                    while (!feof($fp)) {
+                        $lineStart = ftell($fp);
+                        $line = fgets($fp);
+                        if ($line === false) {
+                            break;
+                        }
+
+                        if (!str_contains($line, '"status":"PENDING"')) {
                             continue;
                         }
 
-                        $cmd = json_decode($trimmed, true);
-                        if ($cmd && isset($cmd['id']) && isset($lookup[(string)$cmd['id']])) {
-                            $cmd['status'] = 'SENT';
-                            $cmd['updated_at'] = $now;
-                            $line = json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
-                            $fileModified = true;
+                        foreach ($remainingLookup as $cmdId => $_) {
+                            if (str_contains($line, '"id":' . $cmdId . ',') || str_contains($line, '"id":' . $cmdId . '}')) {
+                                $pos = strpos($line, '"status":"PENDING"');
+                                if ($pos !== false) {
+                                    fseek($fp, $lineStart + $pos, SEEK_SET);
+                                    fwrite($fp, '"status":"SENT   "');
+                                    fseek($fp, $lineStart + strlen($line), SEEK_SET);
+                                    unset($remainingLookup[$cmdId]);
+                                }
+                                break;
+                            }
                         }
-                        $lines[] = $line;
-                    }
 
-                    if ($fileModified) {
-                        rewind($fp);
-                        ftruncate($fp, 0);
-                        foreach ($lines as $outLine) {
-                            fwrite($fp, $outLine);
+                        if (empty($remainingLookup)) {
+                            break;
                         }
-                        fflush($fp);
                     }
+                    fflush($fp);
                 }
             } finally {
                 @flock($fp, LOCK_UN);
@@ -793,34 +800,47 @@ class DeviceCommandService
                         }
                     }
                 } else {
-                    $lines = [];
-                    while (($line = fgets($fp)) !== false) {
-                        $trimmed = trim($line);
-                        if ($trimmed === '') {
-                            $lines[] = $line;
-                            continue;
+                    $needle1 = '"id":' . $cmdIdStr . ',';
+                    $needle2 = '"id":' . $cmdIdStr . '}';
+
+                    while (!feof($fp)) {
+                        $lineStart = ftell($fp);
+                        $line = fgets($fp);
+                        if ($line === false) {
+                            break;
                         }
 
-                        $cmd = json_decode($trimmed, true);
-                        if ($cmd && isset($cmd['id']) && (string)$cmd['id'] === $cmdIdStr) {
-                            $cmd['status'] = $status;
-                            $cmd['return_code'] = $returnCode;
-                            $cmd['updated_at'] = $now;
-                            $line = json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
-                            $fileModified = true;
-                            $updated = true;
-                            $matchedCmd = $cmd;
-                        }
-                        $lines[] = $line;
-                    }
+                        if (str_contains($line, $needle1) || str_contains($line, $needle2)) {
+                            $trimmed = trim($line);
+                            $cmd = json_decode($trimmed, true);
+                            if ($cmd && (string)($cmd['id'] ?? '') === $cmdIdStr) {
+                                $pos = strpos($line, '"status":"');
+                                if ($pos !== false) {
+                                    $currentStatusPart = substr($line, $pos, 18);
+                                    if ($currentStatusPart === '"status":"PENDING"' || $currentStatusPart === '"status":"SENT   "') {
+                                        $paddedStatus = $status === 'SUCCESS' ? '"status":"SUCCESS"' : '"status":"FAILED "';
+                                        fseek($fp, $lineStart + $pos, SEEK_SET);
+                                        fwrite($fp, $paddedStatus);
+                                    }
+                                }
 
-                    if ($fileModified) {
-                        rewind($fp);
-                        ftruncate($fp, 0);
-                        foreach ($lines as $outLine) {
-                            fwrite($fp, $outLine);
+                                $posRet = strpos($line, '"return_code":');
+                                if ($posRet !== false) {
+                                    $retPart = substr($line, $posRet, 18);
+                                    if (str_starts_with($retPart, '"return_code":')) {
+                                        $paddedRet = sprintf('"return_code":%-4s', $returnCode);
+                                        fseek($fp, $lineStart + $posRet, SEEK_SET);
+                                        fwrite($fp, $paddedRet);
+                                    }
+                                }
+                                fflush($fp);
+                                $updated = true;
+                                $cmd['status'] = $status;
+                                $cmd['return_code'] = $returnCode;
+                                $matchedCmd = $cmd;
+                                break;
+                            }
                         }
-                        fflush($fp);
                     }
                 }
             } finally {
