@@ -446,7 +446,6 @@ class DeviceController extends Controller
                 'udp_port'        => '4370',
                 'is_active'       => 1,
                 'is_registration' => 0,
-                'for_attendance'  => 1,
                 'last_seen_at'    => now(),
             ]);
 
