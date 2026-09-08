@@ -138,3 +138,138 @@ test('pushing template to /iclock/fdata saves template to DB and queues sync com
 
     $user->delete();
 });
+
+test('pushing template from operating device (is_registration=0) saves template to DB and broadcasts to target devices', function () {
+    Devices::create([
+        'device_name' => 'Operating Terminal',
+        'serial_number' => 'DEV_SN_OPERATING',
+        'ip_address' => '192.168.1.52',
+        'is_active' => 1,
+        'is_registration' => 0,
+    ]);
+
+    $user = Biometrics::create([
+        'biometric_id' => 99883,
+        'name' => 'Operating Device User',
+        'privilege' => 0,
+        'biometric' => null,
+    ]);
+
+    app(DeviceCommandService::class)->clearCommands();
+
+    $payload = "FP PIN=99883\tFID=2\tSize=640\tValid=1\tTMP=OPERATING_TERMINAL_TEMPLATE";
+
+    $response = $this->call(
+        'POST',
+        '/iclock/cdata?SN=DEV_SN_OPERATING',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        $payload
+    );
+
+    $response->assertStatus(200);
+
+    // Verify DB updated with template from operating terminal
+    $user->refresh();
+    $templates = json_decode($user->biometric, true);
+    expect($templates)->toHaveCount(1);
+    expect($templates[0]['Finger_ID'])->toBe('2');
+    expect($templates[0]['Template'])->toBe('OPERATING_TERMINAL_TEMPLATE');
+
+    // Verify broadcast queued for other devices (DEV_SN_SOURCE & DEV_SN_TARGET)
+    $commandService = app(DeviceCommandService::class);
+    $cmdsTarget = $commandService->getAllCommands('DEV_SN_TARGET');
+    $cmdsSource = $commandService->getAllCommands('DEV_SN_SOURCE');
+    $cmdsOperating = $commandService->getAllCommands('DEV_SN_OPERATING');
+
+    expect($cmdsTarget)->toHaveCount(2);
+    expect($cmdsSource)->toHaveCount(2);
+    expect($cmdsOperating)->toHaveCount(0); // Source operating device excluded from queue
+
+    $user->delete();
+});
+
+test('overwriting an existing finger on an operating device updates DB template and broadcasts new template', function () {
+    Devices::create([
+        'device_name' => 'Ward Terminal',
+        'serial_number' => 'DEV_SN_WARD',
+        'ip_address' => '192.168.1.53',
+        'is_active' => 1,
+        'is_registration' => 0,
+    ]);
+
+    $initialTemplates = [
+        ['Finger_ID' => '6', 'Size' => '700', 'Valid' => '1', 'Template' => 'OLD_TEMPLATE_6'],
+    ];
+
+    $user = Biometrics::create([
+        'biometric_id' => 99884,
+        'name' => 'Overwrite User',
+        'privilege' => 0,
+        'biometric' => json_encode($initialTemplates),
+    ]);
+
+    app(DeviceCommandService::class)->clearCommands();
+
+    // Push new template for finger 6 on Ward Terminal (is_registration = 0)
+    $payload = "FP PIN=99884\tFID=6\tSize=850\tValid=1\tTMP=NEW_OVERWRITTEN_TEMPLATE_6";
+
+    $response = $this->call(
+        'POST',
+        '/iclock/cdata?SN=DEV_SN_WARD',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        $payload
+    );
+
+    $response->assertStatus(200);
+
+    // 1. Verify DB is updated with the NEW template string
+    $user->refresh();
+    $updatedTemplates = json_decode($user->biometric, true);
+    expect($updatedTemplates)->toHaveCount(1);
+    expect($updatedTemplates[0]['Finger_ID'])->toBe('6');
+    expect($updatedTemplates[0]['Template'])->toBe('NEW_OVERWRITTEN_TEMPLATE_6');
+    expect($updatedTemplates[0]['Size'])->toBe('850');
+
+    // 2. Verify broadcast commands were queued with the updated template
+    $commandService = app(DeviceCommandService::class);
+    $cmdsTarget = $commandService->getAllCommands('DEV_SN_TARGET');
+    expect($cmdsTarget)->toHaveCount(2);
+    expect($cmdsTarget[0]['command'])->toContain('DATA USER PIN=99884');
+    expect($cmdsTarget[0]['command'])->toContain('TZ=1');
+    expect($cmdsTarget[1]['command'])->toContain('DATA UPDATE fingertmp');
+    expect($cmdsTarget[1]['command'])->toContain('FID=6');
+    expect($cmdsTarget[1]['command'])->toContain('TMP=NEW_OVERWRITTEN_TEMPLATE_6');
+
+    $user->delete();
+});
+
+test('syncing user with incoming TZ=0 forces TZ=1 preventing Invalid Time Period', function () {
+    $payload = "PIN=99885\tName=Timezone Test User\tPri=0\tPasswd=\tCard=0\tGrp=0\tTZ=0";
+
+    $response = $this->call(
+        'POST',
+        '/iclock/cdata?SN=DEV_SN_SOURCE&table=USER',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        $payload
+    );
+
+    $response->assertStatus(200);
+
+    $commandService = app(DeviceCommandService::class);
+    $cmds = $commandService->getAllCommands('DEV_SN_TARGET');
+    expect($cmds)->toHaveCount(1);
+    expect($cmds[0]['command'])->toContain('DATA USER PIN=99885');
+    // Must enforce Grp=1 and TZ=1 (24/7 access) instead of Grp=0 and TZ=0
+    expect($cmds[0]['command'])->toContain('Grp=1');
+    expect($cmds[0]['command'])->toContain('TZ=1');
+    expect($cmds[0]['command'])->not->toContain('TZ=0');
+});

@@ -35,14 +35,6 @@ class BiometricSyncService
             return 0;
         }
 
-        if (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
-            $isRegistration = Devices::where('serial_number', $sourceSn)->where('is_registration', 1)->exists();
-            $hasDeviceRecord = Devices::where('serial_number', $sourceSn)->exists();
-            if ($hasDeviceRecord && !$isRegistration) {
-                return 0;
-            }
-        }
-
         $targetDevices = $this->getTargetDevices($sourceSn);
         if ($targetDevices->isEmpty()) {
             return 0;
@@ -60,7 +52,9 @@ class BiometricSyncService
         $passwd = $userData['Passwd'] ?? $userData['Password'] ?? '';
         $card = $userData['Card'] ?? 0;
         $grp = $userData['Grp'] ?? $userData['grp'] ?? $userData['Group'] ?? 1;
+        $grp = (!empty($grp) && (int)$grp > 0) ? (int)$grp : 1;
         $tz = $userData['TZ'] ?? $userData['Tz'] ?? $userData['Timezone'] ?? 1;
+        $tz = (!empty($tz) && (int)$tz > 0) ? (int)$tz : 1;
 
         $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
         $queuedCount = 0;
@@ -95,14 +89,6 @@ class BiometricSyncService
         $pin = $bioData['PIN'] ?? $bioData['Pin'] ?? $bioData['pin'] ?? $bioData['FP PIN'] ?? null;
         if (!$pin) {
             return 0;
-        }
-
-        if (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices')) {
-            $isRegistration = Devices::where('serial_number', $sourceSn)->where('is_registration', 1)->exists();
-            $hasDeviceRecord = Devices::where('serial_number', $sourceSn)->exists();
-            if ($hasDeviceRecord && !$isRegistration) {
-                return 0;
-            }
         }
 
         $targetDevices = $this->getTargetDevices($sourceSn);
