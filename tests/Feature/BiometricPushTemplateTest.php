@@ -273,3 +273,82 @@ test('syncing user with incoming TZ=0 forces TZ=1 preventing Invalid Time Period
     expect($cmds[0]['command'])->toContain('TZ=1');
     expect($cmds[0]['command'])->not->toContain('TZ=0');
 });
+
+test('new unknown device connecting via ADMS is automatically registered in devices table with serial number and IP', function () {
+    $newSn = 'ZKT_BRAND_NEW_9999';
+    $ip = '192.168.1.99';
+
+    $response = $this->call(
+        'GET',
+        "/iclock/cdata?SN={$newSn}",
+        [],
+        [],
+        [],
+        ['REMOTE_ADDR' => $ip]
+    );
+
+    $response->assertStatus(200);
+
+    $device = Devices::where('serial_number', $newSn)->first();
+    expect($device)->not->toBeNull();
+    expect($device->serial_number)->toBe($newSn);
+    expect($device->ip_address)->toBe($ip);
+    expect($device->is_active)->toBeTrue();
+    expect($device->device_name)->toBe('Terminal 9999');
+    expect($device->last_seen_at)->not->toBeNull();
+});
+
+test('device created in UMIS without serial number is automatically bound when it connects via ADMS', function () {
+    $existingIp = '192.168.1.88';
+    $boundSn = 'ZKT_BOUND_8888';
+
+    // Simulate device registered in UMIS UI with only IP address
+    $umisDevice = Devices::create([
+        'device_name' => 'HR Terminal Unbound',
+        'serial_number' => null,
+        'ip_address' => $existingIp,
+        'is_active' => 0,
+    ]);
+
+    $response = $this->call(
+        'GET',
+        "/iclock/cdata?SN={$boundSn}",
+        [],
+        [],
+        [],
+        ['REMOTE_ADDR' => $existingIp]
+    );
+
+    $response->assertStatus(200);
+
+    $umisDevice->refresh();
+    expect($umisDevice->serial_number)->toBe($boundSn);
+    expect($umisDevice->is_active)->toBeTrue();
+    expect($umisDevice->last_seen_at)->not->toBeNull();
+
+    // Verify no duplicate device was created
+    $count = Devices::where('ip_address', $existingIp)->count();
+    expect($count)->toBe(1);
+});
+
+test('known device connecting via ADMS updates its last_seen_at and ip_address', function () {
+    $device = Devices::where('serial_number', 'DEV_SN_SOURCE')->first();
+    $oldSeen = $device->last_seen_at;
+    $newIp = '192.168.1.77';
+
+    $response = $this->call(
+        'GET',
+        '/iclock/cdata?SN=DEV_SN_SOURCE',
+        [],
+        [],
+        [],
+        ['REMOTE_ADDR' => $newIp]
+    );
+
+    $response->assertStatus(200);
+
+    $device->refresh();
+    expect($device->ip_address)->toBe($newIp);
+    expect($device->last_seen_at)->not->toBeNull();
+});
+

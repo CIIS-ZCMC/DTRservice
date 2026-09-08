@@ -156,13 +156,11 @@ class DeviceController extends Controller
     public function handleDevicePush(Request $request)
     {
         try {
-            $sn = $request->input('SN') ?? $request->input('sn') ?? $request->query('SN') ?? $request->query('sn');
+            $rawSn = $request->input('SN') ?? $request->input('sn') ?? $request->query('SN') ?? $request->query('sn') ?? $request->header('SN') ?? $request->header('sn');
+            $sn = $rawSn !== null ? trim((string)$rawSn) : null;
 
-            if ($sn) {
-                Devices::where('serial_number', $sn)->update([
-                    'last_seen_at' => now(),
-                    'ip_address' => $request->ip(),
-                ]);
+            if (!empty($sn) && $sn !== 'Fail!') {
+                $this->resolveAndTouchDevice($sn, $request->ip());
             }
 
             // Extract path segment after /iclock/
@@ -398,5 +396,65 @@ class DeviceController extends Controller
         }
 
         return response("OK\n", 200)->header('Content-Type', 'text/plain');
+    }
+
+    /**
+     * Resolve device by Serial Number or IP address, and auto-register if new.
+     */
+    protected function resolveAndTouchDevice(string $sn, string $ip): ?Devices
+    {
+        try {
+            // 1. Try matching by Serial Number
+            $device = Devices::where('serial_number', $sn)->first();
+
+            if ($device) {
+                $device->update([
+                    'ip_address'   => $ip,
+                    'last_seen_at' => now(),
+                    'is_active'    => 1,
+                ]);
+                return $device;
+            }
+
+            // 2. If not matched by SN, match by IP address where SN is null/empty/'Fail!'
+            $unboundDevice = Devices::where('ip_address', $ip)
+                ->where(function ($q) {
+                    $q->whereNull('serial_number')
+                        ->orWhere('serial_number', '')
+                        ->orWhere('serial_number', 'Fail!');
+                })
+                ->first();
+
+            if ($unboundDevice) {
+                $unboundDevice->update([
+                    'serial_number' => $sn,
+                    'last_seen_at'  => now(),
+                    'is_active'     => 1,
+                ]);
+                Log::channel('device_logs')->info("Bound serial number {$sn} to existing device [ID: {$unboundDevice->id}, Name: {$unboundDevice->device_name}] at IP {$ip}");
+                return $unboundDevice;
+            }
+
+            // 3. Completely new device plugged into the network -> Auto-register it
+            $nameSuffix = strlen($sn) >= 4 ? substr($sn, -4) : $sn;
+            $device = Devices::create([
+                'device_name'     => 'Terminal ' . $nameSuffix,
+                'serial_number'   => $sn,
+                'ip_address'      => $ip,
+                'com_key'         => '0',
+                'soap_port'       => '80',
+                'udp_port'        => '4370',
+                'is_active'       => 1,
+                'is_registration' => 0,
+                'for_attendance'  => 1,
+                'last_seen_at'    => now(),
+            ]);
+
+            Log::channel('device_logs')->info("Auto-registered new biometric device [SN: {$sn}, IP: {$ip}]");
+            return $device;
+        } catch (\Throwable $e) {
+            Log::channel('device_logs')->warning("Failed to resolve/register device [SN: {$sn}, IP: {$ip}]: " . $e->getMessage());
+            return null;
+        }
     }
 }
