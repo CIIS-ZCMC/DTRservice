@@ -13,6 +13,10 @@ Route::get('/user', function (Request $request) {
 // Device management routes
 Route::get('/devices', [DeviceController::class, 'index']);
 Route::get('/devices/all', [DeviceController::class, 'getAllWithStatus']);
+Route::match(['get', 'post'], '/devices/pull-logs', [DeviceController::class, 'pullLogs']);
+Route::match(['get', 'post'], '/devices/{id}/pull-logs', [DeviceController::class, 'pullDeviceLogs']);
+Route::match(['get', 'post'], '/devices/request-resend', [DeviceController::class, 'requestLogResend']);
+Route::match(['get', 'post'], '/devices/{id}/request-resend', [DeviceController::class, 'requestDeviceLogResend']);
 Route::get('/devices/{id}/status', [DeviceController::class, 'status']);
 Route::get('/devices/{id}', [DeviceController::class, 'show']);
 Route::get('/devices/{id}/power-off', [DeviceController::class, 'powerOff']);

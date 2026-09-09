@@ -35,8 +35,13 @@ class LogsRepository implements LogsRepositoryInterface
 
             if ($device && $device->for_attendance == 1) {
                 // Redirect to attendance saving
-                $this->saveForAttendance($data);
-                return new DeviceLogs();
+                $saved = $this->saveForAttendance($data);
+                if ($saved) {
+                    return new DeviceLogs();
+                }
+                // If attendance save failed (e.g. no active attendance event for that date),
+                // fall back to saving in DeviceLogs so employee log is NEVER lost!
+                Log::channel('attendance_logs')->info('Falling back to DeviceLogs for biometric_id: ' . $data['biometric_id']);
             }
 
             $employee = $this->getEmployeeNameAndStatus((int)$data['biometric_id']);
@@ -282,7 +287,7 @@ class LogsRepository implements LogsRepositoryInterface
                     'dtr_type' => $data['dtr_type'] ?? null,
                     'full_data' => $data,
                 ]);
-                return true;
+                return false;
             }
 
             // Loop through active attendances and find matching open_date
@@ -307,7 +312,7 @@ class LogsRepository implements LogsRepositoryInterface
                     'dtr_type' => $data['dtr_type'] ?? null,
                     'full_data' => $data,
                 ]);
-                return true;
+                return false;
             }
 
             // 2. Get employee profile
@@ -334,7 +339,7 @@ class LogsRepository implements LogsRepositoryInterface
                     'dtr_type' => $data['dtr_type'] ?? null,
                     'full_data' => $data,
                 ]);
-                return true;
+                return false;
             }
 
             // Get employee name using existing method
@@ -403,7 +408,7 @@ class LogsRepository implements LogsRepositoryInterface
                 'full_data' => $data,
                 'error' => $e->getMessage(),
             ]);
-            return true;
+            return false;
         }
     }
 }

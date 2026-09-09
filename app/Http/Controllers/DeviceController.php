@@ -151,6 +151,136 @@ class DeviceController extends Controller
     }
 
     /**
+     * Manually pull attendance logs from active devices or a specific device
+     */
+    public function pullLogs(Request $request): JsonResponse
+    {
+        try {
+            @set_time_limit(300);
+
+            $deviceId = $request->input('device_id') ?? $request->query('device_id');
+            $options = array_filter([
+                'date' => $request->input('date') ?? $request->query('date'),
+                'start_date' => $request->input('start_date') ?? $request->query('start_date'),
+                'end_date' => $request->input('end_date') ?? $request->query('end_date'),
+                'pin' => $request->input('pin') ?? $request->query('pin') ?? $request->input('biometric_id') ?? $request->query('biometric_id'),
+            ], fn($v) => $v !== null && $v !== '');
+
+            if ($deviceId) {
+                $result = $this->deviceService->pullLogsFromDevice((int)$deviceId, $options);
+                return response()->json([
+                    'success' => ($result['status'] ?? '') === 'success',
+                    'data' => $result,
+                ]);
+            }
+
+            $result = $this->deviceService->pullLogsFromActiveDevices($options);
+
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Manually pull attendance logs from a specific device by ID
+     */
+    public function pullDeviceLogs(Request $request, int $id): JsonResponse
+    {
+        try {
+            @set_time_limit(180);
+
+            $options = array_filter([
+                'date' => $request->input('date') ?? $request->query('date'),
+                'start_date' => $request->input('start_date') ?? $request->query('start_date'),
+                'end_date' => $request->input('end_date') ?? $request->query('end_date'),
+                'pin' => $request->input('pin') ?? $request->query('pin') ?? $request->input('biometric_id') ?? $request->query('biometric_id'),
+            ], fn($v) => $v !== null && $v !== '');
+
+            $result = $this->deviceService->pullLogsFromDevice($id, $options);
+
+            return response()->json([
+                'success' => ($result['status'] ?? '') === 'success',
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Request device(s) to resend attendance logs via ADMS HTTP push command (DATA QUERY ATTLOG)
+     */
+    public function requestLogResend(Request $request): JsonResponse
+    {
+        try {
+            $deviceId = $request->input('device_id') ?? $request->query('device_id');
+            $options = array_filter([
+                'date' => $request->input('date') ?? $request->query('date'),
+                'start_date' => $request->input('start_date') ?? $request->query('start_date'),
+                'end_date' => $request->input('end_date') ?? $request->query('end_date'),
+                'type' => $request->input('type') ?? $request->query('type'),
+            ], fn($v) => $v !== null && $v !== '');
+
+            if ($deviceId) {
+                $result = $this->deviceService->requestLogResend((int)$deviceId, $options);
+                return response()->json([
+                    'success' => ($result['status'] ?? '') === 'queued',
+                    'data' => $result,
+                ]);
+            }
+
+            $result = $this->deviceService->requestLogResendFromActiveDevices($options);
+
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Request a specific device to resend attendance logs by ID
+     */
+    public function requestDeviceLogResend(Request $request, int $id): JsonResponse
+    {
+        try {
+            $options = array_filter([
+                'date' => $request->input('date') ?? $request->query('date'),
+                'start_date' => $request->input('start_date') ?? $request->query('start_date'),
+                'end_date' => $request->input('end_date') ?? $request->query('end_date'),
+                'type' => $request->input('type') ?? $request->query('type'),
+            ], fn($v) => $v !== null && $v !== '');
+
+            $result = $this->deviceService->requestLogResend($id, $options);
+
+            return response()->json([
+                'success' => ($result['status'] ?? '') === 'queued',
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Handle request of ZKTeco device | Biometric Device
      */
     public function handleDevicePush(Request $request)
