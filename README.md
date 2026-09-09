@@ -43,6 +43,10 @@ If logs were missed by the server or an offline/misconfigured terminal needs its
 | `php artisan devices:pull-logs --date=YYYY-MM-DD` | Pull attendance logs directly from all active devices |
 | `php artisan devices:pull-logs <ID> --date=YYYY-MM-DD` | Pull attendance logs directly from a specific device |
 | `php artisan devices:pull-logs <ID> --resend` | Queue ADMS `DATA QUERY ATTLOG` resend command |
+| `php artisan devices:clear-logs --all` | Safely clear device punch memory (Sunday weekly auto-run) |
+| `php artisan devices:clear-logs --dry-run` | Simulate device memory clear and test pre-sync verification |
+| `php artisan device-logs:prune --years=1` | Prune database punch logs older than 1 year (Monthly auto-run) |
+| `php artisan device-logs:prune --dry-run` | Simulate database log pruning and display eligible counts |
 | `php artisan biometrics:sync-device <SN>` | Provision full DB masterlist to a specific device |
 | `php artisan biometrics:sync-device <SN> --pin=<PIN>` | Provision a specific employee PIN to a device |
 | `php artisan biometrics:sync-device --all-devices` | Sync DB masterlist across all active devices |

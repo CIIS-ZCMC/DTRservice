@@ -604,4 +604,236 @@ class DeviceService
             'devices' => $results,
         ];
     }
+
+    /**
+     * Clear attendance logs from a specific biometric device.
+     * Safely executes pre-wipe log pull & sync verification before issuing CLEAR LOG or SOAP ClearData(1).
+     *
+     * @param Devices|int $device Device model instance or Device ID
+     * @param array $options Options:
+     *      - 'method': 'both' (default), 'soap', or 'adms'
+     *      - 'force': bool (default false, bypasses some safety confirmations)
+     *      - 'dry_run': bool (default false, simulates verification without sending clear command)
+     *      - 'skip_sync': bool (default false, skips pre-wipe pull, requires force: true)
+     * @return array Result array with status, device details, and sync statistics
+     */
+    public function clearAttendanceLogsFromDevice(Devices|int $device, array $options = []): array
+    {
+        if (is_int($device)) {
+            $deviceModel = $this->deviceRepository->findById($device);
+            if (!$deviceModel) {
+                throw new Exception("Device with ID {$device} not found");
+            }
+            $device = $deviceModel;
+        }
+
+        $method = strtolower($options['method'] ?? 'both');
+        $force = (bool)($options['force'] ?? false);
+        $dryRun = (bool)($options['dry_run'] ?? false);
+        $skipSync = (bool)($options['skip_sync'] ?? false);
+
+        // 1. Connectivity Check
+        $isOnline = $device->isOnline() || TAD::is_device_online($device->ip_address, 2);
+        if (!$isOnline && !$force) {
+            Log::channel('device_logs')->warning("Device attendance logs clear skipped: Device [{$device->id}] {$device->device_name} is OFFLINE.");
+            return [
+                'device_id' => $device->id,
+                'device_name' => $device->device_name,
+                'serial_number' => $device->serial_number,
+                'ip_address' => $device->ip_address,
+                'status' => 'skipped_offline',
+                'method' => $method,
+                'is_online' => false,
+                'pre_sync' => null,
+                'message' => "Device is offline or unreachable at {$device->ip_address}. Clear operation safely deferred to prevent potential data loss.",
+            ];
+        }
+
+        // 2. Pre-Wipe Log Pull & Synchronization Verification Gate
+        $preSyncStats = null;
+        if (!$skipSync || !$force) {
+            $pullResult = $this->pullLogsFromDevice($device);
+            $preSyncStats = [
+                'total_pulled' => $pullResult['total_pulled'] ?? 0,
+                'new_saved' => $pullResult['new_saved'] ?? 0,
+                'duplicates_skipped' => $pullResult['duplicates_skipped'] ?? 0,
+                'pull_status' => $pullResult['status'] ?? 'unknown',
+            ];
+
+            // If the pull itself failed and we are not forced, abort to prevent wiping un-pulled records
+            if (($pullResult['status'] ?? '') === 'error' && !$force) {
+                Log::channel('device_logs')->error("Device attendance logs clear aborted: Pre-sync pull failed on [{$device->id}] {$device->device_name}: " . ($pullResult['message'] ?? 'Unknown error'));
+                return [
+                    'device_id' => $device->id,
+                    'device_name' => $device->device_name,
+                    'serial_number' => $device->serial_number,
+                    'ip_address' => $device->ip_address,
+                    'status' => 'aborted_sync_error',
+                    'method' => $method,
+                    'is_online' => $isOnline,
+                    'pre_sync' => $preSyncStats,
+                    'message' => "Pre-wipe synchronization failed: {$pullResult['message']}. Deletion aborted to safeguard data.",
+                ];
+            }
+        }
+
+        // 3. Dry-Run Check
+        if ($dryRun) {
+            Log::channel('device_logs')->info("Device attendance logs clear DRY-RUN completed for [{$device->id}] {$device->device_name}.");
+            return [
+                'device_id' => $device->id,
+                'device_name' => $device->device_name,
+                'serial_number' => $device->serial_number,
+                'ip_address' => $device->ip_address,
+                'status' => 'dry_run_success',
+                'method' => $method,
+                'is_online' => $isOnline,
+                'pre_sync' => $preSyncStats,
+                'message' => "Dry-run succeeded: Device is reachable, logs synchronized, and ready for clearance. No data was deleted.",
+            ];
+        }
+
+        // 4. Execution via Direct SOAP or ADMS Push
+        $executedMethod = null;
+        $executionSuccess = false;
+        $queuedCommand = null;
+
+        // Try SOAP first if method is 'soap' or 'both'
+        if (in_array($method, ['soap', 'both']) && TAD::is_device_online($device->ip_address, 2)) {
+            try {
+                $tadOptions = [
+                    'ip' => (string)$device->ip_address,
+                    'com_key' => (int)$device->com_key,
+                    'description' => (string)$device->device_name,
+                    'soap_port' => (int)($device->soap_port ?: 80),
+                    'udp_port' => (int)($device->udp_port ?: 4370),
+                    'encoding' => 'utf-8',
+                    'connection_timeout' => 5,
+                ];
+                $tad = (new TADFactory($tadOptions))->get_instance();
+
+                // Value 1 is strictly for clearing attendance logs (ATTLOG / GLog)
+                $soapResponse = $tad->delete_data(['value' => 1]);
+                $responseStr = (string)$soapResponse;
+
+                if (!str_contains($responseStr, 'Fail!')) {
+                    $executedMethod = 'soap';
+                    $executionSuccess = true;
+                }
+            } catch (\Throwable $soapEx) {
+                Log::channel('device_logs')->warning("SOAP delete_data(value=1) failed on [{$device->id}] {$device->device_name}: " . $soapEx->getMessage());
+            }
+        }
+
+        // Fallback to ADMS Push if SOAP didn't execute and method is 'adms' or 'both'
+        if (!$executionSuccess && in_array($method, ['adms', 'both'])) {
+            $sn = trim((string)$device->serial_number);
+            if (!empty($sn) && $sn !== 'Fail!') {
+                $queuedCommand = $this->commandService->queueCommand($sn, 'CLEAR LOG');
+                $executedMethod = 'adms';
+                $executionSuccess = !empty($queuedCommand);
+            }
+        }
+
+        if ($executionSuccess) {
+            $device->update(['last_cleared_at' => now()]);
+
+            Log::channel('device_logs')->info("Successfully cleared/queued attendance logs for device [{$device->id}] {$device->device_name}", [
+                'method' => $executedMethod,
+                'pre_sync' => $preSyncStats,
+                'queued_command' => $queuedCommand,
+            ]);
+
+            return [
+                'device_id' => $device->id,
+                'device_name' => $device->device_name,
+                'serial_number' => $device->serial_number,
+                'ip_address' => $device->ip_address,
+                'status' => $executedMethod === 'soap' ? 'success' : 'queued',
+                'method' => $executedMethod,
+                'is_online' => $isOnline,
+                'pre_sync' => $preSyncStats,
+                'queued_command' => $queuedCommand,
+                'last_cleared_at' => now()->toDateTimeString(),
+                'message' => $executedMethod === 'soap'
+                    ? 'Device attendance logs cleared immediately via direct SOAP.'
+                    : 'CLEAR LOG command queued. Device will clear attendance logs on its next poll.',
+            ];
+        }
+
+        return [
+            'device_id' => $device->id,
+            'device_name' => $device->device_name,
+            'serial_number' => $device->serial_number,
+            'ip_address' => $device->ip_address,
+            'status' => 'error',
+            'method' => $method,
+            'is_online' => $isOnline,
+            'pre_sync' => $preSyncStats,
+            'message' => 'Failed to clear device logs via requested method(s). Device may be unreachable or lacking serial number.',
+        ];
+    }
+
+    /**
+     * Clear attendance logs across all active devices.
+     *
+     * @param array $options Options:
+     *      - 'method': 'both' (default), 'soap', or 'adms'
+     *      - 'catch_up': bool (only target devices where needsLogClear is true)
+     *      - 'older_than': int (days since last clear, default 7)
+     *      - 'force': bool
+     *      - 'dry_run': bool
+     *      - 'skip_sync': bool
+     * @return array
+     */
+    public function clearAttendanceLogsFromActiveDevices(array $options = []): array
+    {
+        $query = Devices::active();
+        if (!empty($options['catch_up'])) {
+            $days = (int)($options['older_than'] ?? 7);
+            $query = Devices::needingLogClear($days);
+        }
+
+        $devices = $query->get();
+        $results = [];
+        $clearedCount = 0;
+        $queuedCount = 0;
+        $skippedOfflineCount = 0;
+        $abortedCount = 0;
+        $errorCount = 0;
+
+        foreach ($devices as $device) {
+            $res = $this->clearAttendanceLogsFromDevice($device, $options);
+            $results[] = $res;
+
+            switch ($res['status'] ?? '') {
+                case 'success':
+                case 'dry_run_success':
+                    $clearedCount++;
+                    break;
+                case 'queued':
+                    $queuedCount++;
+                    break;
+                case 'skipped_offline':
+                    $skippedOfflineCount++;
+                    break;
+                case 'aborted_sync_error':
+                    $abortedCount++;
+                    break;
+                default:
+                    $errorCount++;
+                    break;
+            }
+        }
+
+        return [
+            'total_targeted' => $devices->count(),
+            'cleared_count' => $clearedCount,
+            'queued_count' => $queuedCount,
+            'skipped_offline_count' => $skippedOfflineCount,
+            'aborted_sync_count' => $abortedCount,
+            'error_count' => $errorCount,
+            'devices' => $results,
+        ];
+    }
 }

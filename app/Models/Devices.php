@@ -20,10 +20,12 @@ class Devices extends Model
         'is_registration',
         'for_attendance',
         'last_seen_at',
+        'last_cleared_at',
     ];
     
     protected $casts = [
         'last_seen_at' => 'datetime',
+        'last_cleared_at' => 'datetime',
         'is_active' => 'boolean',
         'is_registration' => 'boolean',
         'for_attendance' => 'boolean',
@@ -38,11 +40,36 @@ class Devices extends Model
     }
 
     /**
+     * Check if device requires an attendance log clear (e.g. not cleared in 7+ days)
+     */
+    public function needsLogClear(int $days = 7): bool
+    {
+        if (!$this->last_cleared_at) {
+            return true;
+        }
+
+        return $this->last_cleared_at->diffInDays(now()) >= $days;
+    }
+
+    /**
      * Scope for active devices
      */
     public function scopeActive($query)
     {
         return $query->where('is_active', 1);
+    }
+
+    /**
+     * Scope for active devices that need log clearance
+     */
+    public function scopeNeedingLogClear($query, int $days = 7)
+    {
+        $cutoff = now()->subDays($days);
+        return $query->where('is_active', 1)
+            ->where(function ($q) use ($cutoff) {
+                $q->whereNull('last_cleared_at')
+                    ->orWhere('last_cleared_at', '<=', $cutoff);
+            });
     }
 }
 

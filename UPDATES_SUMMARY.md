@@ -1,4 +1,4 @@
-﻿# 📄 ZCMC DTRService — System Updates & Release Summary
+# 📄 ZCMC DTRService — System Updates & Release Summary
 
 **Project:** ZCMC Daily Time Record & Biometric Service (`DTRService`)  
 **Date:** August 2026  
@@ -47,12 +47,32 @@ Recent updates to the **ZCMC DTRService** introduce centralized biometric templa
 * **Printable DTR Logs:** Dedicated print layout for device attendance logs.
 * **Daily Verification Audit Trail:** Automated daily human-readable audit text files generated at `storage/logs/registration_verified_YYYY-MM-DD.txt`, recording PINs, names, finger IDs, device serial numbers, and synced terminal counts.
 
+### 7. 🗑️ Biometric Device Attendance Logs Deletion & Weekly Maintenance Schedule
+* **Weekly Automated Maintenance:** Runs every Sunday at 23:55 to safely purge physical terminal attendance buffers (`ATTLOG`), keeping device performance responsive and preventing memory full alarms.
+* **Zero-Data-Loss Pre-Sync Gate:** Before executing `CLEAR LOG` or direct SOAP `ClearData(1)`, the system automatically pulls all punches from the terminal into the MySQL database (`device_logs`). Deletion is aborted if pre-sync cannot be verified.
+* **Offline Device Protection:** Disconnected or unreachable devices are safely skipped—no clear commands are queued, protecting offline punches in hardware flash memory.
+* **Daily Reconnection Catch-Up:** A daily catch-up job runs at 12:00 PM to safely sync and clear reconnected terminals that missed Sunday's run.
+* **Preserved Biometric Data:** Clearing terminal attendance logs only purges the punch buffer. Registered users, fingerprints, face templates, and device IP configurations remain 100% intact.
+
+### 8. 📦 Database Log Retention & 1-Year Cold Archiving
+* **1-Year Retention Policy:** Automated monthly pruning of raw punch records in `device_logs` older than 1 year (default cutoff: 365 days).
+* **Strict 1-Year Safety Guardrail:** The system enforces that logs can **only** be cleared if they are 1 year before today or older (`dtr_date <= now() - 1 year`). Any request attempting to prune logs newer than 1 year is rejected.
+* **Zero Disruption to Live Ingestion:** Deletes in safe chunks of 2,000 IDs with 10ms pacing to eliminate MySQL table lock contention and prevent blocking `/iclock/cdata`.
+* **Automated Compressed Archive:** Pruned records are streamed to `.json.gz` files in `storage/app/archive/` before removal, cutting storage footprint by 90%+ while preserving permanent historical audit trails.
+* **DTR Tables Untouched:** All computed attendance entries in the `dtr` table are permanently preserved.
+
 ---
 
 ## 🛠️ Quick Reference: Management Commands
 
 | Task | Command |
 | :--- | :--- |
+| **Safely Clear All Devices (Weekly Auto)** | `php artisan devices:clear-logs --all --force` |
+| **Simulate Clear (Dry-Run / Test Sync)** | `php artisan devices:clear-logs --dry-run` |
+| **Clear Specific Device by ID** | `php artisan devices:clear-logs <DEVICE_ID>` |
+| **Catch-Up Offline Devices ($\ge 7$ Days)** | `php artisan devices:clear-logs --all --catch-up --older-than=7 --force` |
+| **Prune DB Logs > 1 Year (Monthly Auto)** | `php artisan device-logs:prune --years=1 --archive --force` |
+| **Simulate DB Prune (Dry-Run / Counts)** | `php artisan device-logs:prune --dry-run` |
 | **Sync Full DB to New Device** | `php artisan biometrics:sync-device <SERIAL_NUMBER>` |
 | **Sync Single Employee PIN to Device** | `php artisan biometrics:sync-device <SERIAL_NUMBER> --pin=<PIN>` |
 | **Broadcast Masterlist to ALL Devices** | `php artisan biometrics:sync-device --all-devices` |

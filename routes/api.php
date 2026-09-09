@@ -17,6 +17,9 @@ Route::match(['get', 'post'], '/devices/pull-logs', [DeviceController::class, 'p
 Route::match(['get', 'post'], '/devices/{id}/pull-logs', [DeviceController::class, 'pullDeviceLogs']);
 Route::match(['get', 'post'], '/devices/request-resend', [DeviceController::class, 'requestLogResend']);
 Route::match(['get', 'post'], '/devices/{id}/request-resend', [DeviceController::class, 'requestDeviceLogResend']);
+Route::match(['get', 'post'], '/devices/clear-logs', [DeviceController::class, 'clearAttendanceLogs']);
+Route::match(['get', 'post'], '/devices/{id}/clear-logs', [DeviceController::class, 'clearDeviceAttendanceLogs']);
+Route::match(['get', 'post'], '/device-logs/prune', [DeviceController::class, 'pruneDatabaseLogs']);
 Route::get('/devices/{id}/status', [DeviceController::class, 'status']);
 Route::get('/devices/{id}', [DeviceController::class, 'show']);
 Route::get('/devices/{id}/power-off', [DeviceController::class, 'powerOff']);

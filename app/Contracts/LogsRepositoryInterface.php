@@ -24,4 +24,9 @@ interface LogsRepositoryInterface
     public function writeToFile(array $data): void;
 
     public function writeStructuredLog(array $data, ?string $rawLine = null): void;
-    }
+
+    /**
+     * Prune historical device logs older than a given cutoff date.
+     */
+    public function pruneLogs(string $cutoffDate, int $chunkSize = 2000, bool $dryRun = false, bool $archive = false): array;
+}

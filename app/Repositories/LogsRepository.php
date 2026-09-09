@@ -411,4 +411,116 @@ class LogsRepository implements LogsRepositoryInterface
             return false;
         }
     }
+
+    /**
+     * Prune historical device logs older than a given cutoff date.
+     *
+     * @param string $cutoffDate Date cutoff (YYYY-MM-DD). Logs with dtr_date < cutoffDate will be pruned.
+     * @param int $chunkSize Batch deletion size (default 2000)
+     * @param bool $dryRun If true, only count eligible records without deleting
+     * @param bool $archive If true, export records to storage/app/archive before deleting
+     * @return array Summary of pruned records
+     */
+    public function pruneLogs(string $cutoffDate, int $chunkSize = 2000, bool $dryRun = false, bool $archive = false): array
+    {
+        $maxAllowedCutoff = now()->subYear()->format('Y-m-d');
+        if ($cutoffDate > $maxAllowedCutoff) {
+            throw new \InvalidArgumentException("Safety violation: Database logs can only be cleared if they are at least 1 year before today. The cutoff date ({$cutoffDate}) cannot be newer than {$maxAllowedCutoff}.");
+        }
+
+        $startTime = microtime(true);
+
+        $query = DeviceLogs::whereNotNull('dtr_date')
+            ->where('dtr_date', '!=', '')
+            ->where('dtr_date', '<=', $cutoffDate);
+        $totalEligible = (clone $query)->count();
+
+        if ($dryRun || $totalEligible === 0) {
+            return [
+                'cutoff_date' => $cutoffDate,
+                'total_eligible' => $totalEligible,
+                'deleted_count' => 0,
+                'archived_count' => 0,
+                'archive_file' => null,
+                'duration_seconds' => round(microtime(true) - $startTime, 2),
+                'dry_run' => $dryRun,
+            ];
+        }
+
+        $archiveFilePath = null;
+        $archiveFp = null;
+
+        if ($archive) {
+            $dir = storage_path('app/archive');
+            if (!is_dir($dir)) {
+                mkdir($dir, 0755, true);
+            }
+            $archiveFileName = 'device_logs_archived_before_' . $cutoffDate . '_' . now()->format('Ymd_His') . '.json.gz';
+            $archiveFilePath = $dir . DIRECTORY_SEPARATOR . $archiveFileName;
+            $archiveFp = gzopen($archiveFilePath, 'w9');
+        }
+
+        $deletedCount = 0;
+        $archivedCount = 0;
+
+        try {
+            while (true) {
+                // Fetch chunk of IDs and records to delete
+                $records = DeviceLogs::whereNotNull('dtr_date')
+                    ->where('dtr_date', '!=', '')
+                    ->where('dtr_date', '<=', $cutoffDate)
+                    ->orderBy('id', 'asc')
+                    ->limit($chunkSize)
+                    ->get();
+
+                if ($records->isEmpty()) {
+                    break;
+                }
+
+                $ids = $records->pluck('id')->all();
+
+                // If archiving enabled, stream chunk to compressed archive file
+                if ($archiveFp) {
+                    foreach ($records as $record) {
+                        gzwrite($archiveFp, json_encode($record->toArray(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+                        $archivedCount++;
+                    }
+                }
+
+                // Delete chunk by IDs
+                $deleted = DeviceLogs::whereIn('id', $ids)->delete();
+                $deletedCount += $deleted;
+
+                // Tiny sleep between chunks to avoid lock contention
+                if (count($ids) >= $chunkSize) {
+                    usleep(10000); // 10ms
+                }
+            }
+        } finally {
+            if ($archiveFp) {
+                gzclose($archiveFp);
+            }
+        }
+
+        $duration = round(microtime(true) - $startTime, 2);
+
+        Log::channel('device_logs')->info("Pruned {$deletedCount} historical device logs from database", [
+            'cutoff_date' => $cutoffDate,
+            'deleted_count' => $deletedCount,
+            'archived_count' => $archivedCount,
+            'archive_file' => $archiveFilePath,
+            'duration_seconds' => $duration,
+        ]);
+
+        return [
+            'cutoff_date' => $cutoffDate,
+            'total_eligible' => $totalEligible,
+            'deleted_count' => $deletedCount,
+            'archived_count' => $archivedCount,
+            'archive_file' => $archiveFilePath ? basename($archiveFilePath) : null,
+            'archive_path' => $archiveFilePath,
+            'duration_seconds' => $duration,
+            'dry_run' => false,
+        ];
+    }
 }

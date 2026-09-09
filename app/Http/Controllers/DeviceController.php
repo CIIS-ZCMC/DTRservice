@@ -281,6 +281,127 @@ class DeviceController extends Controller
     }
 
     /**
+     * Safely clear attendance logs from active biometric devices or a specific device
+     */
+    public function clearAttendanceLogs(Request $request): JsonResponse
+    {
+        try {
+            @set_time_limit(300);
+
+            $deviceId = $request->input('device_id') ?? $request->query('device_id');
+            $options = [
+                'method' => strtolower($request->input('method') ?? $request->query('method', 'both')),
+                'force' => filter_var($request->input('force') ?? $request->query('force', false), FILTER_VALIDATE_BOOLEAN),
+                'dry_run' => filter_var($request->input('dry_run') ?? $request->query('dry_run', false), FILTER_VALIDATE_BOOLEAN),
+                'skip_sync' => filter_var($request->input('skip_sync') ?? $request->query('skip_sync', false), FILTER_VALIDATE_BOOLEAN),
+                'catch_up' => filter_var($request->input('catch_up') ?? $request->query('catch_up', false), FILTER_VALIDATE_BOOLEAN),
+                'older_than' => (int)($request->input('older_than') ?? $request->query('older_than', 7)),
+            ];
+
+            if ($deviceId) {
+                $result = $this->deviceService->clearAttendanceLogsFromDevice((int)$deviceId, $options);
+                $isOk = in_array($result['status'] ?? '', ['success', 'queued', 'dry_run_success', 'skipped_offline']);
+                return response()->json([
+                    'success' => $isOk,
+                    'data' => $result,
+                ]);
+            }
+
+            $result = $this->deviceService->clearAttendanceLogsFromActiveDevices($options);
+
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Safely clear attendance logs from a specific biometric device by ID
+     */
+    public function clearDeviceAttendanceLogs(Request $request, int $id): JsonResponse
+    {
+        try {
+            @set_time_limit(180);
+
+            $options = [
+                'method' => strtolower($request->input('method') ?? $request->query('method', 'both')),
+                'force' => filter_var($request->input('force') ?? $request->query('force', false), FILTER_VALIDATE_BOOLEAN),
+                'dry_run' => filter_var($request->input('dry_run') ?? $request->query('dry_run', false), FILTER_VALIDATE_BOOLEAN),
+                'skip_sync' => filter_var($request->input('skip_sync') ?? $request->query('skip_sync', false), FILTER_VALIDATE_BOOLEAN),
+            ];
+
+            $result = $this->deviceService->clearAttendanceLogsFromDevice($id, $options);
+            $isOk = in_array($result['status'] ?? '', ['success', 'queued', 'dry_run_success', 'skipped_offline']);
+
+            return response()->json([
+                'success' => $isOk,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Prune historical device logs from MySQL database older than retention period (default 1 year)
+     */
+    public function pruneDatabaseLogs(Request $request): JsonResponse
+    {
+        try {
+            @set_time_limit(600);
+
+            $years = (int)($request->input('years') ?? $request->query('years', 1));
+            $days = $request->input('days') ?? $request->query('days');
+            $before = $request->input('before') ?? $request->query('before');
+            $chunkSize = (int)($request->input('chunk') ?? $request->query('chunk', 2000));
+            $archive = filter_var($request->input('archive') ?? $request->query('archive', false), FILTER_VALIDATE_BOOLEAN);
+            $dryRun = filter_var($request->input('dry_run') ?? $request->query('dry_run', false), FILTER_VALIDATE_BOOLEAN);
+
+            if (!empty($before)) {
+                $cutoffDate = \Carbon\Carbon::parse($before)->format('Y-m-d');
+            } elseif ($days !== null) {
+                $cutoffDate = now()->subDays((int)$days)->format('Y-m-d');
+            } else {
+                $cutoffDate = now()->subYears($years)->format('Y-m-d');
+            }
+
+            $maxAllowedCutoff = now()->subYear()->format('Y-m-d');
+            if ($cutoffDate > $maxAllowedCutoff) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Safety Violation: Database logs can only be cleared if they are at least 1 year before today (cutoff date cannot be newer than {$maxAllowedCutoff}).",
+                ], 422);
+            }
+
+            $result = app(\App\Contracts\LogsRepositoryInterface::class)->pruneLogs(
+                $cutoffDate,
+                $chunkSize,
+                $dryRun,
+                $archive
+            );
+
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
      * Handle request of ZKTeco device | Biometric Device
      */
     public function handleDevicePush(Request $request)
