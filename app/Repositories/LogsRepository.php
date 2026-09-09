@@ -137,8 +137,8 @@ class LogsRepository implements LogsRepositoryInterface
     }
 
     /**
-     * Check if a log already exists by scanning log files instead of querying the DB.
-     * Scans current device_logs.log + 2 most recent rotated files.
+     * Check if a log already exists by scanning log files backwards in chunks.
+     * Scans current device_logs.log + 2 most recent rotated files without loading them into memory.
      */
     public function logExists(int $biometricId, string $dateTime): bool
     {
@@ -158,22 +158,54 @@ class LogsRepository implements LogsRepositoryInterface
         $files = array_slice($files, 0, 3);
 
         foreach ($files as $file) {
-            $lines = @file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            if (!$lines) {
+            $handle = @fopen($file, 'rb');
+            if (!$handle) {
                 continue;
             }
 
-            for ($i = count($lines) - 1; $i >= 0; $i--) {
-                $line = $lines[$i];
-                if (strpos($line, 'Device log entry') === false) {
-                    continue;
-                }
-                if ((strpos($line, $searchPattern) !== false || strpos($line, $searchPatternNumeric) !== false)
-                    && strpos($line, $datePattern) !== false
-                    && strpos($line, $timePattern) !== false) {
-                    return true;
+            fseek($handle, 0, SEEK_END);
+            $fileSize = ftell($handle);
+            $offset = $fileSize;
+            $bufferSize = 8192;
+            $leftover = '';
+
+            $scannedLines = 0;
+            $maxLinesToScan = 2000;
+
+            while ($offset > 0 && $scannedLines < $maxLinesToScan) {
+                $readSize = min($bufferSize, $offset);
+                $offset -= $readSize;
+
+                fseek($handle, $offset);
+                $chunk = fread($handle, $readSize) . $leftover;
+                $lines = explode("\n", $chunk);
+
+                // The first element might be an incomplete line if offset > 0
+                $leftover = ($offset > 0) ? array_shift($lines) : '';
+
+                // Scan lines in reverse (newest first)
+                for ($i = count($lines) - 1; $i >= 0; $i--) {
+                    $line = $lines[$i];
+                    if ($line === '') {
+                        continue;
+                    }
+
+                    $scannedLines++;
+
+                    if (strpos($line, 'Device log entry') === false) {
+                        continue;
+                    }
+
+                    if ((strpos($line, $searchPattern) !== false || strpos($line, $searchPatternNumeric) !== false)
+                        && strpos($line, $datePattern) !== false
+                        && strpos($line, $timePattern) !== false) {
+                        fclose($handle);
+                        return true;
+                    }
                 }
             }
+
+            fclose($handle);
         }
 
         return false;

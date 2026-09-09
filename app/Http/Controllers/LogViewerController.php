@@ -61,35 +61,112 @@ class LogViewerController extends Controller
     }
 
     /**
-     * Read a specific log file
+     * Read a specific log file efficiently without loading the entire file into memory
      */
     private function readLogFile($filename, $lines)
     {
         $path = storage_path('logs/' . $filename);
 
         if (!File::exists($path)) {
+            // Also check for daily rotated logs if direct filename doesn't exist
+            $baseName = pathinfo($filename, PATHINFO_FILENAME);
+            $dailyFiles = glob(storage_path('logs/' . $baseName . '-*.log')) ?: [];
+            if (!empty($dailyFiles)) {
+                usort($dailyFiles, fn($a, $b) => filemtime($b) - filemtime($a));
+                $path = $dailyFiles[0];
+                $filename = basename($path);
+            } else {
+                return [
+                    'filename' => $filename,
+                    'exists' => false,
+                    'lines' => [],
+                    'total_lines' => 0
+                ];
+            }
+        }
+
+        $fileSize = File::size($path);
+        if ($fileSize === 0) {
             return [
                 'filename' => $filename,
-                'exists' => false,
+                'exists' => true,
                 'lines' => [],
-                'total_lines' => 0
+                'total_lines' => 0,
+                'size' => $this->formatFileSize(0),
+                'modified' => date('Y-m-d H:i:s', File::lastModified($path))
             ];
         }
 
-        $content = File::get($path);
-        $linesArray = explode("\n", $content);
-
-        // Get the last N lines
-        $linesArray = array_slice($linesArray, -$lines);
+        $linesArray = $this->tailFile($path, $lines);
+        $totalLines = $this->countTotalLines($path);
 
         return [
             'filename' => $filename,
             'exists' => true,
             'lines' => $linesArray,
-            'total_lines' => count(explode("\n", $content)),
-            'size' => $this->formatFileSize(File::size($path)),
+            'total_lines' => $totalLines,
+            'size' => $this->formatFileSize($fileSize),
             'modified' => date('Y-m-d H:i:s', File::lastModified($path))
         ];
+    }
+
+    /**
+     * Tail the last N lines from a file using backward chunked seeking (O(1) memory)
+     */
+    private function tailFile(string $filepath, int $lines = 100): array
+    {
+        $handle = @fopen($filepath, 'rb');
+        if (!$handle) {
+            return [];
+        }
+
+        $bufferSize = 8192;
+        $output = '';
+        $lineCount = 0;
+
+        fseek($handle, 0, SEEK_END);
+        $fileSize = ftell($handle);
+        $offset = $fileSize;
+
+        while ($offset > 0 && $lineCount <= $lines) {
+            $readSize = min($bufferSize, $offset);
+            $offset -= $readSize;
+
+            fseek($handle, $offset);
+            $chunk = fread($handle, $readSize);
+            $output = $chunk . $output;
+
+            $lineCount = substr_count($output, "\n");
+        }
+
+        fclose($handle);
+
+        $allLines = explode("\n", $output);
+        if (!empty($allLines) && end($allLines) === '') {
+            array_pop($allLines);
+        }
+
+        return array_slice($allLines, -$lines);
+    }
+
+    /**
+     * Count total lines by streaming 64KB chunks to avoid memory exhaustion
+     */
+    private function countTotalLines(string $filepath): int
+    {
+        $handle = @fopen($filepath, 'rb');
+        if (!$handle) {
+            return 0;
+        }
+
+        $totalLines = 0;
+        while (!feof($handle)) {
+            $chunk = fread($handle, 65536);
+            $totalLines += substr_count($chunk, "\n");
+        }
+        fclose($handle);
+
+        return $totalLines;
     }
 
     /**

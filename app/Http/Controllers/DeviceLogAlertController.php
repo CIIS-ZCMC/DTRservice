@@ -46,33 +46,34 @@ class DeviceLogAlertController extends Controller
                 continue;
             }
 
-            $content = File::get($filePath);
-            $lines = explode("\n", $content);
-
             $entryCount = 0;
             $dateCounts = [];
 
-            foreach ($lines as $line) {
-                $line = trim($line);
-                if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, 'biometric_id')) {
-                    continue;
-                }
+            $handle = @fopen($filePath, 'r');
+            if ($handle) {
+                while (($line = fgets($handle)) !== false) {
+                    $line = trim($line);
+                    if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, 'biometric_id')) {
+                        continue;
+                    }
 
-                $parts = array_map('trim', explode('|', $line));
-                if (count($parts) < 2) {
-                    continue;
-                }
+                    $parts = array_map('trim', explode('|', $line));
+                    if (count($parts) < 2) {
+                        continue;
+                    }
 
-                $dtrDate = $parts[1] ?? null;
-                if (!$dtrDate || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dtrDate)) {
-                    continue;
-                }
+                    $dtrDate = $parts[1] ?? null;
+                    if (!$dtrDate || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $dtrDate)) {
+                        continue;
+                    }
 
-                $entryCount++;
-                if (!isset($dateCounts[$dtrDate])) {
-                    $dateCounts[$dtrDate] = 0;
+                    $entryCount++;
+                    if (!isset($dateCounts[$dtrDate])) {
+                        $dateCounts[$dtrDate] = 0;
+                    }
+                    $dateCounts[$dtrDate]++;
                 }
-                $dateCounts[$dtrDate]++;
+                fclose($handle);
             }
 
             $fileList[] = [
@@ -200,29 +201,30 @@ class DeviceLogAlertController extends Controller
             return response()->json(['error' => 'File not found'], 404);
         }
 
-        $content = File::get($path);
-        $lines = explode("\n", $content);
-
         $parsed = [];
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, 'biometric_id')) {
-                continue;
-            }
+        $handle = @fopen($path, 'r');
+        if ($handle) {
+            while (($line = fgets($handle)) !== false) {
+                $line = trim($line);
+                if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, 'biometric_id')) {
+                    continue;
+                }
 
-            $parts = array_map('trim', explode('|', $line));
-            if (count($parts) < 2) {
-                continue;
-            }
+                $parts = array_map('trim', explode('|', $line));
+                if (count($parts) < 2) {
+                    continue;
+                }
 
-            $parsed[] = [
-                'biometric_id' => $parts[0] ?? '',
-                'dtr_date' => $parts[1] ?? '',
-                'name' => $parts[2] ?? '',
-                'dtr_time' => $parts[3] ?? '',
-                'dtr_type' => $parts[4] ?? '',
-                'device_name' => $parts[5] ?? '',
-            ];
+                $parsed[] = [
+                    'biometric_id' => $parts[0] ?? '',
+                    'dtr_date' => $parts[1] ?? '',
+                    'name' => $parts[2] ?? '',
+                    'dtr_time' => $parts[3] ?? '',
+                    'dtr_type' => $parts[4] ?? '',
+                    'device_name' => $parts[5] ?? '',
+                ];
+            }
+            fclose($handle);
         }
 
         return response()->json([
