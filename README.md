@@ -28,10 +28,21 @@ php artisan biometrics:sync-device <DEVICE_SERIAL_NUMBER>
 
 ---
 
+## 📥 Manual Log Pulling & Recovery
+
+If logs were missed by the server or an offline/misconfigured terminal needs its historical punch records retrieved, you can pull logs directly via SOAP or queue an ADMS push re-send command. For full details and API endpoints, refer to:
+
+👉 **[Manual Biometric Log Pulling & Missed Log Recovery Guide (MANUAL_DEVICE_LOG_PULLING_GUIDE.md)](./MANUAL_DEVICE_LOG_PULLING_GUIDE.md)**
+
+---
+
 ## 🛠️ Common Artisan Commands
 
 | Command | Description |
 | :--- | :--- |
+| `php artisan devices:pull-logs --date=YYYY-MM-DD` | Pull attendance logs directly from all active devices |
+| `php artisan devices:pull-logs <ID> --date=YYYY-MM-DD` | Pull attendance logs directly from a specific device |
+| `php artisan devices:pull-logs <ID> --resend` | Queue ADMS `DATA QUERY ATTLOG` resend command |
 | `php artisan biometrics:sync-device <SN>` | Provision full DB masterlist to a specific device |
 | `php artisan biometrics:sync-device <SN> --pin=<PIN>` | Provision a specific employee PIN to a device |
 | `php artisan biometrics:sync-device --all-devices` | Sync DB masterlist across all active devices |
