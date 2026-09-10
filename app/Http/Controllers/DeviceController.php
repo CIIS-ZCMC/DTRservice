@@ -35,12 +35,18 @@ class DeviceController extends Controller
         $totalDevices = Devices::count();
         $onlineDevices = Devices::where('last_seen_at', '>=', now()->subMinutes(2))->count();
         $offlineDevices = $totalDevices - $onlineDevices;
+        $registeringDevices = Devices::where('is_registration', 1)->count();
+        $operatingDevices = $totalDevices - $registeringDevices;
+        $attendanceDevices = Devices::where('for_attendance', 1)->count();
         $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
 
         return view('devices.index', compact(
             'totalDevices',
             'onlineDevices',
             'offlineDevices',
+            'registeringDevices',
+            'operatingDevices',
+            'attendanceDevices',
             'availabilityRate'
         ));
     }
@@ -66,7 +72,8 @@ class DeviceController extends Controller
             // Status filter
             $status = $request->input('status', 'all');
             if ($status === 'online') {
-                $query->where('last_seen_at', '>=', now()->subMinutes(2));
+                $query->whereNotNull('last_seen_at')
+                      ->where('last_seen_at', '>=', now()->subMinutes(2));
             } elseif ($status === 'offline') {
                 $query->where(function ($q) {
                     $q->whereNull('last_seen_at')
@@ -74,12 +81,16 @@ class DeviceController extends Controller
                 });
             }
 
-            // Device type filter
+            // Device type / role filter
             $type = $request->input('type', 'all');
             if ($type === 'operating') {
                 $query->where('is_registration', 0);
             } elseif ($type === 'registering') {
                 $query->where('is_registration', 1);
+            } elseif ($type === 'attendance') {
+                $query->where('for_attendance', 1);
+            } elseif ($type === 'non_attendance') {
+                $query->where('for_attendance', 0);
             }
 
             // Active filter
@@ -114,6 +125,7 @@ class DeviceController extends Controller
             $offlineDevices = $totalDevices - $onlineDevices;
             $registeringDevices = Devices::where('is_registration', 1)->count();
             $operatingDevices = $totalDevices - $registeringDevices;
+            $attendanceDevices = Devices::where('for_attendance', 1)->count();
             $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
 
             $perPage = $request->input('per_page', 10);
@@ -158,6 +170,7 @@ class DeviceController extends Controller
                     'offline' => $offlineDevices,
                     'registering' => $registeringDevices,
                     'operating' => $operatingDevices,
+                    'attendance' => $attendanceDevices,
                     'availability_rate' => $availabilityRate,
                 ],
             ]);

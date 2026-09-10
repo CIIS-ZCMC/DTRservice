@@ -512,15 +512,18 @@
             <div class="themed-card rounded-xl p-5 border shadow-xs flex items-center justify-between">
                 <div>
                     <p class="text-xs uppercase tracking-wider font-semibold themed-text-muted">Terminal Roles</p>
-                    <div class="flex items-center gap-2 mt-2">
-                        <span class="text-xs px-2 py-1 rounded pill-blue font-semibold" title="Operating Devices">
-                            <i class="fas fa-id-card mr-1"></i> <span id="statOperating">0</span> Operating
-                        </span>
-                        <span class="text-xs px-2 py-1 rounded pill-amber font-semibold" title="Registering Devices">
-                            <i class="fas fa-user-plus mr-1"></i> <span id="statRegistering">0</span> Registering
-                        </span>
+                    <div class="flex items-center gap-1.5 mt-2 flex-wrap">
+                        <button type="button" id="kpiBtnOperating" class="text-xs px-2 py-1 rounded pill-blue font-semibold cursor-pointer hover:opacity-85 transition-all active:scale-95" title="Click to filter Operating devices">
+                            <i class="fas fa-id-card mr-1"></i> <span id="statOperating">{{ $operatingDevices ?? 0 }}</span> Operating
+                        </button>
+                        <button type="button" id="kpiBtnRegistering" class="text-xs px-2 py-1 rounded pill-amber font-semibold cursor-pointer hover:opacity-85 transition-all active:scale-95" title="Click to filter Registering devices">
+                            <i class="fas fa-user-plus mr-1"></i> <span id="statRegistering">{{ $registeringDevices ?? 0 }}</span> Registering
+                        </button>
+                        <button type="button" id="kpiBtnAttendance" class="text-xs px-2 py-1 rounded pill-purple font-semibold cursor-pointer hover:opacity-85 transition-all active:scale-95" title="Click to filter Attendance devices">
+                            <i class="fas fa-calendar-check mr-1"></i> <span id="statAttendance">{{ $attendanceDevices ?? 0 }}</span> Attendance
+                        </button>
                     </div>
-                    <p class="text-xs themed-text-muted mt-1.5">Role categorization</p>
+                    <p class="text-xs themed-text-muted mt-1.5">Click any role to filter inventory</p>
                 </div>
                 <div class="w-12 h-12 rounded-xl pill-amber flex items-center justify-center text-xl">
                     <i class="fas fa-layer-group"></i>
@@ -573,13 +576,14 @@
                         </select>
                     </div>
 
-                    <!-- Type Filter -->
+                    <!-- Role Filter -->
                     <div class="flex items-center gap-1.5 text-xs">
                         <span class="themed-text-muted font-medium">Role:</span>
                         <select id="filterType" class="themed-input rounded-lg px-2.5 py-1.5 text-xs font-medium cursor-pointer">
                             <option value="all" selected>All Roles</option>
                             <option value="operating">Operating Only</option>
                             <option value="registering">Registering Only</option>
+                            <option value="attendance">Attendance</option>
                         </select>
                     </div>
 
@@ -952,7 +956,7 @@
             devices: [],
             selectedIds: new Set(),
             meta: { current_page: 1, per_page: 10, total: 0, last_page: 1, from: 0, to: 0 },
-            stats: { total: 0, online: 0, offline: 0, registering: 0, operating: 0, availability_rate: 0 },
+            stats: { total: {{ $totalDevices ?? 0 }}, online: {{ $onlineDevices ?? 0 }}, offline: {{ $offlineDevices ?? 0 }}, registering: {{ $registeringDevices ?? 0 }}, operating: {{ $operatingDevices ?? 0 }}, attendance: {{ $attendanceDevices ?? 0 }}, availability_rate: {{ $availabilityRate ?? 0 }} },
             search: '',
             status: 'all',
             type: 'all',
@@ -1147,6 +1151,10 @@
             document.getElementById('statOffline').textContent = state.stats.offline || 0;
             document.getElementById('statOperating').textContent = state.stats.operating || 0;
             document.getElementById('statRegistering').textContent = state.stats.registering || 0;
+            const statAttendance = document.getElementById('statAttendance');
+            if (statAttendance) {
+                statAttendance.textContent = state.stats.attendance || 0;
+            }
 
             const rate = state.stats.availability_rate || 0;
             document.getElementById('statOnlineRateBadge').textContent = `${rate}%`;
@@ -1985,6 +1993,39 @@
             state.meta.current_page = 1;
             fetchDevices();
         });
+
+        // Terminal Roles KPI Pill Quick Filter Handlers
+        const kpiBtnOperating = document.getElementById('kpiBtnOperating');
+        const kpiBtnRegistering = document.getElementById('kpiBtnRegistering');
+        const kpiBtnAttendance = document.getElementById('kpiBtnAttendance');
+
+        if (kpiBtnOperating) {
+            kpiBtnOperating.addEventListener('click', () => {
+                const nextVal = filterType.value === 'operating' ? 'all' : 'operating';
+                filterType.value = nextVal;
+                state.type = nextVal;
+                state.meta.current_page = 1;
+                fetchDevices();
+            });
+        }
+        if (kpiBtnRegistering) {
+            kpiBtnRegistering.addEventListener('click', () => {
+                const nextVal = filterType.value === 'registering' ? 'all' : 'registering';
+                filterType.value = nextVal;
+                state.type = nextVal;
+                state.meta.current_page = 1;
+                fetchDevices();
+            });
+        }
+        if (kpiBtnAttendance) {
+            kpiBtnAttendance.addEventListener('click', () => {
+                const nextVal = filterType.value === 'attendance' ? 'all' : 'attendance';
+                filterType.value = nextVal;
+                state.type = nextVal;
+                state.meta.current_page = 1;
+                fetchDevices();
+            });
+        }
 
         filterActive.addEventListener('change', (e) => {
             state.active = e.target.value;
