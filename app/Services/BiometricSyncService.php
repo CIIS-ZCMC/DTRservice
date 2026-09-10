@@ -64,6 +64,20 @@ class BiometricSyncService
             $queuedCount++;
         }
 
+        // If the source device reported an invalid timezone or group (TZ=0 or Grp=0),
+        // queue DATA USER with Grp=1 & TZ=1 back to the source device to fix it on the enrolling device itself!
+        $incomingGrp = $userData['Grp'] ?? $userData['grp'] ?? $userData['Group'] ?? null;
+        $incomingTz = $userData['TZ'] ?? $userData['Tz'] ?? $userData['Timezone'] ?? null;
+        $sourceNeedsTimezoneFix = !empty($sourceSn) && (
+            ($incomingGrp !== null && (int)$incomingGrp <= 0) ||
+            ($incomingTz !== null && (int)$incomingTz <= 0)
+        );
+
+        if ($sourceNeedsTimezoneFix) {
+            $this->commandService->queueCommand($sourceSn, $command);
+            $queuedCount++;
+        }
+
         Log::channel('device_logs')->info('BiometricSyncService :: Queued USER sync', [
             'pin' => $pin,
             'source_sn' => $sourceSn,
@@ -429,7 +443,9 @@ class BiometricSyncService
      */
     protected function getTargetDevices(?string $sourceSn)
     {
-        $query = Devices::where('is_active', 1)
+        $query = Devices::where(function ($q) {
+                $q->where('is_active', 1)->orWhere('is_registration', 1);
+            })
             ->whereNotNull('serial_number')
             ->where('serial_number', '!=', '')
             ->where('serial_number', '!=', 'Fail!');

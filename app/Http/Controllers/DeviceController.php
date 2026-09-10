@@ -941,7 +941,11 @@ class DeviceController extends Controller
                         }
                     }
 
-                    if (!$isIdentical) {
+                    $incomingGrp = $record['Grp'] ?? $record['grp'] ?? $record['Group'] ?? null;
+                    $incomingTz = $record['TZ'] ?? $record['Tz'] ?? $record['Timezone'] ?? null;
+                    $needsTimezoneFix = ($incomingGrp !== null && (int)$incomingGrp <= 0) || ($incomingTz !== null && (int)$incomingTz <= 0);
+
+                    if (!$isIdentical || $needsTimezoneFix) {
                         $queuedCount = (int)$this->syncService->syncUserToAll($sn, $record);
                         RegistrationLogger::logUserRegistration(
                             $pin,

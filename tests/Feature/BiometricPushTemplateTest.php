@@ -272,6 +272,43 @@ test('syncing user with incoming TZ=0 forces TZ=1 preventing Invalid Time Period
     expect($cmds[0]['command'])->toContain('Grp=1');
     expect($cmds[0]['command'])->toContain('TZ=1');
     expect($cmds[0]['command'])->not->toContain('TZ=0');
+
+    // DEV_SN_SOURCE also receives corrective command to fix its local memory
+    $cmdsSource = $commandService->getAllCommands('DEV_SN_SOURCE');
+    expect($cmdsSource)->toHaveCount(1);
+    expect($cmdsSource[0]['command'])->toContain('DATA USER PIN=99885');
+    expect($cmdsSource[0]['command'])->toContain('Grp=1');
+    expect($cmdsSource[0]['command'])->toContain('TZ=1');
+});
+
+test('pushing user with TZ=0 for existing user whose name and privilege are identical still triggers timezone correction back to device', function () {
+    // Pre-create user in biometrics so isUserIdentical returns true
+    \App\Models\Biometrics::create([
+        'biometric_id' => 99886,
+        'name' => 'Existing Identical User',
+        'privilege' => 0,
+    ]);
+
+    $payload = "PIN=99886\tName=Existing Identical User\tPri=0\tPasswd=\tCard=0\tGrp=0\tTZ=0";
+
+    $response = $this->call(
+        'POST',
+        '/iclock/cdata?SN=DEV_SN_SOURCE&table=USER',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        $payload
+    );
+
+    $response->assertStatus(200);
+
+    $commandService = app(DeviceCommandService::class);
+    $cmdsSource = $commandService->getAllCommands('DEV_SN_SOURCE');
+    expect($cmdsSource)->toHaveCount(1);
+    expect($cmdsSource[0]['command'])->toContain('DATA USER PIN=99886');
+    expect($cmdsSource[0]['command'])->toContain('Grp=1');
+    expect($cmdsSource[0]['command'])->toContain('TZ=1');
 });
 
 test('new unknown device connecting via ADMS is automatically registered in devices table with serial number and IP', function () {

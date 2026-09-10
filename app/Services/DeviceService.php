@@ -807,7 +807,7 @@ class DeviceService
         $skipSync = (bool)($options['skip_sync'] ?? false);
 
         // 1. Connectivity Check
-        $isOnline = $device->isOnline() || TAD::is_device_online($device->ip_address, 2);
+        $isOnline = $device->isOnline() || ($method !== 'adms' && !app()->runningUnitTests() && TAD::is_device_online($device->ip_address, 2));
         if (!$isOnline && !$force) {
             Log::channel('device_logs')->warning("Device attendance logs clear skipped: Device [{$device->id}] {$device->device_name} is OFFLINE.");
             return [

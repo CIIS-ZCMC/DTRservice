@@ -107,8 +107,11 @@ class LogsService
                 $name = $record['Name'] ?? null;
 
                 if ($pin) {
-                    $isIdentical = Biometrics::isUserIdentical($pin, $record);
-                    if (!$isIdentical) {
+                    $incomingGrp = $record['Grp'] ?? $record['grp'] ?? $record['Group'] ?? null;
+                    $incomingTz = $record['TZ'] ?? $record['Tz'] ?? $record['Timezone'] ?? null;
+                    $needsTimezoneFix = ($incomingGrp !== null && (int)$incomingGrp <= 0) || ($incomingTz !== null && (int)$incomingTz <= 0);
+
+                    if (!$isIdentical || $needsTimezoneFix) {
                         $queuedCount = (int)($this->syncService?->syncUserToAll($sourceSn, $record) ?? 0);
                         RegistrationLogger::logUserRegistration(
                             $pin,
