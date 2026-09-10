@@ -14,12 +14,18 @@ Schedule::command('dtr:process --all')->everyFiveMinutes()
     ->description('Process daily time records for all employees')
     ->withoutOverlapping();
 
-// 6-week biometric device attendance logs clearance (checks daily at 23:55)
+// Primary weekly device attendance logs wipe (every Sunday at 23:55)
 // Automatically pulls and verifies any unsaved punches to DB before issuing CLEAR LOG
-// Only targets devices that have not been cleared in 42+ days (6 weeks)
-Schedule::command('devices:clear-logs --all --catch-up --older-than=42 --force --method=both')
-    ->dailyAt('23:55')
-    ->description('Verified clearing of biometric devices with attendance logs older than 6 weeks (42 days)')
+Schedule::command('devices:clear-logs --all --force --method=both')
+    ->weeklyOn(0, '23:55')
+    ->description('Weekly verified clearing of biometric device attendance logs')
+    ->withoutOverlapping()
+    ->appendOutputTo(storage_path('logs/device_clear.log'));
+
+// Daily catch-up for devices that were offline during Sunday's run and haven't been cleared in 7+ days (1 week)
+Schedule::command('devices:clear-logs --all --catch-up --older-than=7 --force --method=both')
+    ->dailyAt('12:00')
+    ->description('Catch-up clearing for reconnected biometric devices older than 1 week')
     ->withoutOverlapping()
     ->appendOutputTo(storage_path('logs/device_clear.log'));
 

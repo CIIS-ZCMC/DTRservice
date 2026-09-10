@@ -8,8 +8,8 @@ setlocal EnableDelayedExpansion
 :: Intended for Windows Task Scheduler to execute repeatedly (e.g., every 1 or 5 minutes).
 :: It executes any due tasks defined in routes/console.php:
 ::   1. dtr:process --all (Every 5 minutes)
-::   2. devices:clear-logs --all --catch-up --older-than=42 (6 weeks device clearance)
-::   3. device-logs:prune --years=1 --archive (1 year DB pruning)
+::   2. devices:clear-logs (1-week device clearance: Sunday 23:55 + daily 12:00 catch-up)
+::   3. device-logs:prune --years=1 --archive (1 year DB pruning on 1st of month)
 :: ============================================================================
 
 :: 1. Navigate to project root directory
