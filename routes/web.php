@@ -9,6 +9,9 @@ Route::get('/', function () {
     return view('welcome');
 });
 
+// Device management web view
+Route::get('/devices', [DeviceController::class, 'managementView'])->name('devices.index');
+
 // Log viewer routes
 Route::get('/logs', [LogViewerController::class, 'index'])->name('logs.index');
 Route::get('/logs/view', [LogViewerController::class, 'show'])->name('logs.show');

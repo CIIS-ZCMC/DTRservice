@@ -123,26 +123,157 @@ class DeviceService
     }
 
     /**
-     * Sync device time with server
+     * Test connection to a biometric device using TCP socket probe and TAD/Push verification.
+     * Measures latency in milliseconds and returns connection diagnostics.
+     *
+     * @param Devices|int $device
+     * @return array
      */
-    public function syncDeviceTime(int $deviceId)
+    public function testDeviceConnection(Devices|int $device): array
     {
-        return DB::transaction(function () use ($deviceId) {
-            $device = $this->deviceRepository->findById($deviceId);
-            if (!$device) {
-                throw new Exception('Device not found');
+        if (is_int($device)) {
+            $deviceModel = $this->deviceRepository->findById($device);
+            if (!$deviceModel) {
+                throw new Exception("Device with ID {$device} not found");
             }
-           
-            // Send time sync command to device
+            $device = $deviceModel;
+        }
+
+        $ip = trim((string)$device->ip_address);
+        $soapPort = (int)($device->soap_port ?: 80);
+        $udpPort = (int)($device->udp_port ?: 4370);
+        $sn = trim((string)$device->serial_number);
+
+        $socketOnline = false;
+        $latencyMs = null;
+        $responsivePort = null;
+
+        // 1. Probe TCP socket on SOAP Port (port 80)
+        if (!empty($ip)) {
+            $errNo = 0;
+            $errStr = '';
+            $probeStart = microtime(true);
+            $fp = @fsockopen($ip, $soapPort, $errNo, $errStr, 1.5);
+            if (is_resource($fp)) {
+                $socketOnline = true;
+                $responsivePort = $soapPort;
+                $latencyMs = max(1, (int)round((microtime(true) - $probeStart) * 1000));
+                fclose($fp);
+            } else {
+                // If SOAP port closed or blocked, try UDP port (4370)
+                $probeStartUdp = microtime(true);
+                $fpUdp = @fsockopen($ip, $udpPort, $errNo, $errStr, 1.2);
+                if (is_resource($fpUdp)) {
+                    $socketOnline = true;
+                    $responsivePort = $udpPort;
+                    $latencyMs = max(1, (int)round((microtime(true) - $probeStartUdp) * 1000));
+                    fclose($fpUdp);
+                }
+            }
+        }
+
+        // 2. Check Push check-in status (seen within last 2 minutes)
+        $isPushActive = $device->isOnline();
+
+        // 3. Check TAD alive if socket is open
+        $isTadAlive = false;
+        if ($socketOnline) {
             try {
-                $this->sendDeviceCommand($device->id, 'sync_time', [
-                    'date' => now()->format('Y-m-d'),
-                    'time' =>now()->format('H:i:s'),
-                ]);
-            } catch (\Exception $e) {
-                throw new Exception('Failed to sync device time: ' . $e->getMessage());
+                $tad = $this->checkDeviceConnection($device->toArray());
+                if ($tad && $tad->is_alive()) {
+                    $isTadAlive = true;
+                }
+            } catch (\Throwable $th) {
+                // Socket was responsive even if SOAP request threw
             }
-        });
+        }
+
+        $isOnline = $socketOnline || $isPushActive || $isTadAlive;
+
+        // If responsive, update last_seen_at
+        if ($isOnline) {
+            $device->update(['last_seen_at' => now()]);
+        }
+
+        $protocols = [];
+        if ($isTadAlive || $socketOnline) $protocols[] = "SOAP/TCP (:{$responsivePort})";
+        if ($isPushActive) $protocols[] = "ADMS Push";
+        $protocolStr = !empty($protocols) ? implode(' + ', $protocols) : 'Unreachable';
+
+        return [
+            'device_id' => $device->id,
+            'device_name' => $device->device_name,
+            'ip_address' => $ip,
+            'serial_number' => $sn,
+            'status' => $isOnline ? 'online' : 'offline',
+            'is_online' => $isOnline,
+            'latency_ms' => $latencyMs,
+            'port' => $responsivePort,
+            'protocol' => $protocolStr,
+            'last_seen_at' => $device->last_seen_at ? $device->last_seen_at->toDateTimeString() : null,
+            'last_seen_human' => $device->last_seen_at ? $device->last_seen_at->diffForHumans() : 'Never',
+            'message' => $isOnline
+                ? "Device is online and responding ({$latencyMs}ms via {$protocolStr})"
+                : "Device is unreachable at {$ip}:{$soapPort} (connection timed out)",
+        ];
+    }
+
+    /**
+     * Sync device time with server (Dual support: Direct SOAP + ADMS Push command queue)
+     */
+    public function syncDeviceTime(int $deviceId): array
+    {
+        $device = $this->deviceRepository->findById($deviceId);
+        if (!$device) {
+            throw new Exception('Device not found');
+        }
+
+        $now = now();
+        $dateStr = $now->format('Y-m-d');
+        $timeStr = $now->format('H:i:s');
+        $dtStr = $now->format('Y-m-d H:i:s');
+
+        $soapSuccess = false;
+        $pushQueued = false;
+        $errors = [];
+
+        // 1. Direct TAD SOAP sync
+        try {
+            $tad = $this->checkDeviceConnection($device->toArray());
+            if ($tad && $tad->is_alive()) {
+                $tad->set_date(['date' => $dateStr, 'time' => $timeStr]);
+                $soapSuccess = true;
+                $device->update(['last_seen_at' => now()]);
+            }
+        } catch (\Throwable $e) {
+            $errors[] = "SOAP: " . $e->getMessage();
+        }
+
+        // 2. Dual support: Queue ADMS push command if device has serial number
+        $sn = trim((string)$device->serial_number);
+        if (!empty($sn) && $sn !== 'Fail!') {
+            try {
+                $this->commandService->queueCommand($sn, "SET OPTIONS DateTime={$dtStr}");
+                $pushQueued = true;
+            } catch (\Throwable $e) {
+                $errors[] = "Push: " . $e->getMessage();
+            }
+        }
+
+        if (!$soapSuccess && !$pushQueued) {
+            throw new Exception("Failed to sync device time: " . implode(', ', $errors));
+        }
+
+        $channel = $soapSuccess && $pushQueued ? 'SOAP & Queued to Push' : ($soapSuccess ? 'SOAP' : 'Queued to ADMS Push');
+
+        return [
+            'success' => true,
+            'device_id' => $device->id,
+            'device_name' => $device->device_name,
+            'synced_at' => $dtStr,
+            'channel' => $channel,
+            'message' => "Device time synchronized successfully via {$channel} ({$dtStr})",
+        ];
     }
 
     /**
@@ -159,32 +290,75 @@ class DeviceService
         return [
             'id' => $device->id,
             'device_id' => $device->device_id,
-            'name' => $device->name ?? null,
-            'status' => $device->status ?? 'unknown',
+            'name' => $device->device_name ?? null,
+            'device_name' => $device->device_name ?? null,
+            'serial_number' => $device->serial_number ?? null,
+            'mac_address' => $device->mac_address ?? null,
+            'status' => $device->isOnline() ? 'online' : 'offline',
             'ip_address' => $device->ip_address ?? null,
-            'last_sync_at' => $device->last_sync_at ?? null,
+            'soap_port' => $device->soap_port ?? 80,
+            'udp_port' => $device->udp_port ?? 4370,
+            'com_key' => $device->com_key ?? 0,
+            'is_registration' => $device->is_registration,
+            'for_attendance' => $device->for_attendance,
+            'is_active' => $device->is_active,
+            'last_seen_at' => $device->last_seen_at ? $device->last_seen_at->toDateTimeString() : null,
+            'last_cleared_at' => $device->last_cleared_at ? $device->last_cleared_at->toDateTimeString() : null,
             'created_at' => $device->created_at,
             'updated_at' => $device->updated_at,
         ];
     }
 
     /**
-     * Restart device
+     * Restart device (Dual support: Direct SOAP + ADMS Push command queue)
      */
-    public function restartDevice(int $deviceId): bool
+    public function restartDevice(int $deviceId): array
     {
-        return DB::transaction(function () use ($deviceId) {
-            $device = $this->deviceRepository->findById($deviceId);
+        $device = $this->deviceRepository->findById($deviceId);
+        if (!$device) {
+            throw new Exception('Device not found');
+        }
 
-            if (!$device) {
-                throw new Exception('Device not found');
+        $soapSuccess = false;
+        $pushQueued = false;
+        $errors = [];
+
+        // 1. Direct TAD SOAP restart
+        try {
+            $tad = $this->checkDeviceConnection($device->toArray());
+            if ($tad && $tad->is_alive()) {
+                $tad->restart();
+                $soapSuccess = true;
+                $device->update(['last_seen_at' => now()]);
             }
+        } catch (\Throwable $e) {
+            $errors[] = "SOAP: " . $e->getMessage();
+        }
+
+        // 2. Dual support: Queue ADMS push command if device has serial number
+        $sn = trim((string)$device->serial_number);
+        if (!empty($sn) && $sn !== 'Fail!') {
             try {
-           $this->sendDeviceCommand($device->id, 'restart');
-            } catch (\Exception $e) {
-                throw new Exception('Failed to restart device: ' . $e->getMessage());
+                $this->commandService->queueCommand($sn, "REBOOT");
+                $pushQueued = true;
+            } catch (\Throwable $e) {
+                $errors[] = "Push: " . $e->getMessage();
             }
-        });
+        }
+
+        if (!$soapSuccess && !$pushQueued) {
+            throw new Exception("Failed to restart device: " . implode(', ', $errors));
+        }
+
+        $channel = $soapSuccess && $pushQueued ? 'SOAP & Queued to Push' : ($soapSuccess ? 'SOAP' : 'Queued to ADMS Push');
+
+        return [
+            'success' => true,
+            'device_id' => $device->id,
+            'device_name' => $device->device_name,
+            'channel' => $channel,
+            'message' => "Device restart command executed via {$channel}",
+        ];
     }
 
    

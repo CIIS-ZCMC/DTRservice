@@ -28,6 +28,177 @@ class DeviceController extends Controller
     }
 
     /**
+     * Render the Biometric Device Management web view
+     */
+    public function managementView()
+    {
+        $totalDevices = Devices::count();
+        $onlineDevices = Devices::where('last_seen_at', '>=', now()->subMinutes(2))->count();
+        $offlineDevices = $totalDevices - $onlineDevices;
+        $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
+
+        return view('devices.index', compact(
+            'totalDevices',
+            'onlineDevices',
+            'offlineDevices',
+            'availabilityRate'
+        ));
+    }
+
+    /**
+     * Get paginated and filtered list of devices with rich KPI stats
+     */
+    public function getPaginatedDevices(Request $request): JsonResponse
+    {
+        try {
+            $query = Devices::query();
+
+            // Search filter
+            if ($search = trim((string)$request->input('search', ''))) {
+                $query->where(function ($q) use ($search) {
+                    $q->where('device_name', 'like', "%{$search}%")
+                      ->orWhere('ip_address', 'like', "%{$search}%")
+                      ->orWhere('serial_number', 'like', "%{$search}%")
+                      ->orWhere('mac_address', 'like', "%{$search}%");
+                });
+            }
+
+            // Status filter
+            $status = $request->input('status', 'all');
+            if ($status === 'online') {
+                $query->where('last_seen_at', '>=', now()->subMinutes(2));
+            } elseif ($status === 'offline') {
+                $query->where(function ($q) {
+                    $q->whereNull('last_seen_at')
+                      ->orWhere('last_seen_at', '<', now()->subMinutes(2));
+                });
+            }
+
+            // Device type filter
+            $type = $request->input('type', 'all');
+            if ($type === 'operating') {
+                $query->where('is_registration', 0);
+            } elseif ($type === 'registering') {
+                $query->where('is_registration', 1);
+            }
+
+            // Active filter
+            $active = $request->input('active', 'all');
+            if ($active === '1' || $active === 'true') {
+                $query->where('is_active', 1);
+            } elseif ($active === '0' || $active === 'false') {
+                $query->where('is_active', 0);
+            }
+
+            // Attendance filter
+            $attendance = $request->input('attendance', 'all');
+            if ($attendance === '1' || $attendance === 'true') {
+                $query->where('for_attendance', 1);
+            } elseif ($attendance === '0' || $attendance === 'false') {
+                $query->where('for_attendance', 0);
+            }
+
+            // Dynamic Sorting
+            $sortBy = $request->input('sort_by', 'id');
+            $sortDir = strtolower($request->input('sort_dir', 'asc')) === 'desc' ? 'desc' : 'asc';
+            $allowedSort = ['id', 'device_name', 'ip_address', 'last_seen_at', 'is_active', 'is_registration'];
+            if (in_array($sortBy, $allowedSort)) {
+                $query->orderBy($sortBy, $sortDir);
+            } else {
+                $query->orderBy('id', 'asc');
+            }
+
+            // KPI Stats calculated across entire device inventory
+            $totalDevices = Devices::count();
+            $onlineDevices = Devices::where('last_seen_at', '>=', now()->subMinutes(2))->count();
+            $offlineDevices = $totalDevices - $onlineDevices;
+            $registeringDevices = Devices::where('is_registration', 1)->count();
+            $operatingDevices = $totalDevices - $registeringDevices;
+            $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
+
+            $perPage = $request->input('per_page', 10);
+            if ($perPage === 'all' || (int)$perPage <= 0 || (int)$perPage > 200) {
+                $items = $query->get();
+                $totalCount = $items->count();
+                $mapped = $items->map(fn($d) => $this->formatDeviceItem($d));
+                $result = [
+                    'data' => $mapped,
+                    'meta' => [
+                        'current_page' => 1,
+                        'per_page' => $totalCount,
+                        'total' => $totalCount,
+                        'last_page' => 1,
+                        'from' => $totalCount > 0 ? 1 : 0,
+                        'to' => $totalCount,
+                    ],
+                ];
+            } else {
+                $paginator = $query->paginate((int)$perPage);
+                $mapped = collect($paginator->items())->map(fn($d) => $this->formatDeviceItem($d));
+                $result = [
+                    'data' => $mapped,
+                    'meta' => [
+                        'current_page' => $paginator->currentPage(),
+                        'per_page' => $paginator->perPage(),
+                        'total' => $paginator->total(),
+                        'last_page' => $paginator->lastPage(),
+                        'from' => $paginator->firstItem(),
+                        'to' => $paginator->lastItem(),
+                    ],
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $result['data'],
+                'meta' => $result['meta'],
+                'stats' => [
+                    'total' => $totalDevices,
+                    'online' => $onlineDevices,
+                    'offline' => $offlineDevices,
+                    'registering' => $registeringDevices,
+                    'operating' => $operatingDevices,
+                    'availability_rate' => $availabilityRate,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Format a device model into a rich representation
+     */
+    protected function formatDeviceItem(Devices $device): array
+    {
+        $isOnline = $device->isOnline();
+        return [
+            'id' => $device->id,
+            'device_id' => $device->device_id,
+            'device_name' => $device->device_name,
+            'serial_number' => $device->serial_number,
+            'mac_address' => $device->mac_address,
+            'ip_address' => $device->ip_address,
+            'soap_port' => $device->soap_port ?? '80',
+            'udp_port' => $device->udp_port ?? '4370',
+            'com_key' => $device->com_key ?? '0',
+            'is_active' => (bool)$device->is_active,
+            'is_registration' => (bool)$device->is_registration,
+            'for_attendance' => (bool)$device->for_attendance,
+            'receiver_by_default' => (bool)($device->receiver_by_default ?? false),
+            'is_online' => $isOnline,
+            'connection_status' => $isOnline ? 'online' : 'offline',
+            'last_seen_at' => $device->last_seen_at ? $device->last_seen_at->toDateTimeString() : null,
+            'last_seen_human' => $device->last_seen_at ? $device->last_seen_at->diffForHumans() : 'Never',
+            'last_cleared_at' => $device->last_cleared_at ? $device->last_cleared_at->toDateTimeString() : null,
+            'created_at' => $device->created_at ? $device->created_at->toDateTimeString() : null,
+        ];
+    }
+
+    /**
      * Get all devices
      */
     public function index(): JsonResponse
@@ -65,6 +236,192 @@ class DeviceController extends Controller
         }
     }
 
+    /**
+     * Test connection to a single device (TCP socket + TAD/Push diagnostics)
+     */
+    public function testConnection(int $id): JsonResponse
+    {
+        try {
+            $result = $this->deviceService->testDeviceConnection($id);
+            return response()->json([
+                'success' => true,
+                'data' => $result,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Alias for testConnection matching legacy status route
+     */
+    public function status(int $id): JsonResponse
+    {
+        return $this->testConnection($id);
+    }
+
+    /**
+     * Test connection across all devices in inventory
+     */
+    public function testAllConnections(): JsonResponse
+    {
+        try {
+            @set_time_limit(180);
+            $devices = Devices::all();
+            $results = [];
+            $onlineCount = 0;
+            $offlineCount = 0;
+
+            foreach ($devices as $device) {
+                $res = $this->deviceService->testDeviceConnection($device);
+                $results[$device->id] = $res;
+                if ($res['is_online']) {
+                    $onlineCount++;
+                } else {
+                    $offlineCount++;
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'total' => count($devices),
+                'online' => $onlineCount,
+                'offline' => $offlineCount,
+                'data' => $results,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Update device friendly name and/or operational roles (is_registration, for_attendance, is_active).
+     * All hardware and network parameters remain locked as read-only.
+     */
+    public function updateName(Request $request, int $id): JsonResponse
+    {
+        try {
+            $device = Devices::find($id);
+            if (!$device) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Device [ID: {$id}] not found",
+                ], 404);
+            }
+
+            $validated = $request->validate([
+                'device_name' => 'nullable|string|min:1|max:100',
+                'is_registration' => 'nullable|boolean',
+                'for_attendance' => 'nullable|boolean',
+                'is_active' => 'nullable|boolean',
+            ]);
+
+            $updates = [];
+            $changesDesc = [];
+
+            if ($request->filled('device_name')) {
+                $newName = trim($validated['device_name']);
+                if ($newName !== $device->device_name) {
+                    $updates['device_name'] = $newName;
+                    $changesDesc[] = "name to '{$newName}'";
+                }
+            }
+
+            if ($request->has('is_registration')) {
+                $isReg = (bool)$request->input('is_registration');
+                if ($isReg !== (bool)$device->is_registration) {
+                    $updates['is_registration'] = $isReg;
+                    $changesDesc[] = $isReg ? 'set as Registering terminal' : 'set as Operating terminal';
+                }
+            }
+
+            if ($request->has('for_attendance')) {
+                $forAtt = (bool)$request->input('for_attendance');
+                if ($forAtt !== (bool)$device->for_attendance) {
+                    $updates['for_attendance'] = $forAtt;
+                    $changesDesc[] = $forAtt ? 'enabled Attendance capture' : 'disabled Attendance capture';
+                }
+            }
+
+            if ($request->has('is_active')) {
+                $isActive = (bool)$request->input('is_active');
+                if ($isActive !== (bool)$device->is_active) {
+                    $updates['is_active'] = $isActive;
+                    $changesDesc[] = $isActive ? 'activated terminal' : 'deactivated terminal';
+                }
+            }
+
+            if (!empty($updates)) {
+                $device->update($updates);
+                $summary = implode(', ', $changesDesc);
+                Log::channel('device_logs')->info("Device [ID: {$id}] updated: {$summary}");
+                $message = "Device updated successfully: {$summary}";
+            } else {
+                $message = "No changes detected for device";
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => $message,
+                'data' => $this->formatDeviceItem($device->fresh()),
+            ]);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json([
+                'success' => false,
+                'message' => $ve->validator->errors()->first() ?? 'Invalid parameters',
+            ], 422);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Update device operational role flags (is_registration, for_attendance, is_active).
+     */
+    public function updateRoles(Request $request, int $id): JsonResponse
+    {
+        return $this->updateName($request, $id);
+    }
+
+    /**
+     * Legacy UMIS compatibility endpoint for updating device status flags
+     */
+    public function updateDeviceStatusLegacy(Request $request): JsonResponse
+    {
+        try {
+            $id = $request->input('id');
+            $field = $request->input('field');
+            $value = $request->input('value');
+
+            $allowedFields = ['is_active', 'is_registration', 'for_attendance', 'receiver_by_default'];
+            if (!in_array($field, $allowedFields)) {
+                return response()->json(['message' => "Field '{$field}' cannot be updated"], 422);
+            }
+
+            $device = Devices::find($id);
+            if (!$device) {
+                return response()->json(['message' => "Device not found"], 404);
+            }
+
+            $device->update([$field => (bool)$value]);
+            return response()->json([
+                'success' => true,
+                'message' => 'Device status updated successfully',
+                'data' => $this->formatDeviceItem($device->fresh())
+            ]);
+        } catch (\Throwable $th) {
+            return response()->json(['message' => $th->getMessage()], 500);
+        }
+    }
 
     /**
      * Turn off device
@@ -93,17 +450,62 @@ class DeviceController extends Controller
     public function syncTime(int $id): JsonResponse
     {
         try {
-            $this->deviceService->syncDeviceTime($id);
+            $result = $this->deviceService->syncDeviceTime($id);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Device time synced successfully'
+                'message' => $result['message'] ?? 'Device time synced successfully',
+                'data' => $result,
             ]);
 
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Sync time across all active devices
+     */
+    public function syncAllTime(): JsonResponse
+    {
+        try {
+            @set_time_limit(180);
+            $devices = Devices::active()->get();
+            $results = [];
+            $successCount = 0;
+            $failCount = 0;
+
+            foreach ($devices as $device) {
+                try {
+                    $res = $this->deviceService->syncDeviceTime($device->id);
+                    $results[] = $res;
+                    $successCount++;
+                } catch (\Throwable $e) {
+                    $results[] = [
+                        'device_id' => $device->id,
+                        'device_name' => $device->device_name,
+                        'success' => false,
+                        'message' => $e->getMessage(),
+                    ];
+                    $failCount++;
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'total' => $devices->count(),
+                'successful' => $successCount,
+                'failed' => $failCount,
+                'data' => $results,
+                'message' => "Time synchronization dispatched to {$successCount} device(s)",
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
             ], 500);
         }
     }
@@ -135,17 +537,67 @@ class DeviceController extends Controller
     public function restart(int $id): JsonResponse
     {
         try {
-            $this->deviceService->restartDevice($id);
+            $result = $this->deviceService->restartDevice($id);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Device restarted successfully'
+                'message' => $result['message'] ?? 'Device restarted successfully',
+                'data' => $result,
             ]);
 
         } catch (\Exception $e) {
             return response()->json([
                 'success' => false,
                 'message' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Restart multiple devices in batch
+     */
+    public function restartBatch(Request $request): JsonResponse
+    {
+        try {
+            $ids = $request->input('device_ids', []);
+            if (empty($ids) || !is_array($ids)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No devices specified for restart',
+                ], 422);
+            }
+
+            $results = [];
+            $successCount = 0;
+            $failCount = 0;
+
+            foreach ($ids as $id) {
+                try {
+                    $res = $this->deviceService->restartDevice((int)$id);
+                    $results[] = $res;
+                    $successCount++;
+                } catch (\Throwable $e) {
+                    $results[] = [
+                        'device_id' => (int)$id,
+                        'success' => false,
+                        'message' => $e->getMessage(),
+                    ];
+                    $failCount++;
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'total' => count($ids),
+                'successful' => $successCount,
+                'failed' => $failCount,
+                'data' => $results,
+                'message' => "Restart command dispatched to {$successCount} device(s)",
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
             ], 500);
         }
     }

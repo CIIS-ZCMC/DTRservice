@@ -12,7 +12,11 @@ Route::get('/user', function (Request $request) {
 
 // Device management routes
 Route::get('/devices', [DeviceController::class, 'index']);
+Route::get('/devices/paginated', [DeviceController::class, 'getPaginatedDevices']);
 Route::get('/devices/all', [DeviceController::class, 'getAllWithStatus']);
+Route::match(['get', 'post'], '/devices/test-all', [DeviceController::class, 'testAllConnections']);
+Route::match(['get', 'post'], '/devices/sync-time-all', [DeviceController::class, 'syncAllTime']);
+Route::post('/devices/restart-batch', [DeviceController::class, 'restartBatch']);
 Route::match(['get', 'post'], '/devices/pull-logs', [DeviceController::class, 'pullLogs']);
 Route::match(['get', 'post'], '/devices/{id}/pull-logs', [DeviceController::class, 'pullDeviceLogs']);
 Route::match(['get', 'post'], '/devices/request-resend', [DeviceController::class, 'requestLogResend']);
@@ -21,10 +25,14 @@ Route::match(['get', 'post'], '/devices/clear-logs', [DeviceController::class, '
 Route::match(['get', 'post'], '/devices/{id}/clear-logs', [DeviceController::class, 'clearDeviceAttendanceLogs']);
 Route::match(['get', 'post'], '/device-logs/prune', [DeviceController::class, 'pruneDatabaseLogs']);
 Route::get('/devices/{id}/status', [DeviceController::class, 'status']);
+Route::match(['get', 'post'], '/devices/{id}/test-connection', [DeviceController::class, 'testConnection']);
+Route::match(['put', 'post', 'patch'], '/devices/{id}/name', [DeviceController::class, 'updateName']);
+Route::match(['put', 'post', 'patch'], '/devices/{id}/roles', [DeviceController::class, 'updateRoles']);
+Route::post('/dtr-device-updatedevicestatus', [DeviceController::class, 'updateDeviceStatusLegacy']);
 Route::get('/devices/{id}', [DeviceController::class, 'show']);
 Route::get('/devices/{id}/power-off', [DeviceController::class, 'powerOff']);
-Route::get('/devices/{id}/sync-time', [DeviceController::class, 'syncTime']);
-Route::get('/devices/{id}/restart', [DeviceController::class, 'restart']);
+Route::match(['get', 'post'], '/devices/{id}/sync-time', [DeviceController::class, 'syncTime']);
+Route::match(['get', 'post'], '/devices/{id}/restart', [DeviceController::class, 'restart']);
 
 // Time record routes
 Route::get('/time-records', [TimeRecordController::class, 'index']);

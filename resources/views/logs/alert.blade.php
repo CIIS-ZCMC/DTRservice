@@ -49,22 +49,22 @@
             --bg-body: #f1f5f9;
             --bg-header: #ffffff;
             --bg-panel: #ffffff;
-            --bg-card: #f8fafc;
-            --bg-input: #f1f5f9;
+            --bg-card: #ffffff;
+            --bg-input: #ffffff;
             --bg-hover: #f1f5f9;
-            --border-color: #e2e8f0;
-            --border-subtle: #f1f5f9;
+            --border-color: #cbd5e1;
+            --border-subtle: #e2e8f0;
             --text-primary: #0f172a;
-            --text-secondary: #475569;
-            --text-muted: #94a3b8;
+            --text-secondary: #334155;
+            --text-muted: #64748b;
             --scrollbar-track: #f1f5f9;
             --scrollbar-thumb: #cbd5e1;
             --scrollbar-hover: #94a3b8;
             --panel-header-from: #e0f2fe;
-            --panel-header-to: #f8fafc;
-            --modal-overlay: rgba(0, 0, 0, 0.4);
+            --panel-header-to: #ffffff;
+            --modal-overlay: rgba(15, 23, 42, 0.55);
             --modal-bg: #ffffff;
-            --modal-border: #e2e8f0;
+            --modal-border: #cbd5e1;
         }
 
         body {
@@ -129,7 +129,7 @@
 
         .themed-bg { background: var(--bg-panel); }
         .themed-card { background: var(--bg-card); }
-        .themed-input { background: var(--bg-input); border-color: var(--border-color); color: var(--text-primary); }
+        .themed-input { background: var(--bg-input); border: 1px solid var(--border-color); color: var(--text-primary); transition: all 0.15s ease-in-out; }
         .themed-border { border-color: var(--border-color); }
         .themed-border-subtle { border-color: var(--border-subtle); }
         .themed-text-primary { color: var(--text-primary); }
@@ -158,7 +158,6 @@
                     </div>
                 </div>
                 <div class="flex items-center gap-4">
-                  
                     <div class="flex items-center gap-2 themed-card themed-border rounded-lg px-3 py-2">
                         <label class="text-xs themed-text-secondary font-medium">Source:</label>
                         <select id="dataSource" class="themed-input rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
