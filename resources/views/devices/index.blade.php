@@ -416,7 +416,7 @@
 
     <!-- Header -->
     <header class="themed-header border-b px-6 py-4 sticky top-0 z-30 shadow-xs backdrop-blur-md">
-        <div class="max-w-7xl mx-auto flex items-center justify-between">
+        <div class="max-w-full mx-auto flex items-center justify-between">
             <div class="flex items-center gap-4">
                 <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl flex items-center justify-center shadow-md shadow-blue-500/20 text-white">
                     <i class="fas fa-fingerprint text-xl"></i>
@@ -439,6 +439,11 @@
                     <i id="themeIcon" class="fas fa-sun text-yellow-400"></i>
                 </button>
 
+                <!-- Fullscreen Maximize Toggle -->
+                <button id="fullscreenBtn" class="btn-secondary rounded-lg p-2 text-sm" title="Toggle Fullscreen View">
+                    <i id="fullscreenIcon" class="fas fa-expand"></i>
+                </button>
+
                 <!-- Bulk Test Button -->
                 <button id="testAllBtn" class="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-all">
                     <i class="fas fa-bolt"></i> Test All Connections
@@ -457,8 +462,8 @@
         </div>
     </header>
 
-    <!-- Main Container -->
-    <main class="max-w-7xl mx-auto w-full px-6 py-6 flex-1 space-y-6">
+    <!-- Main Container (Full Width Maximized) -->
+    <main class="max-w-full mx-auto w-full px-6 py-6 flex-1 space-y-6">
 
         <!-- KPI Summary Cards -->
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -547,7 +552,7 @@
         <div class="themed-card rounded-xl p-4 border shadow-xs space-y-3">
             <div class="flex flex-col md:flex-row items-center justify-between gap-3">
                 <!-- Search Box -->
-                <div class="relative w-full md:w-80">
+                <div class="relative w-full md:w-96">
                     <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 themed-text-muted text-xs"></i>
                     <input type="text" id="searchInput" placeholder="Search name, IP, serial, MAC..." 
                         class="w-full pl-9 pr-8 py-2 text-xs rounded-lg themed-input transition-all">
@@ -1017,6 +1022,32 @@
             localStorage.setItem('deviceTheme', isLight ? 'light' : 'dark');
             updateThemeIcon();
         });
+
+        // Fullscreen Toggle Handler
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+        const fullscreenIcon = document.getElementById('fullscreenIcon');
+        if (fullscreenBtn) {
+            fullscreenBtn.addEventListener('click', () => {
+                if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(err => {
+                        console.warn('Fullscreen mode error:', err);
+                    });
+                } else {
+                    if (document.exitFullscreen) {
+                        document.exitFullscreen();
+                    }
+                }
+            });
+            document.addEventListener('fullscreenchange', () => {
+                if (document.fullscreenElement) {
+                    fullscreenIcon.className = 'fas fa-compress text-blue-500';
+                    fullscreenBtn.title = 'Exit Fullscreen View';
+                } else {
+                    fullscreenIcon.className = 'fas fa-expand';
+                    fullscreenBtn.title = 'Toggle Fullscreen View';
+                }
+            });
+        }
 
         // Toast Notification Function
         function showToast(message, type = 'info', duration = 4000) {
