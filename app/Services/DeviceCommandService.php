@@ -316,9 +316,9 @@ class DeviceCommandService
                 if (!$fp) continue;
                 try {
                     while (($line = fgets($fp)) !== false) {
-                        if (str_contains($line, '"status":"PENDING"') && str_contains($line, '"device_sn":"' . $deviceSn . '"')) {
+                        if ((str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) && str_contains($line, '"device_sn":"' . $deviceSn . '"')) {
                             $decoded = json_decode($line, true);
-                            if ($decoded && ($decoded['device_sn'] ?? '') === $deviceSn && ($decoded['status'] ?? '') === 'PENDING' && ($decoded['command'] ?? '') === $command) {
+                            if ($decoded && ($decoded['device_sn'] ?? '') === $deviceSn && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT']) && ($decoded['command'] ?? '') === $command) {
                                 return $decoded;
                             }
                         }
@@ -454,9 +454,9 @@ class DeviceCommandService
                 }
                 try {
                     while (($line = fgets($pfp)) !== false) {
-                        if (str_contains($line, '"status":"PENDING"')) {
+                        if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
                             $decoded = json_decode($line, true);
-                            if ($decoded && isset($decoded['device_sn'], $decoded['command']) && ($decoded['status'] ?? '') === 'PENDING') {
+                            if ($decoded && isset($decoded['device_sn'], $decoded['command']) && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT'])) {
                                 self::$previousPendingCache[$decoded['device_sn'] . "\0" . $decoded['command']] = true;
                             }
                         }
@@ -505,9 +505,9 @@ class DeviceCommandService
                             $maxId = $id;
                         }
                     }
-                    if (str_contains($line, '"status":"PENDING"')) {
+                    if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
                         $decoded = json_decode($line, true);
-                        if ($decoded && isset($decoded['device_sn'], $decoded['command']) && ($decoded['status'] ?? '') === 'PENDING') {
+                        if ($decoded && isset($decoded['device_sn'], $decoded['command']) && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT'])) {
                             $pendingMap[$decoded['device_sn'] . "\0" . $decoded['command']] = true;
                         }
                     }
@@ -1010,7 +1010,7 @@ class DeviceCommandService
                     if (is_array($decoded)) {
                         foreach ($decoded as $cmd) {
                             if (($cmd['device_sn'] ?? '') === $deviceSn && 
-                                ($cmd['status'] ?? '') === 'PENDING' && 
+                                in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
                                 ($cmd['command'] ?? '') === $command) {
                                 return true;
                             }
@@ -1020,10 +1020,10 @@ class DeviceCommandService
                 }
 
                 while (($line = fgets($fp)) !== false) {
-                    if (str_contains($line, $snNeedle) && str_contains($line, '"status":"PENDING"')) {
+                    if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT'))) {
                         $cmd = json_decode($line, true);
                         if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn && 
-                            ($cmd['status'] ?? '') === 'PENDING' && 
+                            in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
                             ($cmd['command'] ?? '') === $command) {
                             return true;
                         }
@@ -1076,7 +1076,7 @@ class DeviceCommandService
                     if (is_array($decoded)) {
                         foreach ($decoded as $cmd) {
                             if (($cmd['device_sn'] ?? '') === $deviceSn && 
-                                ($cmd['status'] ?? '') === 'PENDING' && 
+                                in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
                                 str_contains($cmd['command'] ?? '', $userNeedle)) {
                                 return true;
                             }
@@ -1086,7 +1086,7 @@ class DeviceCommandService
                 }
 
                 while (($line = fgets($fp)) !== false) {
-                    if (str_contains($line, $snNeedle) && str_contains($line, '"status":"PENDING"') && str_contains($line, $userNeedle)) {
+                    if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) && str_contains($line, $userNeedle)) {
                         return true;
                     }
                 }

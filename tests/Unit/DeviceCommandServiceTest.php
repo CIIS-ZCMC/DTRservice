@@ -91,6 +91,22 @@ test('hasPendingCommand correctly identifies existing pending command', function
     expect($this->service->hasPendingCommand('DEV_002', 'DATA USER PIN=500'))->toBeFalse();
 });
 
+test('hasPendingCommand and hasPendingUserCommand treat SENT commands as active to prevent duplicates', function () {
+    $cmd = $this->service->queueCommand('DEV_001', 'DATA USER PIN=500 Name=Test');
+    $this->service->markCommandsAsSent([$cmd['id']]);
+
+    // Should return true so identical command is not re-queued while in-flight
+    expect($this->service->hasPendingCommand('DEV_001', 'DATA USER PIN=500 Name=Test'))->toBeTrue();
+    expect($this->service->hasPendingUserCommand('DEV_001', 500))->toBeTrue();
+
+    // queueCommand should return the existing command without appending a duplicate
+    $duplicateAttempt = $this->service->queueCommand('DEV_001', 'DATA USER PIN=500 Name=Test');
+    expect($duplicateAttempt['id'])->toBe($cmd['id']);
+
+    $all = $this->service->getAllCommands('DEV_001');
+    expect($all)->toHaveCount(1);
+});
+
 test('creates a new numbered file instead of clearing when size limit is reached and checks queue across all files', function () {
     // Create a service with a tiny size limit of 150 bytes to test file rotation
     $smallLimitService = new DeviceCommandService($this->testFilePath, 150);
