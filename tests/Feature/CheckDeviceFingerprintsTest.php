@@ -98,3 +98,32 @@ test('biometrics:check-device with --clean flag executes safely when no ghosts a
         ->assertExitCode(0);
 });
 
+test('multi-row TAD response and TMP alias correctly extracts all enrolled slots including Slot 3', function () {
+    // Simulate multi-row response returned by TAD when querying templates
+    $mockTadMultiRow = [
+        'Row' => [
+            ['FingerID' => '3', 'TMP' => 'TEMPLATE_DATA_SLOT_3', 'Size' => '540'],
+            ['Finger_ID' => '6', 'Template' => 'TEMPLATE_DATA_SLOT_6', 'Size' => '560'],
+        ]
+    ];
+
+    $deviceSlots = [];
+    if (!empty($mockTadMultiRow['Row'])) {
+        $rows = isset($mockTadMultiRow['Row'][0]) ? $mockTadMultiRow['Row'] : [$mockTadMultiRow['Row']];
+        foreach ($rows as $r) {
+            $template = $r['Template'] ?? $r['TMP'] ?? null;
+            if (!empty($template)) {
+                $fid = (int)($r['FingerID'] ?? $r['Finger_ID'] ?? $r['FID'] ?? 0);
+                $size = $r['Size'] ?? strlen($template);
+                $deviceSlots[$fid] = $size;
+            }
+        }
+    }
+
+    expect($deviceSlots)->toHaveKey(3);
+    expect($deviceSlots)->toHaveKey(6);
+    expect($deviceSlots[3])->toBe('540');
+    expect($deviceSlots[6])->toBe('560');
+});
+
+

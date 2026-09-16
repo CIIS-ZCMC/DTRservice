@@ -178,3 +178,112 @@ test('automatically deletes queue file when all commands in it are SUCCESS and r
     @unlink($cleanTestPath1);
 });
 
+test('auto-migrates existing JSON array file to NDJSON on queueCommand without dropping records', function () {
+    // Write legacy JSON array directly to file
+    $legacyArray = [
+        [
+            'id' => 1,
+            'device_sn' => 'DEV_LEGACY',
+            'command' => 'DATA USER PIN=1',
+            'status' => 'PENDING',
+            'return_code' => null,
+            'created_at' => '2026-09-10 11:00:00',
+            'updated_at' => '2026-09-10 11:00:00',
+        ],
+        [
+            'id' => 2,
+            'device_sn' => 'DEV_LEGACY',
+            'command' => 'DATA USER PIN=2',
+            'status' => 'PENDING',
+            'return_code' => null,
+            'created_at' => '2026-09-10 11:00:00',
+            'updated_at' => '2026-09-10 11:00:00',
+        ],
+    ];
+    file_put_contents($this->testFilePath, json_encode($legacyArray, JSON_PRETTY_PRINT));
+
+    // Queue a new command using the service
+    $newCmd = $this->service->queueCommand('DEV_LEGACY', 'DATA USER PIN=3');
+    expect($newCmd['id'])->toBe(3);
+
+    // Verify all 3 commands exist and file is now NDJSON
+    $all = $this->service->getAllCommands('DEV_LEGACY');
+    expect($all)->toHaveCount(3);
+    expect($all[0]['id'])->toBe(1);
+    expect($all[1]['id'])->toBe(2);
+    expect($all[2]['id'])->toBe(3);
+
+    $pending = $this->service->getPendingCommands('DEV_LEGACY', 10);
+    expect($pending)->toHaveCount(3);
+
+    // Verify file content starts with '{' (NDJSON), NOT '[' (array)
+    $firstChar = trim(file_get_contents($this->testFilePath))[0];
+    expect($firstChar)->toBe('{');
+});
+
+test('safely appends when existing file has missing trailing newline', function () {
+    // Write an NDJSON line without a trailing newline
+    $record = json_encode([
+        'id' => 1,
+        'device_sn' => 'DEV_001',
+        'command' => 'CMD 1',
+        'status' => 'PENDING',
+        'return_code' => null,
+        'created_at' => '2026-09-16 10:00:00',
+        'updated_at' => '2026-09-16 10:00:00',
+    ]);
+    file_put_contents($this->testFilePath, $record); // NO \n at end
+
+    // Queue next command
+    $cmd2 = $this->service->queueCommand('DEV_001', 'CMD 2');
+    expect($cmd2['id'])->toBe(2);
+
+    $lines = file($this->testFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    expect($lines)->toHaveCount(2);
+
+    // Ensure line 1 and line 2 are both independently valid JSON
+    $decoded1 = json_decode($lines[0], true);
+    $decoded2 = json_decode($lines[1], true);
+    expect($decoded1['id'])->toBe(1);
+    expect($decoded2['id'])->toBe(2);
+});
+
+test('recordCommandAck handles multi-digit negative return code without corrupting JSON syntax', function () {
+    $cmd = $this->service->queueCommand('DEV_001', 'CMD 1');
+    expect($cmd['id'])->toBe(1);
+
+    // Acknowledge with a 5-character negative return code: -1001
+    $ackSuccess = $this->service->recordCommandAck($cmd['id'], -1001);
+    expect($ackSuccess)->toBeTrue();
+
+    // Verify file remains perfectly valid JSON
+    $rawContent = file_get_contents($this->testFilePath);
+    $decoded = json_decode(trim($rawContent), true);
+    expect($decoded)->toBeArray();
+    expect($decoded['status'])->toBe('FAILED');
+    expect($decoded['return_code'])->toBe(-1001);
+
+    // Verify getAllCommands returns clean values
+    $all = $this->service->getAllCommands('DEV_001');
+    expect($all[0]['status'])->toBe('FAILED');
+    expect($all[0]['return_code'])->toBe(-1001);
+});
+
+test('queueCommandsBatch atomically queues and deduplicates multiple entries in one call', function () {
+    $entries = [
+        ['device_sn' => 'DEV_A', 'command' => 'CMD 1'],
+        ['device_sn' => 'DEV_B', 'command' => 'CMD 1'],
+        ['device_sn' => 'DEV_A', 'command' => 'CMD 1'], // Duplicate in batch
+        ['device_sn' => 'DEV_C', 'command' => 'CMD 2'],
+    ];
+
+    $count = $this->service->queueCommandsBatch($entries);
+    expect($count)->toBe(3);
+
+    $all = $this->service->getAllCommands();
+    expect($all)->toHaveCount(3);
+    expect($all[0]['device_sn'])->toBe('DEV_A');
+    expect($all[1]['device_sn'])->toBe('DEV_B');
+    expect($all[2]['device_sn'])->toBe('DEV_C');
+});
+

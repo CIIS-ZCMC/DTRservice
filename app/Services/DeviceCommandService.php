@@ -153,7 +153,7 @@ class DeviceCommandService
 
     /**
      * Safely open a file with the requested lock type (LOCK_SH or LOCK_EX).
-     * Retries on Windows lock contention.
+     * Retries on Windows lock contention and forces binary mode ('b').
      *
      * @param string $filePath
      * @param string $mode
@@ -161,8 +161,12 @@ class DeviceCommandService
      * @param int $maxRetries
      * @return resource|false
      */
-    protected function openWithLock(string $filePath, string $mode, int $lockType, int $maxRetries = 10)
+    protected function openWithLock(string $filePath, string $mode, int $lockType, int $maxRetries = 25)
     {
+        if (!str_contains($mode, 'b')) {
+            $mode .= 'b';
+        }
+
         $attempts = 0;
         while ($attempts < $maxRetries) {
             $fp = @fopen($filePath, $mode);
@@ -177,6 +181,161 @@ class DeviceCommandService
         }
 
         return false;
+    }
+
+    /**
+     * Extract command records from raw content, supporting JSON array, NDJSON, or a mixture of both.
+     *
+     * @param string $content
+     * @return array<array>
+     */
+    public function extractRecordsFromRawContent(string $content): array
+    {
+        $content = trim($content);
+        if ($content === '') {
+            return [];
+        }
+
+        // 1. If it's a valid JSON array directly
+        $decoded = json_decode($content, true);
+        if (is_array($decoded) && (empty($decoded) || isset($decoded[0]))) {
+            return $decoded;
+        }
+
+        $records = [];
+
+        // 2. If it contains a bracketed array portion '[...]'
+        $firstBracket = strpos($content, '[');
+        if ($firstBracket !== false) {
+            $lastBracket = strrpos($content, ']');
+            if ($lastBracket !== false && $lastBracket > $firstBracket) {
+                $arrayChunk = substr($content, $firstBracket, $lastBracket - $firstBracket + 1);
+                $arrDecoded = json_decode($arrayChunk, true);
+                if (is_array($arrDecoded)) {
+                    foreach ($arrDecoded as $item) {
+                        if (is_array($item) && isset($item['id'])) {
+                            $records[] = $item;
+                        }
+                    }
+                }
+                // Strip the array part and leave the remainder
+                $content = substr($content, 0, $firstBracket) . "\n" . substr($content, $lastBracket + 1);
+            }
+        }
+
+        // 3. Process remaining lines as NDJSON
+        $lines = explode("\n", $content);
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $item = json_decode($line, true);
+            if (is_array($item) && isset($item['id'])) {
+                $records[] = $item;
+            }
+        }
+
+        // 4. Deduplicate by ID and sort ascending
+        $unique = [];
+        foreach ($records as $r) {
+            if (isset($r['id'])) {
+                if (isset($r['status'])) {
+                    $r['status'] = trim($r['status']);
+                }
+                $unique[$r['id']] = $r;
+            }
+        }
+        ksort($unique);
+
+        return array_values($unique);
+    }
+
+    /**
+     * Normalize a command storage file to clean JSON Lines (NDJSON) format.
+     * Converts legacy JSON arrays ([...]), mixed formats, or broken lines into clean single-line records.
+     *
+     * @param string $filePath
+     * @return bool
+     */
+    public function normalizeFileIfNeeded(string $filePath): bool
+    {
+        if (!file_exists($filePath) || filesize($filePath) === 0) {
+            return true;
+        }
+
+        $fp = $this->openWithLock($filePath, 'c+b', LOCK_EX);
+        if (!$fp) {
+            return false;
+        }
+
+        try {
+            clearstatcache(true, $filePath);
+            $size = filesize($filePath);
+            if ($size === 0) {
+                return true;
+            }
+
+            $content = stream_get_contents($fp);
+            $trimmed = trim($content);
+            if ($trimmed === '') {
+                ftruncate($fp, 0);
+                return true;
+            }
+
+            $needsNormalization = false;
+
+            // Check if file starts with '[' (legacy JSON array)
+            if (str_starts_with($trimmed, '[')) {
+                $needsNormalization = true;
+            }
+
+            // Check if content does not end with newline
+            if (!str_ends_with($content, "\n")) {
+                $needsNormalization = true;
+            }
+
+            // Check if any line contains padded status ("status":"SENT   " or "status":"FAILED ") or padded return_code or invalid JSON
+            if (!$needsNormalization) {
+                $lines = explode("\n", $content);
+                foreach ($lines as $line) {
+                    $l = trim($line);
+                    if ($l === '') {
+                        continue;
+                    }
+                    if (str_contains($l, '"status":"SENT   "') || str_contains($l, '"status":"FAILED "') || str_contains($l, '   ,')) {
+                        $needsNormalization = true;
+                        break;
+                    }
+                    $decoded = json_decode($l, true);
+                    if (!is_array($decoded) || !isset($decoded['id'])) {
+                        $needsNormalization = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!$needsNormalization) {
+                return true;
+            }
+
+            $records = $this->extractRecordsFromRawContent($content);
+
+            rewind($fp);
+            ftruncate($fp, 0);
+            foreach ($records as $record) {
+                if (isset($record['status'])) {
+                    $record['status'] = trim($record['status']);
+                }
+                fwrite($fp, json_encode($record, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+            }
+            fflush($fp);
+
+            return true;
+        } finally {
+            @flock($fp, LOCK_UN);
+            fclose($fp);
+        }
     }
 
     /**
@@ -244,7 +403,8 @@ class DeviceCommandService
     }
 
     /**
-     * Parse commands from a file, supporting both JSON Lines (NDJSON) and legacy JSON array format.
+     * Parse commands from a file, supporting clean JSON Lines (NDJSON).
+     * Automatically normalizes legacy JSON array format if detected.
      *
      * @param string $filePath
      * @return array
@@ -255,28 +415,14 @@ class DeviceCommandService
             return [];
         }
 
+        $this->normalizeFileIfNeeded($filePath);
+
         $fp = $this->openWithLock($filePath, 'r', LOCK_SH);
         if (!$fp) {
             return [];
         }
 
         try {
-            // Peek first non-whitespace character
-            $firstChar = '';
-            while (($char = fgetc($fp)) !== false) {
-                if (!ctype_space($char)) {
-                    $firstChar = $char;
-                    break;
-                }
-            }
-            rewind($fp);
-
-            if ($firstChar === '[') {
-                $content = stream_get_contents($fp);
-                $decoded = json_decode($content, true);
-                return is_array($decoded) ? $decoded : [];
-            }
-
             $commands = [];
             while (($line = fgets($fp)) !== false) {
                 $line = trim($line);
@@ -312,12 +458,13 @@ class DeviceCommandService
         if ($this->hasPendingCommand($deviceSn, $command)) {
             foreach ($this->getAllCommandFiles() as $file) {
                 if (!file_exists($file) || filesize($file) === 0) continue;
+                $this->normalizeFileIfNeeded($file);
                 $fp = $this->openWithLock($file, 'r', LOCK_SH);
                 if (!$fp) continue;
                 try {
                     while (($line = fgets($fp)) !== false) {
                         if ((str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) && str_contains($line, '"device_sn":"' . $deviceSn . '"')) {
-                            $decoded = json_decode($line, true);
+                            $decoded = json_decode(trim($line), true);
                             if ($decoded && ($decoded['device_sn'] ?? '') === $deviceSn && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT']) && ($decoded['command'] ?? '') === $command) {
                                 return $decoded;
                             }
@@ -336,6 +483,8 @@ class DeviceCommandService
             mkdir($dir, 0755, true);
         }
 
+        $this->normalizeFileIfNeeded($targetFile);
+
         $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
         if (!$fp) {
             return [];
@@ -349,6 +498,7 @@ class DeviceCommandService
                 fclose($fp);
                 $nextIndex = $this->getNextFileIndex();
                 $targetFile = $this->getBaseDirectory() . DIRECTORY_SEPARATOR . $this->getBaseFileName() . "_{$nextIndex}" . $this->getExtension();
+                $this->normalizeFileIfNeeded($targetFile);
                 $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
                 if (!$fp) {
                     return [];
@@ -388,7 +538,18 @@ class DeviceCommandService
                 'updated_at' => $now,
             ];
 
+            // Ensure preceding content ends with newline
             fseek($fp, 0, SEEK_END);
+            $endPos = ftell($fp);
+            if ($endPos > 0) {
+                fseek($fp, $endPos - 1, SEEK_SET);
+                $lastChar = fgetc($fp);
+                fseek($fp, 0, SEEK_END);
+                if ($lastChar !== "\n") {
+                    fwrite($fp, "\n");
+                }
+            }
+
             fwrite($fp, json_encode($record, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
             fflush($fp);
             @flock($fp, LOCK_UN);
@@ -448,6 +609,7 @@ class DeviceCommandService
                 if (!file_exists($file) || filesize($file) === 0) {
                     continue;
                 }
+                $this->normalizeFileIfNeeded($file);
                 $pfp = $this->openWithLock($file, 'r', LOCK_SH);
                 if (!$pfp) {
                     continue;
@@ -455,7 +617,7 @@ class DeviceCommandService
                 try {
                     while (($line = fgets($pfp)) !== false) {
                         if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
-                            $decoded = json_decode($line, true);
+                            $decoded = json_decode(trim($line), true);
                             if ($decoded && isset($decoded['device_sn'], $decoded['command']) && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT'])) {
                                 self::$previousPendingCache[$decoded['device_sn'] . "\0" . $decoded['command']] = true;
                             }
@@ -473,6 +635,8 @@ class DeviceCommandService
             mkdir($dir, 0755, true);
         }
 
+        $this->normalizeFileIfNeeded($targetFile);
+
         $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
         if (!$fp) {
             return 0;
@@ -486,6 +650,7 @@ class DeviceCommandService
                 fclose($fp);
                 $nextIndex = $this->getNextFileIndex();
                 $targetFile = $this->getBaseDirectory() . DIRECTORY_SEPARATOR . $this->getBaseFileName() . "_{$nextIndex}" . $this->getExtension();
+                $this->normalizeFileIfNeeded($targetFile);
                 $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
                 if (!$fp) {
                     return 0;
@@ -506,7 +671,7 @@ class DeviceCommandService
                         }
                     }
                     if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
-                        $decoded = json_decode($line, true);
+                        $decoded = json_decode(trim($line), true);
                         if ($decoded && isset($decoded['device_sn'], $decoded['command']) && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT'])) {
                             $pendingMap[$decoded['device_sn'] . "\0" . $decoded['command']] = true;
                         }
@@ -522,7 +687,18 @@ class DeviceCommandService
             $now = now()->toDateTimeString();
             $queuedCount = 0;
 
+            // Ensure preceding content ends with newline
             fseek($fp, 0, SEEK_END);
+            $endPos = ftell($fp);
+            if ($endPos > 0) {
+                fseek($fp, $endPos - 1, SEEK_SET);
+                $lastChar = fgetc($fp);
+                fseek($fp, 0, SEEK_END);
+                if ($lastChar !== "\n") {
+                    fwrite($fp, "\n");
+                }
+            }
+
             foreach ($uniqueEntries as $entry) {
                 $deviceSn = $entry['device_sn'];
                 $command = $entry['command'];
@@ -554,6 +730,7 @@ class DeviceCommandService
 
                     $nextIndex = $this->getNextFileIndex();
                     $targetFile = $this->getBaseDirectory() . DIRECTORY_SEPARATOR . $this->getBaseFileName() . "_{$nextIndex}" . $this->getExtension();
+                    $this->normalizeFileIfNeeded($targetFile);
                     $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
                     if (!$fp) {
                         return $queuedCount;
@@ -593,43 +770,20 @@ class DeviceCommandService
                 continue;
             }
 
+            $this->normalizeFileIfNeeded($file);
+
             $fp = $this->openWithLock($file, 'r', LOCK_SH);
             if (!$fp) {
                 continue;
             }
 
             try {
-                // Check if file is legacy JSON array
-                $firstChar = '';
-                while (($char = fgetc($fp)) !== false) {
-                    if (!ctype_space($char)) {
-                        $firstChar = $char;
-                        break;
-                    }
-                }
-                rewind($fp);
-
-                if ($firstChar === '[') {
-                    $content = stream_get_contents($fp);
-                    $decoded = json_decode($content, true);
-                    if (is_array($decoded)) {
-                        foreach ($decoded as $cmd) {
-                            if (($cmd['device_sn'] ?? '') === $deviceSn && ($cmd['status'] ?? '') === 'PENDING') {
-                                $pending[] = $cmd;
-                                if (count($pending) >= $limit) {
-                                    return $pending;
-                                }
-                            }
-                        }
-                    }
-                    continue;
-                }
-
                 // Stream line-by-line
                 while (($line = fgets($fp)) !== false) {
                     if (str_contains($line, $snNeedle) && str_contains($line, '"status":"PENDING"')) {
-                        $cmd = json_decode($line, true);
-                        if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn && ($cmd['status'] ?? '') === 'PENDING') {
+                        $cmd = json_decode(trim($line), true);
+                        if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn && trim($cmd['status'] ?? '') === 'PENDING') {
+                            $cmd['status'] = 'PENDING';
                             $pending[] = $cmd;
                             if (count($pending) >= $limit) {
                                 return $pending;
@@ -666,70 +820,44 @@ class DeviceCommandService
                 continue;
             }
 
-            $fp = $this->openWithLock($file, 'c+', LOCK_EX);
+            $this->normalizeFileIfNeeded($file);
+
+            $fp = $this->openWithLock($file, 'c+b', LOCK_EX);
             if (!$fp) {
                 continue;
             }
 
             try {
-                $firstChar = '';
-                while (($char = fgetc($fp)) !== false) {
-                    if (!ctype_space($char)) {
-                        $firstChar = $char;
-                        break;
-                    }
-                }
-                rewind($fp);
-
+                $lines = [];
                 $fileModified = false;
+                $remainingLookup = $lookup;
 
-                if ($firstChar === '[') {
-                    $content = stream_get_contents($fp);
-                    $decoded = json_decode($content, true);
-                    if (is_array($decoded)) {
-                        foreach ($decoded as &$cmd) {
-                            if (isset($cmd['id']) && isset($lookup[(string)$cmd['id']])) {
-                                $cmd['status'] = 'SENT';
-                                $cmd['updated_at'] = $now;
-                                $fileModified = true;
-                            }
-                        }
-                        if ($fileModified) {
-                            rewind($fp);
-                            ftruncate($fp, 0);
-                            fwrite($fp, json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-                            fflush($fp);
-                        }
+                while (($line = fgets($fp)) !== false) {
+                    $trimmed = trim($line);
+                    if ($trimmed === '') {
+                        continue;
                     }
-                } else {
-                    $remainingLookup = $lookup;
-                    while (!feof($fp)) {
-                        $lineStart = ftell($fp);
-                        $line = fgets($fp);
-                        if ($line === false) {
-                            break;
-                        }
 
-                        if (!str_contains($line, '"status":"PENDING"')) {
+                    $cmd = json_decode($trimmed, true);
+                    if ($cmd && isset($cmd['id'])) {
+                        $idStr = (string)$cmd['id'];
+                        if (isset($remainingLookup[$idStr]) && trim($cmd['status'] ?? '') === 'PENDING') {
+                            $cmd['status'] = 'SENT';
+                            $cmd['updated_at'] = $now;
+                            $fileModified = true;
+                            unset($remainingLookup[$idStr]);
+                            $lines[] = json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
                             continue;
                         }
+                    }
+                    $lines[] = $trimmed . "\n";
+                }
 
-                        foreach ($remainingLookup as $cmdId => $_) {
-                            if (str_contains($line, '"id":' . $cmdId . ',') || str_contains($line, '"id":' . $cmdId . '}')) {
-                                $pos = strpos($line, '"status":"PENDING"');
-                                if ($pos !== false) {
-                                    fseek($fp, $lineStart + $pos, SEEK_SET);
-                                    fwrite($fp, '"status":"SENT   "');
-                                    fseek($fp, $lineStart + strlen($line), SEEK_SET);
-                                    unset($remainingLookup[$cmdId]);
-                                }
-                                break;
-                            }
-                        }
-
-                        if (empty($remainingLookup)) {
-                            break;
-                        }
+                if ($fileModified) {
+                    rewind($fp);
+                    ftruncate($fp, 0);
+                    foreach ($lines as $l) {
+                        fwrite($fp, $l);
                     }
                     fflush($fp);
                 }
@@ -742,7 +870,7 @@ class DeviceCommandService
 
     /**
      * Record device execution acknowledgment (ACK) from /iclock/devicecmd across all files.
-     * Updates in-place under exclusive lock without creating any temporary files.
+     * Updates under exclusive lock cleanly without corrupting JSON formatting.
      *
      * @param int|string $commandId Command ID
      * @param int $returnCode Return code from device (>= 0 is success)
@@ -761,87 +889,47 @@ class DeviceCommandService
                 continue;
             }
 
-            $fp = $this->openWithLock($file, 'c+', LOCK_EX);
+            $this->normalizeFileIfNeeded($file);
+
+            $fp = $this->openWithLock($file, 'c+b', LOCK_EX);
             if (!$fp) {
                 continue;
             }
 
             try {
-                $firstChar = '';
-                while (($char = fgetc($fp)) !== false) {
-                    if (!ctype_space($char)) {
-                        $firstChar = $char;
-                        break;
-                    }
-                }
-                rewind($fp);
-
+                $lines = [];
                 $fileModified = false;
 
-                if ($firstChar === '[') {
-                    $content = stream_get_contents($fp);
-                    $decoded = json_decode($content, true);
-                    if (is_array($decoded)) {
-                        foreach ($decoded as &$cmd) {
-                            if (isset($cmd['id']) && (string)$cmd['id'] === $cmdIdStr) {
-                                $cmd['status'] = $status;
-                                $cmd['return_code'] = $returnCode;
-                                $cmd['updated_at'] = $now;
-                                $fileModified = true;
-                                $updated = true;
-                                $matchedCmd = $cmd;
-                            }
-                        }
-                        if ($fileModified) {
-                            rewind($fp);
-                            ftruncate($fp, 0);
-                            fwrite($fp, json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-                            fflush($fp);
+                while (($line = fgets($fp)) !== false) {
+                    $trimmed = trim($line);
+                    if ($trimmed === '') {
+                        continue;
+                    }
+
+                    $cmd = json_decode($trimmed, true);
+                    if ($cmd && isset($cmd['id']) && (string)$cmd['id'] === $cmdIdStr) {
+                        $currentStatus = trim($cmd['status'] ?? '');
+                        if (in_array($currentStatus, ['PENDING', 'SENT'])) {
+                            $cmd['status'] = $status;
+                            $cmd['return_code'] = $returnCode;
+                            $cmd['updated_at'] = $now;
+                            $fileModified = true;
+                            $updated = true;
+                            $matchedCmd = $cmd;
+                            $lines[] = json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+                            continue;
                         }
                     }
-                } else {
-                    $needle1 = '"id":' . $cmdIdStr . ',';
-                    $needle2 = '"id":' . $cmdIdStr . '}';
+                    $lines[] = $trimmed . "\n";
+                }
 
-                    while (!feof($fp)) {
-                        $lineStart = ftell($fp);
-                        $line = fgets($fp);
-                        if ($line === false) {
-                            break;
-                        }
-
-                        if (str_contains($line, $needle1) || str_contains($line, $needle2)) {
-                            $trimmed = trim($line);
-                            $cmd = json_decode($trimmed, true);
-                            if ($cmd && (string)($cmd['id'] ?? '') === $cmdIdStr) {
-                                $pos = strpos($line, '"status":"');
-                                if ($pos !== false) {
-                                    $currentStatusPart = substr($line, $pos, 18);
-                                    if ($currentStatusPart === '"status":"PENDING"' || $currentStatusPart === '"status":"SENT   "') {
-                                        $paddedStatus = $status === 'SUCCESS' ? '"status":"SUCCESS"' : '"status":"FAILED "';
-                                        fseek($fp, $lineStart + $pos, SEEK_SET);
-                                        fwrite($fp, $paddedStatus);
-                                    }
-                                }
-
-                                $posRet = strpos($line, '"return_code":');
-                                if ($posRet !== false) {
-                                    $retPart = substr($line, $posRet, 18);
-                                    if (str_starts_with($retPart, '"return_code":')) {
-                                        $paddedRet = sprintf('"return_code":%-4s', $returnCode);
-                                        fseek($fp, $lineStart + $posRet, SEEK_SET);
-                                        fwrite($fp, $paddedRet);
-                                    }
-                                }
-                                fflush($fp);
-                                $updated = true;
-                                $cmd['status'] = $status;
-                                $cmd['return_code'] = $returnCode;
-                                $matchedCmd = $cmd;
-                                break;
-                            }
-                        }
+                if ($fileModified) {
+                    rewind($fp);
+                    ftruncate($fp, 0);
+                    foreach ($lines as $l) {
+                        fwrite($fp, $l);
                     }
+                    fflush($fp);
                 }
             } finally {
                 @flock($fp, LOCK_UN);
@@ -878,6 +966,8 @@ class DeviceCommandService
             return false;
         }
 
+        $this->normalizeFileIfNeeded($filePath);
+
         $fp = $this->openWithLock($filePath, 'r', LOCK_SH);
         if (!$fp) {
             return false;
@@ -885,30 +975,6 @@ class DeviceCommandService
 
         try {
             $hasCommands = false;
-
-            // Peek for legacy JSON array
-            $firstChar = '';
-            while (($char = fgetc($fp)) !== false) {
-                if (!ctype_space($char)) {
-                    $firstChar = $char;
-                    break;
-                }
-            }
-            rewind($fp);
-
-            if ($firstChar === '[') {
-                $content = stream_get_contents($fp);
-                $decoded = json_decode($content, true);
-                if (!is_array($decoded) || empty($decoded)) {
-                    return false;
-                }
-                foreach ($decoded as $cmd) {
-                    if (trim($cmd['status'] ?? '') !== 'SUCCESS') {
-                        return false;
-                    }
-                }
-                return true;
-            }
 
             // Stream NDJSON line-by-line
             while (($line = fgets($fp)) !== false) {
@@ -918,7 +984,7 @@ class DeviceCommandService
                 }
 
                 // If line contains PENDING or SENT, it's definitely not completed; retain immediately
-                if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT   "')) {
+                if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
                     return false;
                 }
 
@@ -989,39 +1055,17 @@ class DeviceCommandService
                 continue;
             }
 
+            $this->normalizeFileIfNeeded($file);
+
             $fp = $this->openWithLock($file, 'r', LOCK_SH);
             if (!$fp) {
                 continue;
             }
 
             try {
-                $firstChar = '';
-                while (($char = fgetc($fp)) !== false) {
-                    if (!ctype_space($char)) {
-                        $firstChar = $char;
-                        break;
-                    }
-                }
-                rewind($fp);
-
-                if ($firstChar === '[') {
-                    $content = stream_get_contents($fp);
-                    $decoded = json_decode($content, true);
-                    if (is_array($decoded)) {
-                        foreach ($decoded as $cmd) {
-                            if (($cmd['device_sn'] ?? '') === $deviceSn && 
-                                in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
-                                ($cmd['command'] ?? '') === $command) {
-                                return true;
-                            }
-                        }
-                    }
-                    continue;
-                }
-
                 while (($line = fgets($fp)) !== false) {
                     if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT'))) {
-                        $cmd = json_decode($line, true);
+                        $cmd = json_decode(trim($line), true);
                         if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn && 
                             in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
                             ($cmd['command'] ?? '') === $command) {
@@ -1055,39 +1099,22 @@ class DeviceCommandService
                 continue;
             }
 
+            $this->normalizeFileIfNeeded($file);
+
             $fp = $this->openWithLock($file, 'r', LOCK_SH);
             if (!$fp) {
                 continue;
             }
 
             try {
-                $firstChar = '';
-                while (($char = fgetc($fp)) !== false) {
-                    if (!ctype_space($char)) {
-                        $firstChar = $char;
-                        break;
-                    }
-                }
-                rewind($fp);
-
-                if ($firstChar === '[') {
-                    $content = stream_get_contents($fp);
-                    $decoded = json_decode($content, true);
-                    if (is_array($decoded)) {
-                        foreach ($decoded as $cmd) {
-                            if (($cmd['device_sn'] ?? '') === $deviceSn && 
-                                in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
-                                str_contains($cmd['command'] ?? '', $userNeedle)) {
-                                return true;
-                            }
-                        }
-                    }
-                    continue;
-                }
-
                 while (($line = fgets($fp)) !== false) {
                     if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) && str_contains($line, $userNeedle)) {
-                        return true;
+                        $cmd = json_decode(trim($line), true);
+                        if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn && 
+                            in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
+                            str_contains($cmd['command'] ?? '', $userNeedle)) {
+                            return true;
+                        }
                     }
                 }
             } finally {

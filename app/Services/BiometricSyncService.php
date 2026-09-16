@@ -57,11 +57,10 @@ class BiometricSyncService
         $tz = (!empty($tz) && (int)$tz > 0) ? (int)$tz : 1;
 
         $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
-        $queuedCount = 0;
+        $entries = [];
 
         foreach ($targetDevices as $device) {
-            $this->commandService->queueCommand($device->serial_number, $command);
-            $queuedCount++;
+            $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
 
         // If the source device reported an invalid timezone or group (TZ=0 or Grp=0),
@@ -74,9 +73,10 @@ class BiometricSyncService
         );
 
         if ($sourceNeedsTimezoneFix) {
-            $this->commandService->queueCommand($sourceSn, $command);
-            $queuedCount++;
+            $entries[] = ['device_sn' => $sourceSn, 'command' => $command];
         }
+
+        $queuedCount = $this->commandService->queueCommandsBatch($entries);
 
         Log::channel('device_logs')->info('BiometricSyncService :: Queued USER sync', [
             'pin' => $pin,
@@ -110,7 +110,7 @@ class BiometricSyncService
             return 0;
         }
 
-        $queuedCount = 0;
+        $entries = [];
 
         // 1. Ensure user profile (DATA USER) is queued first so target device has the user record
         if ($ensureUser) {
@@ -128,8 +128,7 @@ class BiometricSyncService
                 $hasPendingUser = $this->commandService->hasPendingUserCommand($device->serial_number, (int)$pin);
 
                 if (!$hasPendingUser) {
-                    $this->commandService->queueCommand($device->serial_number, $userCommand);
-                    $queuedCount++;
+                    $entries[] = ['device_sn' => $device->serial_number, 'command' => $userCommand];
                 }
             }
         }
@@ -169,9 +168,10 @@ class BiometricSyncService
         $command = "DATA UPDATE {$tableName}\t{$payload}";
 
         foreach ($targetDevices as $device) {
-            $this->commandService->queueCommand($device->serial_number, $command);
-            $queuedCount++;
+            $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
+
+        $queuedCount = $this->commandService->queueCommandsBatch($entries);
 
         Log::channel('device_logs')->info('BiometricSyncService :: Queued BIOMETRIC sync', [
             'table' => $tableName,
@@ -379,12 +379,13 @@ class BiometricSyncService
         }
 
         $command = "DATA DELETE USER PIN={$pin}";
-        $queuedCount = 0;
+        $entries = [];
 
         foreach ($targetDevices as $device) {
-            $this->commandService->queueCommand($device->serial_number, $command);
-            $queuedCount++;
+            $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
+
+        $queuedCount = $this->commandService->queueCommandsBatch($entries);
 
         Log::channel('device_logs')->info('BiometricSyncService :: Queued USER DELETE', [
             'pin' => $pin,
@@ -411,12 +412,13 @@ class BiometricSyncService
         }
 
         $command = "DATA DELETE FINGERTMP\tPIN={$pin}\tFID={$fingerId}";
-        $queuedCount = 0;
+        $entries = [];
 
         foreach ($targetDevices as $device) {
-            $this->commandService->queueCommand($device->serial_number, $command);
-            $queuedCount++;
+            $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
+
+        $queuedCount = $this->commandService->queueCommandsBatch($entries);
 
         Log::channel('device_logs')->info('BiometricSyncService :: Queued FINGERPRINT DELETE', [
             'pin' => $pin,

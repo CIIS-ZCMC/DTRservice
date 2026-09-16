@@ -106,12 +106,18 @@ class CheckDeviceFingerprints extends Command
 
         // 2. Resolve Target Devices
         if ($allDevices) {
-            $devices = Devices::where('is_active', 1)
+            $devices = Devices::where(function ($q) {
+                    $q->where('is_active', 1)->orWhere('is_registration', 1);
+                })
                 ->whereNotNull('serial_number')
                 ->where('serial_number', '!=', '')
                 ->where('serial_number', '!=', 'Fail!')
+                ->whereNotNull('ip_address')
+                ->where('ip_address', '!=', '')
+                ->where('ip_address', '!=', '0.0.0.0')
+                ->orderByDesc('is_registration')
                 ->get()
-                ->unique('serial_number');
+                ->unique('ip_address');
         } else {
             $device = Devices::where('serial_number', $deviceSn)->first();
             if (!$device) {
@@ -328,9 +334,16 @@ class CheckDeviceFingerprints extends Command
                 try {
                     $tRes = $tad->get_user_template(['pin' => $pin, 'finger_id' => $slot]);
                     $tArr = $tRes->to_array();
-                    if (!empty($tArr['Row']) && !empty($tArr['Row']['Template'])) {
-                        $size = $tArr['Row']['Size'] ?? strlen($tArr['Row']['Template']);
-                        $deviceSlots[$slot] = $size;
+                    if (!empty($tArr['Row'])) {
+                        $rows = isset($tArr['Row'][0]) ? $tArr['Row'] : [$tArr['Row']];
+                        foreach ($rows as $r) {
+                            $template = $r['Template'] ?? $r['TMP'] ?? null;
+                            if (!empty($template)) {
+                                $fid = (int)($r['FingerID'] ?? $r['Finger_ID'] ?? $r['FID'] ?? $slot);
+                                $size = $r['Size'] ?? strlen($template);
+                                $deviceSlots[$fid] = $size;
+                            }
+                        }
                     }
                 } catch (\Throwable) {
                     // Slot is empty
