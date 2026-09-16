@@ -92,3 +92,9 @@ test('biometrics:check-device runs successfully with --all-devices flag', functi
         ->expectsOutputToContain('All Devices User')
         ->assertExitCode(0);
 });
+
+test('biometrics:check-device with --clean flag executes safely when no ghosts are detected', function () {
+    $this->artisan('biometrics:check-device', ['pin' => 493, 'device_sn' => 'TEST_SN_001', '--clean' => true, '--force' => true])
+        ->assertExitCode(0);
+});
+

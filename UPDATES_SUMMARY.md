@@ -78,6 +78,7 @@ Recent updates to the **ZCMC DTRService** introduce centralized biometric templa
 | **Broadcast Masterlist to ALL Devices** | `php artisan biometrics:sync-device --all-devices` |
 | **Inspect Registered Fingers on Device** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER>` |
 | **Inspect Fingers Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices` |
+| **Inspect & Purge Ghost Slots Across ALL** | `php artisan biometrics:check-device <PIN> --all-devices --clean` |
 | **Delete Specific Fingerprint Globally** | `php artisan biometrics:delete-finger <PIN> <FID>` |
 | **Reconstruct Templates from Logs** | `php artisan biometrics:import-from-logs --sync-devices` |
 | **Run Full Test Suite** | `php artisan test` |

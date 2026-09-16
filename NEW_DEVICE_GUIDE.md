@@ -172,6 +172,8 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 | **Sync DB to ALL Devices (Fast / No-Clean)** | `php artisan biometrics:sync-device --all-devices --no-clean` |
 | **Check Live Enrolled Fingers on Device** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER>` |
 | **Check Live Enrolled Fingers Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices` |
+| **Inspect & Purge Ghost Fingers on Device** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER> --clean` |
+| **Inspect & Purge Ghosts Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices --clean` |
 | **Check Live Command Queue & Sync Status** | `php artisan biometrics:command-status` |
 | **Instantly Stop & Clear Command Queue** | `php artisan biometrics:clear-queue` |
 | **Purge User Profile from All Devices** | `php artisan biometrics:delete-user <PIN> --all-devices` |
@@ -233,6 +235,12 @@ php artisan biometrics:check-device 493 UCR6254000009
 
 # Check across ALL active registered terminals:
 php artisan biometrics:check-device 493 --all-devices
+
+# Inspect and automatically purge all detected ghost slots:
+php artisan biometrics:check-device 493 --all-devices --clean
+
+# Force purge without confirmation prompt:
+php artisan biometrics:check-device 493 --all-devices --clean --force
 ```
 
 ---
