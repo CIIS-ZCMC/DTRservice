@@ -172,6 +172,9 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 | **Sync DB to ALL Devices (Fast / No-Clean)** | `php artisan biometrics:sync-device --all-devices --no-clean` |
 | **Check Live Enrolled Fingers on Device** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER>` |
 | **Check Live Enrolled Fingers Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices` |
+| **Auto-Fix Missing Templates & Ghosts (Single Device)** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER> --fix` |
+| **Auto-Fix Missing Templates & Ghosts (ALL Devices)** | `php artisan biometrics:check-device <PIN> --all-devices --fix` |
+| **Force Auto-Fix (Bypass Confirmation Prompt)** | `php artisan biometrics:check-device <PIN> --all-devices --fix --force` |
 | **Inspect & Purge Ghost Fingers on Device** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER> --clean` |
 | **Inspect & Purge Ghosts Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices --clean` |
 | **Check Live Command Queue & Sync Status** | `php artisan biometrics:command-status` |
@@ -227,7 +230,7 @@ php artisan biometrics:delete-user 99499 --all-devices --with-db
 php artisan biometrics:delete-finger 493 2
 ```
 
-#### 5. Inspect Live Registered Fingerprints on Physical Device(s)
+#### 5. Inspect Live Registered Fingerprints on Physical Device(s) & Auto-Fix
 Connects directly to the terminal's hardware memory via TAD/SOAP and inspects slots 0–9, comparing them with the database:
 ```bash
 # Check a specific terminal for employee PIN 493:
@@ -236,10 +239,19 @@ php artisan biometrics:check-device 493 UCR6254000009
 # Check across ALL active registered terminals:
 php artisan biometrics:check-device 493 --all-devices
 
+# Auto-Fix: Push missing enrolled templates (e.g. Slot 3) & purge ghost slots across ALL devices:
+php artisan biometrics:check-device 493 --all-devices --fix
+
+# Auto-Fix for a specific terminal only:
+php artisan biometrics:check-device 493 UCR6254000009 --fix
+
+# Force auto-fix without confirmation prompt:
+php artisan biometrics:check-device 493 --all-devices --fix --force
+
 # Inspect and automatically purge all detected ghost slots:
 php artisan biometrics:check-device 493 --all-devices --clean
 
-# Force purge without confirmation prompt:
+# Force purge ghosts without confirmation prompt:
 php artisan biometrics:check-device 493 --all-devices --clean --force
 ```
 
