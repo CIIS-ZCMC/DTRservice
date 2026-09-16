@@ -20,8 +20,9 @@ class CheckDeviceFingerprints extends Command
                             {pin : Employee Biometric ID / PIN to inspect}
                             {device_sn? : Target device serial number}
                             {--all-devices : Query all active registered biometric devices}
+                            {--fix : Automatically sync missing templates from DB and purge ghost slots to achieve 100% sync}
                             {--clean : Automatically purge detected ghost fingerprint slots from physical devices}
-                            {--force : Bypass confirmation prompt when cleaning}
+                            {--force : Bypass confirmation prompt when cleaning or fixing}
                             {--timeout=2 : Connection timeout per device in seconds}';
 
     /**
@@ -29,7 +30,7 @@ class CheckDeviceFingerprints extends Command
      *
      * @var string
      */
-    protected $description = 'Query physical biometric terminal(s) in real-time via TAD/SOAP to inspect registered user profile and fingerprint templates (slots 0-9) for a specific employee PIN, with optional ghost slot purging';
+    protected $description = 'Query physical biometric terminal(s) in real-time via TAD/SOAP to inspect registered user profile and fingerprint templates (slots 0-9) for a specific employee PIN, with optional auto-fix or ghost slot purging';
 
     public const FINGER_NAMES = [
         0 => 'Right Thumb',
@@ -56,6 +57,7 @@ class CheckDeviceFingerprints extends Command
         $pin = (int)$this->argument('pin');
         $deviceSn = $this->argument('device_sn');
         $allDevices = (bool)$this->option('all-devices');
+        $fix = (bool)$this->option('fix');
         $clean = (bool)$this->option('clean');
         $force = (bool)$this->option('force');
 
@@ -63,7 +65,8 @@ class CheckDeviceFingerprints extends Command
             $this->error('Please specify a target device serial number or use --all-devices.');
             $this->line('Example (single device): php artisan biometrics:check-device 493 UCR6254000009');
             $this->line('Example (all devices):    php artisan biometrics:check-device 493 --all-devices');
-            $this->line('Example (inspect & clean): php artisan biometrics:check-device 493 --all-devices --clean');
+            $this->line('Example (auto-fix sync):  php artisan biometrics:check-device 493 --all-devices --fix');
+            $this->line('Example (purge ghosts):   php artisan biometrics:check-device 493 --all-devices --clean');
             return 1;
         }
 
@@ -129,6 +132,7 @@ class CheckDeviceFingerprints extends Command
         $hasMismatch = false;
         $hasGhostSlots = false;
         $ghostsToClean = [];
+        $devicesToFix = [];
 
         foreach ($devices as $dev) {
             $row = $this->inspectDevice($dev, $pin, $dbSlots);
@@ -143,8 +147,9 @@ class CheckDeviceFingerprints extends Command
                 ];
             }
 
-            if ($row['_status'] !== 'IN_SYNC') {
+            if ($row['_status'] !== 'IN_SYNC' && $row['_status'] !== 'OFFLINE') {
                 $hasMismatch = true;
+                $devicesToFix[] = $dev;
             }
 
             unset($row['_has_ghost'], $row['_status'], $row['_ghost_fids'], $row['_tad'], $row['_all_ghosts']);
@@ -156,7 +161,34 @@ class CheckDeviceFingerprints extends Command
             $tableRows
         );
 
-        // 3. Ghost Cleanup Action
+        // 3. Auto-Fix Action (--fix)
+        if ($fix && !empty($devicesToFix)) {
+            $this->newLine();
+            $deviceCount = count($devicesToFix);
+
+            if (!$force) {
+                if (!$this->confirm("Found sync discrepancies on {$deviceCount} device(s). Automatically push missing templates and clean ghost slots now?", true)) {
+                    $this->line('Auto-fix cancelled by user.');
+                    return 0;
+                }
+            }
+
+            $this->info("Pushing missing templates and synchronizing PIN {$pin} across {$deviceCount} device(s)...");
+            $totalCommands = 0;
+
+            foreach ($devicesToFix as $targetDev) {
+                $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $pin, true);
+                $totalCommands += $cmdCount;
+                $this->line(" • Queued {$cmdCount} sync/fix command(s) for {$targetDev->device_name} ({$targetDev->serial_number})");
+            }
+
+            $this->newLine();
+            $this->info("✅ Successfully queued {$totalCommands} synchronization command(s) across {$deviceCount} device(s).");
+            $this->line("   Terminals will download missing templates (e.g. Slot 3) and purge ghost slots upon their next poll cycle.");
+            return 0;
+        }
+
+        // 4. Ghost Cleanup Action (--clean)
         if ($clean && !empty($ghostsToClean)) {
             $this->newLine();
             $totalGhostFids = array_sum(array_map(fn($g) => count($g['ghost_fids']), $ghostsToClean));
@@ -178,7 +210,7 @@ class CheckDeviceFingerprints extends Command
                 $tad = $target['tad'];
                 $allGhosts = $target['all_ghosts'];
 
-                // 1. Instant SOAP wipe if all templates on terminal are ghosts
+                // Instant SOAP wipe if all templates on terminal are ghosts
                 if ($tad && $allGhosts) {
                     try {
                         $tad->delete_template(['pin' => $pin]);
@@ -188,7 +220,7 @@ class CheckDeviceFingerprints extends Command
                     }
                 }
 
-                // 2. Queue ADMS DATA DELETE FINGERTMP for each ghost slot
+                // Queue ADMS DATA DELETE FINGERTMP for each ghost slot
                 foreach ($ghostFids as $gfid) {
                     $cmd = "DATA DELETE FINGERTMP\tPIN={$pin}\tFID={$gfid}";
                     $this->commandService->queueCommand($targetDev->serial_number, $cmd);
@@ -204,16 +236,16 @@ class CheckDeviceFingerprints extends Command
             return 0;
         }
 
-        // 4. Diagnostics & Recommendations
+        // 5. Diagnostics & Recommendations
         $this->newLine();
-        if ($hasGhostSlots) {
+        if ($hasMismatch) {
+            $this->warn("⚠️  SYNC DISCREPANCY: Some terminals are missing templates from the DB (e.g. Slot 3).");
+            $this->line("   To automatically push missing templates to all devices, run with <fg=yellow>--fix</>:");
+            $this->line("   <fg=yellow>php artisan biometrics:check-device " . ($deviceSn ? "{$pin} {$deviceSn}" : "{$pin} --all-devices") . " --fix</>\n");
+        } elseif ($hasGhostSlots) {
             $this->warn("⚠️  GHOST FINGERPRINTS DETECTED: One or more physical terminals have extra finger slots enrolled that do not exist in the database!");
-            $this->line("   To purge all detected ghost slots automatically, re-run with <fg=yellow>--clean</>:");
+            $this->line("   To purge all detected ghost slots automatically, run with <fg=yellow>--clean</>:");
             $this->line("   <fg=yellow>php artisan biometrics:check-device " . ($deviceSn ? "{$pin} {$deviceSn}" : "{$pin} --all-devices") . " --clean</>\n");
-        } elseif ($hasMismatch) {
-            $this->warn("⚠️  SYNC DISCREPANCY: Some terminals are missing this user profile or enrolled fingerprints.");
-            $this->line("   Provision/sync this employee across all active terminals:");
-            $this->line("   <fg=yellow>php artisan biometrics:sync-device --all-devices --pin={$pin}</>\n");
         } else {
             $this->info("✅ All online terminals are 100% synchronized with the database masterlist for PIN {$pin}.");
         }
