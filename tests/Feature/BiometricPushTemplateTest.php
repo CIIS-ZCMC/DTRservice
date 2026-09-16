@@ -389,3 +389,26 @@ test('known device connecting via ADMS updates its last_seen_at and ip_address',
     expect($device->last_seen_at)->not->toBeNull();
 });
 
+test('processing raw USER line through LogsService without table query param executes without isIdentical error and queues user sync', function () {
+    $payload = "USER PIN=493\tName=Caimor, Reenjay Magaan\tPri=14\tPasswd=\tCard=\tGrp=129\tTZ=1";
+
+    $response = $this->call(
+        'POST',
+        '/iclock/cdata?SN=DEV_SN_SOURCE',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        $payload
+    );
+
+    $response->assertStatus(200);
+
+    $commandService = app(DeviceCommandService::class);
+    $cmds = $commandService->getAllCommands('DEV_SN_TARGET');
+    expect($cmds)->toHaveCount(1);
+    expect($cmds[0]['command'])->toContain('DATA USER PIN=493');
+    expect($cmds[0]['command'])->toContain('Pri=14');
+});
+
+

@@ -195,14 +195,14 @@ class RegistrationLogger
         }
 
         $commandType = 'OTHER';
-        if (str_contains($rawCommand, 'DATA USER')) {
+        if (stripos($rawCommand, 'DATA USER') !== false) {
             $commandType = 'USER_PROFILE';
-        } elseif (str_contains($rawCommand, 'DATA UPDATE fingertmp')) {
-            preg_match('/FID=(\d+)/i', $rawCommand, $fm);
+        } elseif (stripos($rawCommand, 'DATA UPDATE fingertmp') !== false || stripos($rawCommand, 'DATA UPDATE templatev10') !== false) {
+            preg_match('/(?:FID|FingerID)=(\d+)/i', $rawCommand, $fm);
             $fid = $fm[1] ?? '?';
             $commandType = "FINGERPRINT_UPDATE (FID {$fid})";
-        } elseif (str_contains($rawCommand, 'DATA DELETE FINGERTMP')) {
-            preg_match('/FID=(\d+)/i', $rawCommand, $fm);
+        } elseif (stripos($rawCommand, 'DATA DELETE FINGERTMP') !== false) {
+            preg_match('/(?:FID|FingerID)=(\d+)/i', $rawCommand, $fm);
             $fid = $fm[1] ?? '?';
             $commandType = "FINGERPRINT_DELETE (FID {$fid})";
         } elseif (str_contains($rawCommand, 'DATA UPDATE biodata')) {

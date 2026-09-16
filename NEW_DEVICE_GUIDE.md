@@ -170,6 +170,8 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 | **Sync Single PIN to Device** | `php artisan biometrics:sync-device <SERIAL_NUMBER> --pin=<PIN>` |
 | **Sync DB to ALL Active Devices (Deep Clean)** | `php artisan biometrics:sync-device --all-devices` |
 | **Sync DB to ALL Devices (Fast / No-Clean)** | `php artisan biometrics:sync-device --all-devices --no-clean` |
+| **Check Live Enrolled Fingers on Device** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER>` |
+| **Check Live Enrolled Fingers Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices` |
 | **Check Live Command Queue & Sync Status** | `php artisan biometrics:command-status` |
 | **Instantly Stop & Clear Command Queue** | `php artisan biometrics:clear-queue` |
 | **Purge User Profile from All Devices** | `php artisan biometrics:delete-user <PIN> --all-devices` |
@@ -177,8 +179,6 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 | **Delete Specific Fingerprint Across Devices** | `php artisan biometrics:delete-finger <PIN> <FID>` |
 | **Recover Templates from Raw Logs** | `php artisan biometrics:import-from-logs --sync-devices` |
 | **Run System Test Suite** | `php artisan test` |
-
-** Added --no-clean flag in case you ever want to sync without deleting unenrolled finger slots (php artisan biometrics:sync-device --no-clean
 
 ---
 
@@ -223,6 +223,16 @@ php artisan biometrics:delete-user 99499 --all-devices --with-db
 ```bash
 # Delete finger ID 2 (0-9) for PIN 493 across all devices and database:
 php artisan biometrics:delete-finger 493 2
+```
+
+#### 5. Inspect Live Registered Fingerprints on Physical Device(s)
+Connects directly to the terminal's hardware memory via TAD/SOAP and inspects slots 0–9, comparing them with the database:
+```bash
+# Check a specific terminal for employee PIN 493:
+php artisan biometrics:check-device 493 UCR6254000009
+
+# Check across ALL active registered terminals:
+php artisan biometrics:check-device 493 --all-devices
 ```
 
 ---

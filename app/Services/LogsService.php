@@ -107,6 +107,18 @@ class LogsService
                 $name = $record['Name'] ?? null;
 
                 if ($pin) {
+                    $isIdentical = Biometrics::isUserIdentical($pin, $record);
+
+                    $pri = $record['Pri'] ?? $record['pri'] ?? $record['Privilege'] ?? null;
+                    if ($pri !== null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+                        $devAdmin = ((int)$pri === 1 || (int)$pri === 14) ? 1 : 0;
+                        $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                        if ($bioRecord && (int)$bioRecord->privilege !== $devAdmin) {
+                            $bioRecord->update(['privilege' => $devAdmin]);
+                            $isIdentical = false;
+                        }
+                    }
+
                     $incomingGrp = $record['Grp'] ?? $record['grp'] ?? $record['Group'] ?? null;
                     $incomingTz = $record['TZ'] ?? $record['Tz'] ?? $record['Timezone'] ?? null;
                     $needsTimezoneFix = ($incomingGrp !== null && (int)$incomingGrp <= 0) || ($incomingTz !== null && (int)$incomingTz <= 0);

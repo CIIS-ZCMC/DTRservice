@@ -138,31 +138,21 @@ class BiometricSyncService
         $tableName = strtolower($table);
         $payloadSegments = [];
 
-        // Standardize fingerprint template payloads
+        // Standardize fingerprint template payloads (always push downstream as fingertmp so all devices accept it)
         if (in_array($tableName, ['fingertmp', 'templatev10', 'fp', 'template', 'fingertmpv10'])) {
+            $tableName = 'fingertmp';
             $fid = $bioData['FID'] ?? $bioData['Finger_ID'] ?? $bioData['FingerID'] ?? '0';
             $size = $bioData['Size'] ?? $bioData['size'] ?? strlen($bioData['TMP'] ?? $bioData['Template'] ?? '');
             $valid = $bioData['Valid'] ?? $bioData['valid'] ?? '1';
             $tmp = $bioData['TMP'] ?? $bioData['Template'] ?? '';
 
-            if ($tableName === 'templatev10') {
-                $payloadSegments = [
-                    "PIN={$pin}",
-                    "FingerID={$fid}",
-                    "Size={$size}",
-                    "Valid={$valid}",
-                    "Template={$tmp}",
-                ];
-            } else {
-                $tableName = 'fingertmp';
-                $payloadSegments = [
-                    "PIN={$pin}",
-                    "FID={$fid}",
-                    "Size={$size}",
-                    "Valid={$valid}",
-                    "TMP={$tmp}",
-                ];
-            }
+            $payloadSegments = [
+                "PIN={$pin}",
+                "FID={$fid}",
+                "Size={$size}",
+                "Valid={$valid}",
+                "TMP={$tmp}",
+            ];
         } else {
             foreach ($bioData as $k => $v) {
                 if ($k === 'type' || str_starts_with($k, '_') || str_contains($k, ' ')) {

@@ -122,12 +122,13 @@ test('biometric template enrollment queues DATA USER and DATA UPDATE for target 
     $commandService = app(DeviceCommandService::class);
     $commandsDev2 = $commandService->getAllCommands('TEST_SN_002');
 
-    // Should queue DATA USER first (to ensure user exists) then DATA UPDATE
+    // Should queue DATA USER first (to ensure user exists) then DATA UPDATE fingertmp (standardized for all devices)
     expect($commandsDev2)->toHaveCount(2);
     expect($commandsDev2[0]['command'])->toContain('DATA USER PIN=5001');
-    expect($commandsDev2[1]['command'])->toContain('DATA UPDATE templatev10');
+    expect($commandsDev2[1]['command'])->toContain('DATA UPDATE fingertmp');
     expect($commandsDev2[1]['command'])->toContain('PIN=5001');
-    expect($commandsDev2[1]['command'])->toContain('Template=sample_template_data_123');
+    expect($commandsDev2[1]['command'])->toContain('FID=0');
+    expect($commandsDev2[1]['command'])->toContain('TMP=sample_template_data_123');
 });
 
 test('syncUserAndTemplatesToDevice provisions user profile and all templates to a specific device', function () {
