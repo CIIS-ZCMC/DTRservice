@@ -943,7 +943,12 @@ class DeviceController extends Controller
 
                     $incomingGrp = $record['Grp'] ?? $record['grp'] ?? $record['Group'] ?? null;
                     $incomingTz = $record['TZ'] ?? $record['Tz'] ?? $record['Timezone'] ?? null;
-                    $needsTimezoneFix = ($incomingGrp !== null && (int)$incomingGrp <= 0) || ($incomingTz !== null && (int)$incomingTz <= 0);
+
+                    // Group must be strictly 1 and TZ must be strictly 1 for 24/7 attendance access.
+                    // Any explicit non-1 value (e.g. 0, 129, 0000000100000000) triggers timezone/group correction.
+                    $isGrpInvalid = ($incomingGrp !== null && trim((string)$incomingGrp) !== '1');
+                    $isTzInvalid = ($incomingTz !== null && trim((string)$incomingTz) !== '1');
+                    $needsTimezoneFix = $isGrpInvalid || $isTzInvalid;
 
                     if (!$isIdentical || $needsTimezoneFix) {
                         $queuedCount = (int)$this->syncService->syncUserToAll($sn, $record);

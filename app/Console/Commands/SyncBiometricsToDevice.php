@@ -21,6 +21,7 @@ class SyncBiometricsToDevice extends Command
                             {--all-devices : Push to all active registered devices}
                             {--clean-unused-fingers : Delete unenrolled finger slots from devices (default behavior)}
                             {--no-clean : Do not delete unenrolled finger slots from devices}
+                            {--sync-timezone : Ensure Timezone 1 (24/7 all-access) is configured on target devices}
                             {--table : Display full summary table of pushed biometrics in console}';
 
     /**
@@ -120,6 +121,20 @@ class SyncBiometricsToDevice extends Command
         $totalCommands = 0;
         $tableRows = [];
         $pushTime = now()->format('Y-m-d H:i:s');
+
+        // Optional: Ensure Timezone 1 (24/7 all-access) is active on devices
+        if ($this->option('sync-timezone')) {
+            $tzBatch = [];
+            $tzCmd = $this->syncService->getTimezone24x7Command();
+            foreach ($devices as $device) {
+                $tzBatch[] = [
+                    'device_sn' => $device->serial_number,
+                    'command' => $tzCmd,
+                ];
+            }
+            $totalCommands += $this->commandService->queueCommandsBatch($tzBatch);
+            $this->info("Queued Timezone 1 (24/7 access) command for {$devices->count()} device(s).");
+        }
 
         $usersQuery->chunk(100, function ($usersChunk) use ($devices, &$totalCommands, &$tableRows, $bar, $cleanUnused, $showTable, $pushTime) {
             $batch = [];

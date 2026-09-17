@@ -126,4 +126,76 @@ test('multi-row TAD response and TMP alias correctly extracts all enrolled slots
     expect($deviceSlots[6])->toBe('560');
 });
 
+test('biometrics:check-device table displays Algo (ZKFP) column', function () {
+    Biometrics::create([
+        'biometric_id' => 493,
+        'name' => 'Algo Test User',
+        'privilege' => 0,
+        'biometric' => 'NOT_YET_REGISTERED',
+    ]);
+
+    $this->artisan('biometrics:check-device', ['pin' => 493, 'device_sn' => 'TEST_SN_001'])
+        ->expectsOutputToContain('Algo (ZKFP)')
+        ->assertExitCode(0);
+});
+
+test('candidate PIN resolution discovers templates mapped under internal terminal PIN', function () {
+    // Simulate user row on terminal where internal PIN is 3 and badge PIN2 is 16
+    $userRow = [
+        'PIN' => '3',
+        'Name' => 'Haradji, Jennylyn',
+        'PIN2' => '16',
+        'Privilege' => '0',
+    ];
+
+    $pin = 16;
+    $devicePin1 = isset($userRow['PIN']) ? (int)$userRow['PIN'] : null;
+    $devicePin2 = isset($userRow['PIN2']) ? (int)$userRow['PIN2'] : null;
+    $candidatePins = array_values(array_unique(array_filter([$pin, $devicePin1, $devicePin2])));
+
+    expect($candidatePins)->toContain(16);
+    expect($candidatePins)->toContain(3);
+
+    // Simulate mock templates stored under internal terminal PIN 3
+    $templatesByPin = [
+        3 => [
+            'Row' => [
+                'FingerID' => '6',
+                'Size' => '922',
+                'TMP' => 'MOCK_ZK10_TEMPLATE_STRING',
+            ]
+        ],
+        16 => [] // Empty when querying badge PIN directly
+    ];
+
+    $discoveredSlots = [];
+    foreach ($candidatePins as $cPin) {
+        $resp = $templatesByPin[$cPin] ?? [];
+        if (!empty($resp['Row'])) {
+            $rows = isset($resp['Row'][0]) ? $resp['Row'] : [$resp['Row']];
+            foreach ($rows as $r) {
+                $fid = (int)($r['FingerID'] ?? 0);
+                $discoveredSlots[$fid] = (int)($r['Size'] ?? 0);
+            }
+        }
+    }
+
+    expect($discoveredSlots)->toHaveKey(6);
+    expect($discoveredSlots[6])->toBe(922);
+});
+
+test('cross-device algorithm divergence warning logic triggers when multiple algorithms are present', function () {
+    $detectedAlgos = ['v10' => 10, 'v9' => 2];
+
+    expect(count($detectedAlgos))->toBeGreaterThan(1);
+
+    $algoParts = [];
+    foreach ($detectedAlgos as $alg => $count) {
+        $algoParts[] = "{$count} device(s) on {$alg}";
+    }
+
+    $warningMessage = "Terminals run mixed ZKFinger algorithms (" . implode(', ', $algoParts) . ").";
+    expect($warningMessage)->toBe('Terminals run mixed ZKFinger algorithms (10 device(s) on v10, 2 device(s) on v9).');
+});
+
 

@@ -50,11 +50,15 @@ class BiometricSyncService
         $pri = $userData['Pri'] ?? $userData['pri'] ?? $userData['Privilege'] ?? 0;
         $devicePri = ((int)$pri === 1 || (int)$pri === 14) ? 14 : 0;
         $passwd = $userData['Passwd'] ?? $userData['Password'] ?? '';
-        $card = $userData['Card'] ?? 0;
-        $grp = $userData['Grp'] ?? $userData['grp'] ?? $userData['Group'] ?? 1;
-        $grp = (!empty($grp) && (int)$grp > 0) ? (int)$grp : 1;
-        $tz = $userData['TZ'] ?? $userData['Tz'] ?? $userData['Timezone'] ?? 1;
-        $tz = (!empty($tz) && (int)$tz > 0) ? (int)$tz : 1;
+        $card = $userData['Card'] ?? $userData['card'] ?? 0;
+        $incomingGrp = $userData['Grp'] ?? $userData['grp'] ?? $userData['Group'] ?? null;
+        $incomingTz = $userData['TZ'] ?? $userData['Tz'] ?? $userData['Timezone'] ?? null;
+
+        // In ZCMC DTRService attendance system, all users MUST have Grp=1 and TZ=1 (24/7 all-access).
+        // Any incoming Grp not equal to 1 (e.g. 0, 129, unassigned) or TZ not equal to 1
+        // (e.g. 0, bitmasks like 0000000100000000, 100000000, empty/null) must be strictly normalized to 1.
+        $grp = 1;
+        $tz = 1;
 
         $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
         $entries = [];
@@ -63,14 +67,11 @@ class BiometricSyncService
             $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
 
-        // If the source device reported an invalid timezone or group (TZ=0 or Grp=0),
+        // If the source device reported an explicit invalid group or timezone (e.g. Grp=129, Grp=0, TZ=0, TZ=0000000100000000),
         // queue DATA USER with Grp=1 & TZ=1 back to the source device to fix it on the enrolling device itself!
-        $incomingGrp = $userData['Grp'] ?? $userData['grp'] ?? $userData['Group'] ?? null;
-        $incomingTz = $userData['TZ'] ?? $userData['Tz'] ?? $userData['Timezone'] ?? null;
-        $sourceNeedsTimezoneFix = !empty($sourceSn) && (
-            ($incomingGrp !== null && (int)$incomingGrp <= 0) ||
-            ($incomingTz !== null && (int)$incomingTz <= 0)
-        );
+        $isGrpInvalid = ($incomingGrp !== null && trim((string)$incomingGrp) !== '1');
+        $isTzInvalid = ($incomingTz !== null && trim((string)$incomingTz) !== '1');
+        $sourceNeedsTimezoneFix = !empty($sourceSn) && ($isGrpInvalid || $isTzInvalid);
 
         if ($sourceNeedsTimezoneFix) {
             $entries[] = ['device_sn' => $sourceSn, 'command' => $command];
@@ -428,6 +429,14 @@ class BiometricSyncService
         ]);
 
         return $queuedCount;
+    }
+
+    /**
+     * Get ZKTeco command to ensure Timezone 1 is configured for 24/7 all-access (00:00 - 23:59 Sun-Sat).
+     */
+    public function getTimezone24x7Command(): string
+    {
+        return "DATA UPDATE timezone\tTZID=1\tTIME=00002359000023590000235900002359000023590000235900002359";
     }
 
     /**

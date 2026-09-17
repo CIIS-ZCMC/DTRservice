@@ -139,9 +139,14 @@ class CheckDeviceFingerprints extends Command
         $hasGhostSlots = false;
         $ghostsToClean = [];
         $devicesToFix = [];
+        $detectedAlgos = [];
 
         foreach ($devices as $dev) {
             $row = $this->inspectDevice($dev, $pin, $dbSlots);
+
+            if ($row['_status'] !== 'OFFLINE' && !empty($row['_algo']) && $row['_algo'] !== 'Unknown') {
+                $detectedAlgos[$row['_algo']] = ($detectedAlgos[$row['_algo']] ?? 0) + 1;
+            }
 
             if ($row['_has_ghost']) {
                 $hasGhostSlots = true;
@@ -158,12 +163,12 @@ class CheckDeviceFingerprints extends Command
                 $devicesToFix[] = $dev;
             }
 
-            unset($row['_has_ghost'], $row['_status'], $row['_ghost_fids'], $row['_tad'], $row['_all_ghosts']);
+            unset($row['_has_ghost'], $row['_status'], $row['_ghost_fids'], $row['_tad'], $row['_all_ghosts'], $row['_algo']);
             $tableRows[] = $row;
         }
 
         $this->table(
-            ['Device Name', 'Serial Number', 'IP Address', 'Connection', 'User On Device', 'Hardware Enrolled Fingers', 'Status vs DB'],
+            ['Device Name', 'Serial Number', 'IP Address', 'Algo (ZKFP)', 'Connection', 'User On Device', 'Hardware Enrolled Fingers', 'Status vs DB'],
             $tableRows
         );
 
@@ -183,14 +188,18 @@ class CheckDeviceFingerprints extends Command
             $totalCommands = 0;
 
             foreach ($devicesToFix as $targetDev) {
-                $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $pin, true);
+                // Ensure Timezone 1 (24/7 access) is active on device
+                $tzCmd = $this->syncService->getTimezone24x7Command();
+                $this->commandService->queueCommand($targetDev->serial_number, $tzCmd);
+
+                $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $pin, true) + 1;
                 $totalCommands += $cmdCount;
                 $this->line(" • Queued {$cmdCount} sync/fix command(s) for {$targetDev->device_name} ({$targetDev->serial_number})");
             }
 
             $this->newLine();
             $this->info("✅ Successfully queued {$totalCommands} synchronization command(s) across {$deviceCount} device(s).");
-            $this->line("   Terminals will download missing templates (e.g. Slot 3) and purge ghost slots upon their next poll cycle.");
+            $this->line("   Terminals will download missing templates (e.g. Slot 3), fix Timezone (Grp=1, TZ=1), and purge ghost slots upon their next poll cycle.");
             return 0;
         }
 
@@ -244,8 +253,22 @@ class CheckDeviceFingerprints extends Command
 
         // 5. Diagnostics & Recommendations
         $this->newLine();
+
+        if (count($detectedAlgos) > 1) {
+            $algoParts = [];
+            foreach ($detectedAlgos as $alg => $count) {
+                $algoParts[] = "{$count} device(s) on {$alg}";
+            }
+            $this->warn("⚠️  ALGORITHM DIVERGENCE DETECTED: Terminals run mixed ZKFinger algorithms (" . implode(', ', $algoParts) . ").");
+            $this->line("   Fingerprint templates are binary-incompatible across different algorithm generations (e.g. v9 vs v10).");
+            $this->line("   A template enrolled on a v10 device cannot be loaded or matched by a v9 device, which can cause missing slots.\n");
+        }
+
         if ($hasMismatch) {
             $this->warn("⚠️  SYNC DISCREPANCY: Some terminals are missing templates from the DB (e.g. Slot 3).");
+            if (count($detectedAlgos) > 1) {
+                $this->line("   <fg=yellow;options=bold>Note:</> Verify that target terminals support the algorithm version of the template in DB.");
+            }
             $this->line("   To automatically push missing templates to all devices, run with <fg=yellow>--fix</>:");
             $this->line("   <fg=yellow>php artisan biometrics:check-device " . ($deviceSn ? "{$pin} {$deviceSn}" : "{$pin} --all-devices") . " --fix</>\n");
         } elseif ($hasGhostSlots) {
@@ -260,7 +283,7 @@ class CheckDeviceFingerprints extends Command
     }
 
     /**
-     * Connect directly to a physical terminal and inspect user info and finger slots 0-9.
+     * Connect directly to a physical terminal and inspect user info, fingerprint algorithm, and finger slots 0-9.
      */
     protected function inspectDevice(Devices $device, int $pin, array $dbSlots): array
     {
@@ -272,6 +295,7 @@ class CheckDeviceFingerprints extends Command
             'name' => $deviceName,
             'sn' => $deviceSn,
             'ip' => $ip,
+            'algo' => '<fg=gray>-</>',
             'connection' => '<fg=red>OFFLINE</>',
             'user' => '-',
             'fingers' => '-',
@@ -281,6 +305,7 @@ class CheckDeviceFingerprints extends Command
             '_tad' => null,
             '_all_ghosts' => false,
             '_status' => 'OFFLINE',
+            '_algo' => 'Unknown',
         ];
 
         if (empty($ip) || $ip === '0.0.0.0' || ($ip === '127.0.0.1' && !app()->runningUnitTests())) {
@@ -302,7 +327,15 @@ class CheckDeviceFingerprints extends Command
                 return $emptyRow;
             }
 
-            // 1. Fetch User Info
+            // 1. Detect Device Algorithm (ZKFinger 10.0 vs 9.0)
+            $algoVersion = $this->detectDeviceAlgorithm($tad);
+            $algoDisplay = match ($algoVersion) {
+                'v10' => '<fg=green>v10</>',
+                'v9'  => '<fg=yellow>v9</>',
+                default => "<fg=gray>{$algoVersion}</>",
+            };
+
+            // 2. Fetch User Info
             $uRes = $tad->get_user_info(['pin' => $pin]);
             $uArr = $uRes->to_array();
             $userRow = $uArr['Row'] ?? null;
@@ -312,6 +345,7 @@ class CheckDeviceFingerprints extends Command
                     'name' => $deviceName,
                     'sn' => $deviceSn,
                     'ip' => $ip,
+                    'algo' => $algoDisplay,
                     'connection' => '<fg=green>ONLINE</>',
                     'user' => '<fg=red>NOT_FOUND</>',
                     'fingers' => '<fg=yellow>None</>',
@@ -321,34 +355,26 @@ class CheckDeviceFingerprints extends Command
                     '_tad' => $tad,
                     '_all_ghosts' => false,
                     '_status' => 'MISSING_USER',
+                    '_algo' => $algoVersion,
                 ];
             }
 
             $privilege = (int)($userRow['Privilege'] ?? 0);
             $userRoleLabel = ($privilege === 14) ? 'SuperAdmin' : ($privilege === 1 ? 'Admin' : 'User');
-            $userDisplay = "<fg=green>YES</> ({$userRoleLabel})";
+            $group = (int)($userRow['Group'] ?? 1);
+            $tz1 = (int)($userRow['TZ1'] ?? 1);
+            $isTimezoneValid = ($group === 1 && $tz1 === 1);
 
-            // 2. Scan Finger Slots 0 through 9
-            $deviceSlots = [];
-            for ($slot = 0; $slot <= 9; $slot++) {
-                try {
-                    $tRes = $tad->get_user_template(['pin' => $pin, 'finger_id' => $slot]);
-                    $tArr = $tRes->to_array();
-                    if (!empty($tArr['Row'])) {
-                        $rows = isset($tArr['Row'][0]) ? $tArr['Row'] : [$tArr['Row']];
-                        foreach ($rows as $r) {
-                            $template = $r['Template'] ?? $r['TMP'] ?? null;
-                            if (!empty($template)) {
-                                $fid = (int)($r['FingerID'] ?? $r['Finger_ID'] ?? $r['FID'] ?? $slot);
-                                $size = $r['Size'] ?? strlen($template);
-                                $deviceSlots[$fid] = $size;
-                            }
-                        }
-                    }
-                } catch (\Throwable) {
-                    // Slot is empty
-                }
-            }
+            $devicePin1 = isset($userRow['PIN']) ? (int)$userRow['PIN'] : null;
+            $devicePin2 = isset($userRow['PIN2']) ? (int)$userRow['PIN2'] : null;
+            $candidatePins = array_values(array_unique(array_filter([$pin, $devicePin1, $devicePin2])));
+
+            $tzTag = $isTimezoneValid ? "<fg=green>Grp:{$group} TZ:{$tz1}</>" : "<fg=red;options=bold>Grp:{$group} TZ:{$tz1} (INVALID)</>";
+            $pinTag = ($devicePin1 && $devicePin1 !== $pin) ? " <fg=gray>IntPIN:{$devicePin1}</>" : '';
+            $userDisplay = "<fg=green>YES</>{$pinTag} ({$userRoleLabel}, {$tzTag})";
+
+            // 3. Scan Finger Slots (via bulk query and candidate PIN resolution)
+            $deviceSlots = $this->fetchDeviceTemplates($tad, $candidatePins, $device);
 
             // Format enrolled slots for display
             $fingerLabels = [];
@@ -358,7 +384,7 @@ class CheckDeviceFingerprints extends Command
             }
             $fingersDisplay = !empty($fingerLabels) ? implode(', ', $fingerLabels) : '<fg=yellow>None</>';
 
-            // 3. Compare with DB
+            // 4. Compare with DB
             $dbFids = array_keys($dbSlots);
             $devFids = array_keys($deviceSlots);
             sort($dbFids);
@@ -372,7 +398,10 @@ class CheckDeviceFingerprints extends Command
             $statusCol = '<fg=green>IN_SYNC</>';
             $statusCode = 'IN_SYNC';
 
-            if (!empty($ghostFids) && !empty($missingFids)) {
+            if (!$isTimezoneValid) {
+                $statusCol = "<fg=red;options=bold>INVALID_TIME_PERIOD (Grp:{$group}, TZ:{$tz1})</>";
+                $statusCode = 'INVALID_TIME_PERIOD';
+            } elseif (!empty($ghostFids) && !empty($missingFids)) {
                 $statusCol = "<fg=yellow>MISMATCH (Ghost: " . implode(',', $ghostFids) . ", Missing: " . implode(',', $missingFids) . ")</>";
                 $statusCode = 'MISMATCH';
             } elseif (!empty($ghostFids)) {
@@ -387,6 +416,7 @@ class CheckDeviceFingerprints extends Command
                 'name' => $deviceName,
                 'sn' => $deviceSn,
                 'ip' => $ip,
+                'algo' => $algoDisplay,
                 'connection' => '<fg=green>ONLINE</>',
                 'user' => $userDisplay,
                 'fingers' => $fingersDisplay,
@@ -396,10 +426,133 @@ class CheckDeviceFingerprints extends Command
                 '_tad' => $tad,
                 '_all_ghosts' => $allGhosts,
                 '_status' => $statusCode,
+                '_algo' => $algoVersion,
             ];
         } catch (\Throwable $e) {
             $emptyRow['status'] = '<fg=red>ERROR: ' . substr($e->getMessage(), 0, 30) . '</>';
             return $emptyRow;
         }
+    }
+
+    /**
+     * Query templates across candidate PINs (internal PIN vs employee PIN2).
+     * Attempts fast bulk query first, falling back to per-slot scanning.
+     */
+    protected function fetchDeviceTemplates($tad, array $candidatePins, Devices $device): array
+    {
+        $deviceSlots = [];
+        $ip = $device->ip_address ?? '0.0.0.0';
+        $comKey = (int)($device->com_key ?? 0);
+
+        foreach ($candidatePins as $cPin) {
+            if ($cPin <= 0) {
+                continue;
+            }
+
+            $bulkFound = false;
+
+            // 1. Bulk SOAP query for PIN (retrieves all slots in one instantaneous call)
+            if (!empty($ip) && $ip !== '0.0.0.0' && ($ip !== '127.0.0.1' || app()->runningUnitTests())) {
+                try {
+                    $soapClient = new \SoapClient(null, [
+                        'location' => "http://{$ip}/iWsService",
+                        'uri' => 'http://www.zksoftware/Service/message/',
+                        'connection_timeout' => 2,
+                        'exceptions' => true,
+                    ]);
+
+                    $xml = "<GetUserTemplate><ArgComKey>{$comKey}</ArgComKey><Arg><PIN>{$cPin}</PIN></Arg></GetUserTemplate>";
+                    $resp = $soapClient->__doRequest($xml, "http://{$ip}/iWsService", '', SOAP_1_1);
+
+                    if (!empty($resp) && preg_match_all('/<FingerID>(\d+)<\/FingerID>.*?<(?:Size>(\d+)<\/Size>.*?)?<(?:Template|TMP)>(.*?)<\/(?:Template|TMP)>/s', $resp, $matches, PREG_SET_ORDER)) {
+                        foreach ($matches as $m) {
+                            $fid = (int)$m[1];
+                            $template = trim($m[3]);
+                            if (!empty($template)) {
+                                $size = !empty($m[2]) ? (int)$m[2] : strlen($template);
+                                $deviceSlots[$fid] = $size;
+                                $bulkFound = true;
+                            }
+                        }
+                    }
+                } catch (\Throwable) {
+                    // Fall back to TAD below
+                }
+            }
+
+            // 2. If bulk query didn't find templates, fallback to per-slot TAD queries
+            if (!$bulkFound) {
+                for ($slot = 0; $slot <= 9; $slot++) {
+                    if (isset($deviceSlots[$slot])) {
+                        continue;
+                    }
+
+                    try {
+                        $tRes = $tad->get_user_template(['pin' => $cPin, 'finger_id' => $slot]);
+                        $tArr = $tRes->to_array();
+                        if (!empty($tArr['Row'])) {
+                            $rows = isset($tArr['Row'][0]) ? $tArr['Row'] : [$tArr['Row']];
+                            foreach ($rows as $r) {
+                                $template = $r['Template'] ?? $r['TMP'] ?? null;
+                                if (!empty($template)) {
+                                    $fid = (int)($r['FingerID'] ?? $r['Finger_ID'] ?? $r['FID'] ?? $slot);
+                                    $size = $r['Size'] ?? strlen($template);
+                                    $deviceSlots[$fid] = $size;
+                                }
+                            }
+                        }
+                    } catch (\Throwable) {
+                        // Slot is empty
+                    }
+                }
+            }
+        }
+
+        return $deviceSlots;
+    }
+
+    /**
+     * Query device for fingerprint algorithm version (~ZKFPVersion).
+     */
+    protected function detectDeviceAlgorithm($tad): string
+    {
+        try {
+            $optRes = $tad->get_option(['option_name' => '~ZKFPVersion']);
+            $optArr = $optRes->to_array();
+            $val = $optArr['Row']['Value'] ?? null;
+            if (is_array($val) && empty($val)) {
+                $val = null;
+            }
+
+            if (!$val) {
+                $optRes2 = $tad->get_option(['option_name' => 'ZKFPVersion']);
+                $optArr2 = $optRes2->to_array();
+                $val = $optArr2['Row']['Value'] ?? null;
+                if (is_array($val) && empty($val)) {
+                    $val = null;
+                }
+            }
+
+            if (!$val && method_exists($tad, 'get_fingerprint_algorithm')) {
+                $algoRes = $tad->get_fingerprint_algorithm();
+                $algoArr = $algoRes->to_array();
+                $val = $algoArr['Row']['Value'] ?? null;
+            }
+
+            if ($val) {
+                $cleanVal = trim((string)$val);
+                if ($cleanVal === '10' || $cleanVal === '10.0') {
+                    return 'v10';
+                }
+                if ($cleanVal === '9' || $cleanVal === '9.0') {
+                    return 'v9';
+                }
+                return "v{$cleanVal}";
+            }
+        } catch (\Throwable) {
+            // Unable to detect
+        }
+
+        return 'Unknown';
     }
 }

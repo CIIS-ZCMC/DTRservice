@@ -26,6 +26,7 @@ class LogsService
     public function storeLog(Request $request): string
     {
         $clientIp = $request->ip();
+        $sourceSn = $request->query('SN') ?? $request->header('X-Device-SN');
         $rawBody = $request->getContent();
 
         $this->deviceRepository->markAsConnected($clientIp);
@@ -43,7 +44,7 @@ class LogsService
                 }
 
                 try {
-                    $this->processLogLine($line, $clientIp);
+                    $this->processLogLine($line, $clientIp, $sourceSn);
                 } catch (\Throwable $th) {
                     Log::channel('device_logs')->error('Error processing device log line', [
                         'error' => $th->getMessage(),
@@ -60,13 +61,13 @@ class LogsService
     /**
      * Parse and persist a single device log line.
      */
-    private function processLogLine(string $line, string $clientIp)
+    private function processLogLine(string $line, string $clientIp, ?string $requestSn = null)
     {
         // Check if line is a biometric template push (e.g. FP PIN=493\tFID=3\tSize=612\tValid=1\tTMP=...)
         if (ZkPushParser::isBiometricTemplateLine($line)) {
             $parsedRecords = ZkPushParser::parseKeyValues($line);
             $device = $this->deviceRepository->findByIP($clientIp);
-            $sourceSn = $device?->serial_number;
+            $sourceSn = $requestSn ?? $device?->serial_number;
 
             foreach ($parsedRecords as $record) {
                 $pin = $record['PIN'] ?? null;
@@ -100,16 +101,16 @@ class LogsService
         if (ZkPushParser::isUserPushLine($line)) {
             $parsedRecords = ZkPushParser::parseKeyValues($line);
             $device = $this->deviceRepository->findByIP($clientIp);
-            $sourceSn = $device?->serial_number;
+            $sourceSn = $requestSn ?? $device?->serial_number;
 
             foreach ($parsedRecords as $record) {
                 $pin = $record['PIN'] ?? null;
                 $name = $record['Name'] ?? null;
+                $pri = $record['Pri'] ?? $record['pri'] ?? $record['Privilege'] ?? null;
 
                 if ($pin) {
                     $isIdentical = Biometrics::isUserIdentical($pin, $record);
 
-                    $pri = $record['Pri'] ?? $record['pri'] ?? $record['Privilege'] ?? null;
                     if ($pri !== null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
                         $devAdmin = ((int)$pri === 1 || (int)$pri === 14) ? 1 : 0;
                         $bioRecord = Biometrics::where('biometric_id', $pin)->first();
@@ -121,7 +122,12 @@ class LogsService
 
                     $incomingGrp = $record['Grp'] ?? $record['grp'] ?? $record['Group'] ?? null;
                     $incomingTz = $record['TZ'] ?? $record['Tz'] ?? $record['Timezone'] ?? null;
-                    $needsTimezoneFix = ($incomingGrp !== null && (int)$incomingGrp <= 0) || ($incomingTz !== null && (int)$incomingTz <= 0);
+
+                    // Group must be strictly 1 and TZ must be strictly 1 for 24/7 attendance access.
+                    // Any explicit non-1 value (e.g. 0, 129, 0000000100000000) triggers timezone/group correction.
+                    $isGrpInvalid = ($incomingGrp !== null && trim((string)$incomingGrp) !== '1');
+                    $isTzInvalid = ($incomingTz !== null && trim((string)$incomingTz) !== '1');
+                    $needsTimezoneFix = $isGrpInvalid || $isTzInvalid;
 
                     if (!$isIdentical || $needsTimezoneFix) {
                         $queuedCount = (int)($this->syncService?->syncUserToAll($sourceSn, $record) ?? 0);
