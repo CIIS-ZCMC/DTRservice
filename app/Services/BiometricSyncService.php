@@ -468,7 +468,9 @@ class BiometricSyncService
     }
 
     /**
-     * Get ZKTeco command to ensure Timezone 1 is configured for 24/7 all-access (00:00 - 23:59 Sun-Sat).
+     * Legacy ZKTeco timezone command.
+     * Note: Standalone ZKTeco ADMS attendance terminals reject dynamic 'timezone' table updates with -1004.
+     * 24/7 attendance access is enforced via 'Grp=1\tTZ=1' in the 'DATA USER' payload.
      */
     public function getTimezone24x7Command(): string
     {

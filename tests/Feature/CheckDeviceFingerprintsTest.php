@@ -40,6 +40,7 @@ beforeEach(function () {
 
     Devices::query()->delete();
     Biometrics::query()->delete();
+    app(\App\Services\DeviceCommandService::class)->clearCommands();
 
     Devices::create([
         'device_name' => 'Test Terminal 1',
@@ -196,6 +197,59 @@ test('cross-device algorithm divergence warning logic triggers when multiple alg
 
     $warningMessage = "Terminals run mixed ZKFinger algorithms (" . implode(', ', $algoParts) . ").";
     expect($warningMessage)->toBe('Terminals run mixed ZKFinger algorithms (10 device(s) on v10, 2 device(s) on v9).');
+});
+
+test('biometrics:check-device with --fix does not queue unsupported DATA UPDATE timezone command', function () {
+    Biometrics::create([
+        'biometric_id' => 1162,
+        'name' => 'Fix Test User',
+        'privilege' => 0,
+        'biometric' => json_encode([
+            ['Finger_ID' => '3', 'Size' => '540', 'Valid' => '1', 'Template' => 'V10_TMP_3']
+        ]),
+    ]);
+
+    $this->artisan('biometrics:check-device', ['pin' => 1162, 'device_sn' => 'TEST_SN_001', '--fix' => true, '--force' => true])
+        ->assertExitCode(0);
+
+    $commandService = app(\App\Services\DeviceCommandService::class);
+    $allCommands = $commandService->getAllCommands('TEST_SN_001');
+
+    $timezoneCommands = array_filter($allCommands, fn($c) => str_contains($c['command'] ?? '', 'timezone'));
+    expect($timezoneCommands)->toBeEmpty();
+
+    $userCommands = array_filter($allCommands, fn($c) => str_starts_with($c['command'] ?? '', 'DATA USER'));
+    expect($userCommands)->not->toBeEmpty();
+    $firstUserCmd = array_values($userCommands)[0]['command'];
+    expect($firstUserCmd)->toContain('Grp=1');
+    expect($firstUserCmd)->toContain('TZ=1');
+    expect($firstUserCmd)->toContain('PIN=1162');
+    expect($firstUserCmd)->toContain('PIN2=1162');
+});
+
+test('ghost slot cleanup queues ADMS deletion across both badge PIN and internal terminal PIN', function () {
+    $ghostFids = [3, 6];
+    $candPins = [1162, 1379];
+    $deviceSn = 'TEST_SN_001';
+
+    $commandService = app(\App\Services\DeviceCommandService::class);
+    $commandService->clearCommands();
+
+    foreach ($ghostFids as $gfid) {
+        foreach ($candPins as $cPin) {
+            $cmd = "DATA DELETE FINGERTMP\tPIN={$cPin}\tFID={$gfid}";
+            $commandService->queueCommand($deviceSn, $cmd);
+        }
+    }
+
+    $allCommands = $commandService->getAllCommands($deviceSn);
+    expect($allCommands)->toHaveCount(4);
+
+    $cmdStrings = array_column($allCommands, 'command');
+    expect($cmdStrings)->toContain("DATA DELETE FINGERTMP\tPIN=1162\tFID=3");
+    expect($cmdStrings)->toContain("DATA DELETE FINGERTMP\tPIN=1379\tFID=3");
+    expect($cmdStrings)->toContain("DATA DELETE FINGERTMP\tPIN=1162\tFID=6");
+    expect($cmdStrings)->toContain("DATA DELETE FINGERTMP\tPIN=1379\tFID=6");
 });
 
 

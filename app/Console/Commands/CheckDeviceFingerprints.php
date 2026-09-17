@@ -134,8 +134,7 @@ class CheckDeviceFingerprints extends Command
 
         $this->line("Querying " . $devices->count() . " device(s) in real-time via TAD / SOAP...\n");
 
-        $tableRows = [];
-        $hasMismatch = false;
+        $hasMissingSlots = false;
         $hasGhostSlots = false;
         $ghostsToClean = [];
         $devicesToFix = [];
@@ -148,22 +147,32 @@ class CheckDeviceFingerprints extends Command
                 $detectedAlgos[$row['_algo']] = ($detectedAlgos[$row['_algo']] ?? 0) + 1;
             }
 
+            if (!empty($row['_missing_fids'])) {
+                $hasMissingSlots = true;
+            }
+
             if ($row['_has_ghost']) {
                 $hasGhostSlots = true;
                 $ghostsToClean[] = [
                     'device' => $dev,
                     'ghost_fids' => $row['_ghost_fids'],
+                    'candidate_pins' => $row['_candidate_pins'] ?? [$pin],
                     'tad' => $row['_tad'],
                     'all_ghosts' => $row['_all_ghosts'],
                 ];
             }
 
             if ($row['_status'] !== 'IN_SYNC' && $row['_status'] !== 'OFFLINE') {
-                $hasMismatch = true;
-                $devicesToFix[] = $dev;
+                $devicesToFix[] = [
+                    'device' => $dev,
+                    'candidate_pins' => $row['_candidate_pins'] ?? [$pin],
+                    'ghost_fids' => $row['_ghost_fids'] ?? [],
+                    'missing_fids' => $row['_missing_fids'] ?? [],
+                    'tad' => $row['_tad'],
+                ];
             }
 
-            unset($row['_has_ghost'], $row['_status'], $row['_ghost_fids'], $row['_tad'], $row['_all_ghosts'], $row['_algo']);
+            unset($row['_has_ghost'], $row['_status'], $row['_ghost_fids'], $row['_missing_fids'], $row['_candidate_pins'], $row['_tad'], $row['_all_ghosts'], $row['_algo']);
             $tableRows[] = $row;
         }
 
@@ -187,19 +196,31 @@ class CheckDeviceFingerprints extends Command
             $this->info("Pushing missing templates and synchronizing PIN {$pin} across {$deviceCount} device(s)...");
             $totalCommands = 0;
 
-            foreach ($devicesToFix as $targetDev) {
-                // Ensure Timezone 1 (24/7 access) is active on device
-                $tzCmd = $this->syncService->getTimezone24x7Command();
-                $this->commandService->queueCommand($targetDev->serial_number, $tzCmd);
+            foreach ($devicesToFix as $fixTarget) {
+                $targetDev = $fixTarget['device'];
+                $candPins = $fixTarget['candidate_pins'];
+                $ghostFids = $fixTarget['ghost_fids'];
 
-                $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $pin, true) + 1;
+                // 1. Sync User profile and DB templates
+                $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $pin, false);
+
+                // 2. Queue ADMS deletion for all ghost slots across ALL candidate PINs (badge PIN + internal terminal PIN)
+                foreach ($ghostFids as $gfid) {
+                    foreach ($candPins as $cPin) {
+                        $cmd = "DATA DELETE FINGERTMP\tPIN={$cPin}\tFID={$gfid}";
+                        $this->commandService->queueCommand($targetDev->serial_number, $cmd);
+                        $cmdCount++;
+                    }
+                }
+
                 $totalCommands += $cmdCount;
-                $this->line(" • Queued {$cmdCount} sync/fix command(s) for {$targetDev->device_name} ({$targetDev->serial_number})");
+                $pinNote = count($candPins) > 1 ? " (PINs: " . implode(', ', $candPins) . ")" : "";
+                $this->line(" • Queued {$cmdCount} sync/fix command(s){$pinNote} for {$targetDev->device_name} ({$targetDev->serial_number})");
             }
 
             $this->newLine();
             $this->info("✅ Successfully queued {$totalCommands} synchronization command(s) across {$deviceCount} device(s).");
-            $this->line("   Terminals will download missing templates (e.g. Slot 3), fix Timezone (Grp=1, TZ=1), and purge ghost slots upon their next poll cycle.");
+            $this->line("   Terminals will download missing templates, enforce 24/7 access (Grp=1, TZ=1), and purge ghost slots across internal & badge PINs upon their next poll cycle.");
             return 0;
         }
 
@@ -222,27 +243,32 @@ class CheckDeviceFingerprints extends Command
             foreach ($ghostsToClean as $target) {
                 $targetDev = $target['device'];
                 $ghostFids = $target['ghost_fids'];
+                $candPins = $target['candidate_pins'] ?? [$pin];
                 $tad = $target['tad'];
                 $allGhosts = $target['all_ghosts'];
 
                 // Instant SOAP wipe if all templates on terminal are ghosts
                 if ($tad && $allGhosts) {
                     try {
-                        $tad->delete_template(['pin' => $pin]);
-                        $this->line(" • <fg=green>[INSTANT SOAP WIPE]</> Cleared all templates for PIN {$pin} on {$targetDev->device_name} ({$targetDev->serial_number})");
+                        foreach ($candPins as $cPin) {
+                            $tad->delete_template(['pin' => $cPin]);
+                        }
+                        $this->line(" • <fg=green>[INSTANT SOAP WIPE]</> Cleared all templates for PIN(s) " . implode(', ', $candPins) . " on {$targetDev->device_name} ({$targetDev->serial_number})");
                     } catch (\Throwable $th) {
                         // Fallback to ADMS delete
                     }
                 }
 
-                // Queue ADMS DATA DELETE FINGERTMP for each ghost slot
+                // Queue ADMS DATA DELETE FINGERTMP for each ghost slot across all candidate PINs
                 foreach ($ghostFids as $gfid) {
-                    $cmd = "DATA DELETE FINGERTMP\tPIN={$pin}\tFID={$gfid}";
-                    $this->commandService->queueCommand($targetDev->serial_number, $cmd);
-                    $purgedCommands++;
+                    foreach ($candPins as $cPin) {
+                        $cmd = "DATA DELETE FINGERTMP\tPIN={$cPin}\tFID={$gfid}";
+                        $this->commandService->queueCommand($targetDev->serial_number, $cmd);
+                        $purgedCommands++;
+                    }
                 }
 
-                $this->line(" • Queued " . count($ghostFids) . " ADMS deletion command(s) (FID " . implode(',', $ghostFids) . ") for {$targetDev->device_name} ({$targetDev->serial_number})");
+                $this->line(" • Queued " . (count($ghostFids) * count($candPins)) . " ADMS deletion command(s) (FID " . implode(',', $ghostFids) . ") across PIN(s) " . implode(', ', $candPins) . " for {$targetDev->device_name} ({$targetDev->serial_number})");
             }
 
             $this->newLine();
@@ -264,7 +290,7 @@ class CheckDeviceFingerprints extends Command
             $this->line("   A template enrolled on a v10 device cannot be loaded or matched by a v9 device, which can cause missing slots.\n");
         }
 
-        if ($hasMismatch) {
+        if ($hasMissingSlots) {
             $this->warn("⚠️  SYNC DISCREPANCY: Some terminals are missing templates from the DB (e.g. Slot 3).");
             if (count($detectedAlgos) > 1) {
                 $this->line("   <fg=yellow;options=bold>Note:</> Verify that target terminals support the algorithm version of the template in DB.");
@@ -272,9 +298,13 @@ class CheckDeviceFingerprints extends Command
             $this->line("   To automatically push missing templates to all devices, run with <fg=yellow>--fix</>:");
             $this->line("   <fg=yellow>php artisan biometrics:check-device " . ($deviceSn ? "{$pin} {$deviceSn}" : "{$pin} --all-devices") . " --fix</>\n");
         } elseif ($hasGhostSlots) {
-            $this->warn("⚠️  GHOST FINGERPRINTS DETECTED: One or more physical terminals have extra finger slots enrolled that do not exist in the database!");
-            $this->line("   To purge all detected ghost slots automatically, run with <fg=yellow>--clean</>:");
+            $this->warn("⚠️  GHOST FINGERPRINTS DETECTED: Physical terminals have extra ghost slots enrolled that do not exist in the database!");
+            $this->line("   To purge all detected ghost slots automatically, run with <fg=yellow>--clean</> (or <fg=yellow>--fix</>):");
             $this->line("   <fg=yellow>php artisan biometrics:check-device " . ($deviceSn ? "{$pin} {$deviceSn}" : "{$pin} --all-devices") . " --clean</>\n");
+        } elseif (!empty($devicesToFix)) {
+            $this->warn("⚠️  DEVICE DISCREPANCY DETECTED: Device has invalid timezone or user settings.");
+            $this->line("   To automatically re-provision, run with <fg=yellow>--fix</>:");
+            $this->line("   <fg=yellow>php artisan biometrics:check-device " . ($deviceSn ? "{$pin} {$deviceSn}" : "{$pin} --all-devices") . " --fix</>\n");
         } else {
             $this->info("✅ All online terminals are 100% synchronized with the database masterlist for PIN {$pin}.");
         }
@@ -302,6 +332,8 @@ class CheckDeviceFingerprints extends Command
             'status' => '<fg=red>OFFLINE</>',
             '_has_ghost' => false,
             '_ghost_fids' => [],
+            '_missing_fids' => [],
+            '_candidate_pins' => [$pin],
             '_tad' => null,
             '_all_ghosts' => false,
             '_status' => 'OFFLINE',
@@ -362,6 +394,8 @@ class CheckDeviceFingerprints extends Command
                     'status' => '<fg=red>MISSING_USER</>',
                     '_has_ghost' => false,
                     '_ghost_fids' => [],
+                    '_missing_fids' => array_keys($dbSlots),
+                    '_candidate_pins' => [$pin],
                     '_tad' => $tad,
                     '_all_ghosts' => false,
                     '_status' => 'MISSING_USER',
@@ -433,6 +467,8 @@ class CheckDeviceFingerprints extends Command
                 'status' => $statusCol,
                 '_has_ghost' => $hasGhost,
                 '_ghost_fids' => $ghostFids,
+                '_missing_fids' => $missingFids,
+                '_candidate_pins' => $candidatePins,
                 '_tad' => $tad,
                 '_all_ghosts' => $allGhosts,
                 '_status' => $statusCode,
