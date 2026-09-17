@@ -444,6 +444,11 @@
                     <i id="fullscreenIcon" class="fas fa-expand"></i>
                 </button>
 
+                <!-- Command Runner Console Button -->
+                <button id="openCommandRunnerBtn" class="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:from-blue-800 active:to-indigo-800 text-white px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-all cursor-pointer" title="Run Biometric & Device CLI Commands via GUI">
+                    <i class="fas fa-terminal text-blue-200"></i> Run Commands
+                </button>
+
                 <!-- Bulk Test Button -->
                 <button id="testAllBtn" class="bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-all">
                     <i class="fas fa-bolt"></i> Test All Connections
@@ -944,6 +949,216 @@
         </div>
     </div>
 
+    <!-- ==================== COMMAND RUNNER MODAL ==================== -->
+    <div id="commandRunnerModal" class="hidden fixed inset-0 z-50 flex flex-col w-full h-full p-0" style="background: var(--modal-overlay); backdrop-filter: blur(6px);">
+        <div id="commandRunnerCard" class="themed-card w-full h-full flex flex-col shadow-2xl overflow-hidden rounded-none border-0">
+            <!-- Modal Header -->
+            <div class="flex items-center justify-between px-6 py-3.5 border-b themed-border shrink-0" style="background: var(--bg-subcard);">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-md">
+                        <i class="fas fa-terminal text-lg"></i>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h3 class="text-base font-bold themed-text-primary">Biometric & Device Command Runner</h3>
+                            <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold pill-blue uppercase tracking-wider">
+                                CLI GUI Console
+                            </span>
+                        </div>
+                        <p class="text-xs themed-text-muted">Execute administrative, sync, diagnostics & recovery commands directly without terminal prompt</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="button" id="cmdModalExpandBtn" class="themed-text-muted hover:themed-text-primary text-sm p-2 rounded-lg themed-hover transition-all cursor-pointer" title="Toggle Windowed / Full Screen">
+                        <i class="fas fa-compress" id="cmdModalExpandIcon"></i>
+                    </button>
+                    <button type="button" class="closeModalBtn themed-text-muted hover:themed-text-primary text-sm p-2 rounded-lg themed-hover transition-all cursor-pointer" title="Close (Esc)">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Modal Content (2 Columns on Desktop) -->
+            <div class="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
+                <!-- Left: Form & Command Configuration -->
+                <div class="w-full lg:w-5/12 xl:w-4/12 p-5 space-y-4 overflow-y-auto border-b lg:border-b-0 lg:border-r themed-border">
+                    <!-- 1. Select Command -->
+                    <div class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider themed-text-secondary">
+                            <i class="fas fa-list-check text-blue-500 mr-1"></i> Select Command
+                        </label>
+                        <select id="cmdSelect" class="w-full themed-input rounded-xl px-3 py-2 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                            <optgroup label="Biometrics & Fingerprint Sync">
+                                <option value="biometrics:sync-device">biometrics:sync-device - Sync DB Masterlist & Templates to Device(s)</option>
+                                <option value="biometrics:import-from-logs">biometrics:import-from-logs - Recover Dropped Templates from Logs</option>
+                            </optgroup>
+                            <optgroup label="Diagnostics & Live Template Verification">
+                                <option value="biometrics:check-device">biometrics:check-device - Check Live Enrolled Fingers & Auto-Fix</option>
+                                <option value="biometrics:check-device-match">biometrics:check-device-match - Detect Duplicate/Conflicting Finger Slots</option>
+                                <option value="biometrics:find-duplicates">biometrics:find-duplicates - Search DB for Duplicate Fingerprints</option>
+                            </optgroup>
+                            <optgroup label="Log Pulling & Missed Log Recovery">
+                                <option value="devices:pull-logs">devices:pull-logs - Pull or Resend Attendance Logs (SOAP / ADMS)</option>
+                            </optgroup>
+                            <optgroup label="Log Clearing & Storage Maintenance">
+                                <option value="devices:clear-logs">devices:clear-logs - Clear Terminal Attendance Memory (with Pre-Sync)</option>
+                                <option value="device-logs:prune">device-logs:prune - Prune Historical Database Records</option>
+                            </optgroup>
+                            <optgroup label="User & Finger Slot Deletion">
+                                <option value="biometrics:delete-user">biometrics:delete-user - Purge User Profile from Device(s) & DB</option>
+                                <option value="biometrics:delete-finger">biometrics:delete-finger - Delete Specific Enrolled Finger Slot (0-9)</option>
+                            </optgroup>
+                            <optgroup label="Queue & Command Status">
+                                <option value="biometrics:command-status">biometrics:command-status - View Real-Time Command Queue Status</option>
+                                <option value="biometrics:clear-queue">biometrics:clear-queue - Emergency Stop & Clear Queue Files</option>
+                            </optgroup>
+                        </select>
+                        <div id="cmdDescriptionBox" class="p-2.5 rounded-lg text-xs themed-subcard flex items-start gap-2">
+                            <i class="fas fa-info-circle text-blue-500 dark:text-blue-400 mt-0.5 shrink-0"></i>
+                            <div class="flex-1 text-xs themed-text-muted leading-relaxed" id="cmdDescriptionText">
+                                Loading command description...
+                            </div>
+                            <span id="cmdGuideBadge" class="text-[10px] px-2 py-0.5 rounded font-mono font-bold pill-blue shrink-0">NEW_DEVICE_GUIDE.md</span>
+                        </div>
+                    </div>
+
+                    <!-- 2. Target Device -->
+                    <div id="cmdDeviceGroup" class="space-y-1.5">
+                        <label class="block text-xs font-bold uppercase tracking-wider themed-text-secondary">
+                            <i class="fas fa-network-wired text-indigo-500 mr-1"></i> Target Device
+                        </label>
+                        <select id="cmdDeviceTarget" class="w-full themed-input rounded-xl px-3 py-2 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                            <option value="all">⚡ All Active Registered Devices</option>
+                        </select>
+                    </div>
+
+                    <!-- 3. Target User / PIN Selector (Interactive Autocomplete + Manual PIN) -->
+                    <div id="cmdPinGroup" class="space-y-1.5">
+                        <div class="flex items-center justify-between">
+                            <label class="block text-xs font-bold uppercase tracking-wider themed-text-secondary">
+                                <i class="fas fa-user text-emerald-500 mr-1"></i> Target User / Biometric PIN
+                            </label>
+                            <span id="cmdPinBadge" class="text-[10px] font-semibold px-2 py-0.5 rounded pill-amber">
+                                Optional
+                            </span>
+                        </div>
+
+                        <!-- Selected User Tag / Chip (when chosen) -->
+                        <div id="cmdSelectedUserChip" class="hidden p-2.5 rounded-xl pill-blue flex items-center justify-between">
+                            <div class="flex items-center gap-2">
+                                <div class="w-7 h-7 rounded-lg bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold text-xs">
+                                    <i class="fas fa-id-badge"></i>
+                                </div>
+                                <div>
+                                    <div class="text-xs font-bold themed-text-primary" id="cmdSelectedUserName">Employee Name</div>
+                                    <div class="text-[10px] text-blue-600 dark:text-blue-400 font-mono">Biometric PIN: <span id="cmdSelectedUserPin" class="font-bold">0</span></div>
+                                </div>
+                            </div>
+                            <button type="button" id="cmdClearUserBtn" class="themed-text-muted hover:text-rose-500 p-1 text-xs cursor-pointer" title="Clear selected employee">
+                                <i class="fas fa-times-circle"></i>
+                            </button>
+                        </div>
+
+                        <!-- Autocomplete Search Input -->
+                        <div class="relative" id="cmdUserSearchWrapper">
+                            <div class="relative">
+                                <i class="fas fa-search absolute left-3 top-1/2 -translate-y-1/2 themed-text-muted text-xs"></i>
+                                <input type="text" id="cmdUserSearchInput" placeholder="Search employee name or enter numeric PIN..." 
+                                    class="w-full themed-input rounded-xl pl-8 pr-8 py-2 text-xs font-semibold placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                                    autocomplete="off">
+                                <span id="cmdUserSearchSpinner" class="hidden absolute right-3 top-1/2 -translate-y-1/2 text-blue-500 dark:text-blue-400 text-xs">
+                                    <i class="fas fa-circle-notch fa-spin"></i>
+                                </span>
+                            </div>
+
+                            <!-- Autocomplete Dropdown Menu -->
+                            <div id="cmdUserDropdown" class="hidden absolute left-0 right-0 top-full mt-1 max-h-48 overflow-y-auto themed-card border themed-border rounded-xl shadow-2xl z-30 divide-y themed-border">
+                                <!-- Suggestions injected via JS -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 4. Dynamic Options Container -->
+                    <div id="cmdDynamicOptions" class="space-y-3 p-3.5 rounded-xl themed-subcard">
+                        <!-- Injected dynamically based on selected command -->
+                    </div>
+
+                    <!-- 5. Destructive Command Warning / Confirmation (Conditional) -->
+                    <div id="cmdDangerBox" class="hidden p-3.5 rounded-xl alert-box-danger space-y-2">
+                        <div class="flex items-start gap-2 text-xs">
+                            <i class="fas fa-exclamation-triangle text-rose-500 text-sm mt-0.5 shrink-0"></i>
+                            <div>
+                                <strong class="font-bold text-rose-600 dark:text-rose-400">Caution: High-Impact / Destructive Operation</strong>
+                                <p class="text-[11px] opacity-90 mt-0.5" id="cmdDangerText">This action modifies or purges device/database data.</p>
+                            </div>
+                        </div>
+                        <label class="flex items-center gap-2 cursor-pointer pt-1 border-t border-rose-500/25 text-xs font-semibold text-rose-600 dark:text-rose-400">
+                            <input type="checkbox" id="cmdConfirmDangerCheckbox" class="rounded border-rose-500 text-rose-600 focus:ring-0">
+                            <span>I understand the impact and confirm execution</span>
+                        </label>
+                    </div>
+
+                    <!-- 6. CLI Command Preview Box -->
+                    <div class="space-y-1">
+                        <div class="flex items-center justify-between text-[11px] uppercase tracking-wider font-bold themed-text-secondary">
+                            <span><i class="fas fa-terminal text-blue-500 dark:text-blue-400 mr-1"></i> Command Preview</span>
+                            <button type="button" id="cmdCopyCliBtn" class="themed-text-muted hover:themed-text-primary transition-colors text-[10px] font-mono flex items-center gap-1 cursor-pointer">
+                                <i class="fas fa-copy"></i> Copy CLI
+                            </button>
+                        </div>
+                        <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-700/60 dark:bg-slate-950 dark:border-slate-800 font-mono text-xs text-blue-400 flex items-center justify-between overflow-x-auto shadow-inner">
+                            <code id="cmdCliPreview" class="whitespace-nowrap select-all">$ php artisan biometrics:sync-device --all-devices</code>
+                        </div>
+                    </div>
+
+                    <!-- 7. Action Button -->
+                    <div class="pt-1">
+                        <button type="button" id="cmdExecuteBtn" class="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:from-blue-800 active:to-indigo-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer">
+                            <i class="fas fa-play" id="cmdExecuteIcon"></i>
+                            <span id="cmdExecuteText">Run Command</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Right: Live Terminal Console Output -->
+                <div class="w-full lg:w-7/12 xl:w-8/12 p-5 flex flex-col bg-slate-950 text-slate-100 min-h-[340px] lg:min-h-0 border-t lg:border-t-0 lg:border-l themed-border">
+                    <div class="flex items-center justify-between pb-3 border-b border-slate-800">
+                        <div class="flex items-center gap-2">
+                            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" id="consolePulse"></span>
+                            <span class="font-mono text-xs font-bold text-slate-300">Terminal Output</span>
+                            <span id="consoleStatusBadge" class="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-semibold">
+                                Idle
+                            </span>
+                        </div>
+                        <div class="flex items-center gap-1">
+                            <button type="button" id="cmdCopyOutputBtn" class="text-slate-400 hover:text-slate-200 p-1.5 text-xs rounded hover:bg-slate-800 transition-colors cursor-pointer" title="Copy Output">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                            <button type="button" id="cmdClearOutputBtn" class="text-slate-400 hover:text-slate-200 p-1.5 text-xs rounded hover:bg-slate-800 transition-colors cursor-pointer" title="Clear Console">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Monospace Output Box -->
+                    <div class="flex-1 min-h-[240px] lg:min-h-0 overflow-y-auto py-3 font-mono text-[11px] leading-relaxed select-text space-y-2 text-slate-300" id="consoleOutputScreen">
+                        <div class="text-slate-500 italic">
+                            Terminal console initialized.<br>
+                            Select a command on the left, configure options, and click "Run Command".<br>
+                            Output will appear here in real time.
+                        </div>
+                    </div>
+
+                    <!-- Console Footer Meta -->
+                    <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] font-mono text-slate-500">
+                        <span id="consoleDuration">Duration: -</span>
+                        <span id="consoleTimestamp">Ready</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Notification Container -->
     <div id="toastContainer" class="fixed bottom-6 right-6 z-50 flex flex-col gap-2 max-w-md w-full pointer-events-none">
         <!-- Injected via JS -->
@@ -1059,18 +1274,19 @@
             const toast = document.createElement('div');
             toast.className = 'pointer-events-auto p-3.5 rounded-xl border shadow-xl flex items-start gap-3 transform transition-all duration-200 translate-y-2 opacity-0 text-xs font-medium';
 
-            let bgClass = 'bg-slate-900 border-slate-700 text-slate-100';
-            let iconClass = 'fa-info-circle text-blue-400';
+            const isLight = document.documentElement.classList.contains('light');
+            let bgClass = isLight ? 'bg-white border-slate-300 text-slate-800 shadow-lg' : 'bg-slate-900 border-slate-700 text-slate-100';
+            let iconClass = isLight ? 'fa-info-circle text-blue-600' : 'fa-info-circle text-blue-400';
 
             if (type === 'success') {
-                bgClass = 'bg-emerald-950 border-emerald-800 text-emerald-100';
-                iconClass = 'fa-check-circle text-emerald-400';
+                bgClass = isLight ? 'bg-emerald-50 border-emerald-300 text-emerald-900 shadow-lg' : 'bg-emerald-950 border-emerald-800 text-emerald-100';
+                iconClass = isLight ? 'fa-check-circle text-emerald-600' : 'fa-check-circle text-emerald-400';
             } else if (type === 'error') {
-                bgClass = 'bg-rose-950 border-rose-800 text-rose-100';
-                iconClass = 'fa-exclamation-circle text-rose-400';
+                bgClass = isLight ? 'bg-rose-50 border-rose-300 text-rose-900 shadow-lg' : 'bg-rose-950 border-rose-800 text-rose-100';
+                iconClass = isLight ? 'fa-exclamation-circle text-rose-600' : 'fa-exclamation-circle text-rose-400';
             } else if (type === 'warning') {
-                bgClass = 'bg-amber-950 border-amber-800 text-amber-100';
-                iconClass = 'fa-triangle-exclamation text-amber-400';
+                bgClass = isLight ? 'bg-amber-50 border-amber-300 text-amber-900 shadow-lg' : 'bg-amber-950 border-amber-800 text-amber-100';
+                iconClass = isLight ? 'fa-triangle-exclamation text-amber-600' : 'fa-triangle-exclamation text-amber-400';
             }
 
             toast.classList.add(...bgClass.split(' '));
@@ -1134,6 +1350,7 @@
                     renderTable();
                     renderPagination();
                     updateLastUpdated();
+                    if (typeof updateCmdRunnerDevices === 'function') updateCmdRunnerDevices(state.devices);
                 } else {
                     showToast(result.message || 'Failed to fetch device data', 'error');
                 }
@@ -1337,6 +1554,12 @@
                                     data-id="${d.id}" title="Technical Specifications">
                                     <i class="fas fa-ellipsis-v"></i>
                                 </button>
+
+                                <!-- Run Command for this Device -->
+                                <button class="btnRowRunCommand btn-secondary p-2 rounded-lg text-xs hover:text-blue-500 hover:border-blue-400" 
+                                    data-id="${d.id}" data-name="${escapeHtml(d.device_name)}" data-sn="${escapeHtml(d.serial_number || '')}" data-ip="${escapeHtml(d.ip_address)}" title="Run Command for this Device">
+                                    <i class="fas fa-terminal text-blue-600 dark:text-blue-400"></i>
+                                </button>
                             </div>
                         </td>
                     </tr>
@@ -1440,6 +1663,14 @@
                     const id = parseInt(btn.dataset.id, 10);
                     const dev = state.devices.find(x => x.id === id);
                     if (dev) showDeviceDetails(dev);
+                });
+            });
+
+            // Run Command for specific row button
+            document.querySelectorAll('.btnRowRunCommand').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = parseInt(btn.dataset.id, 10);
+                    openCommandRunnerForDevice(id);
                 });
             });
         }
@@ -1957,7 +2188,9 @@
         });
         window.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                [editNameModal, restartModal, batchRestartModal, detailsModal].forEach(m => closeModal(m));
+                [editNameModal, restartModal, batchRestartModal, detailsModal, commandRunnerModal].forEach(m => {
+                    if (m) closeModal(m);
+                });
             }
         });
 
@@ -2062,6 +2295,943 @@
             document.getElementById('lastUpdatedTime').textContent = d.toLocaleTimeString();
         }
 
+        // ==================== COMMAND RUNNER LOGIC ====================
+        const cmdRunner = {
+            manifest: null,
+            devices: [],
+            fingerNames: {},
+            selectedPin: null,
+            selectedEmployeeName: null,
+            isExecuting: false,
+            debounceTimer: null,
+            todayDate: new Date().toISOString().split('T')[0],
+        };
+
+        // Command Runner DOM Elements
+        const commandRunnerModal = document.getElementById('commandRunnerModal');
+        const openCommandRunnerBtn = document.getElementById('openCommandRunnerBtn');
+        const cmdSelect = document.getElementById('cmdSelect');
+        const cmdDescriptionText = document.getElementById('cmdDescriptionText');
+        const cmdGuideBadge = document.getElementById('cmdGuideBadge');
+        const cmdDeviceGroup = document.getElementById('cmdDeviceGroup');
+        const cmdDeviceTarget = document.getElementById('cmdDeviceTarget');
+        const cmdPinGroup = document.getElementById('cmdPinGroup');
+        const cmdPinBadge = document.getElementById('cmdPinBadge');
+        const cmdSelectedUserChip = document.getElementById('cmdSelectedUserChip');
+        const cmdSelectedUserName = document.getElementById('cmdSelectedUserName');
+        const cmdSelectedUserPin = document.getElementById('cmdSelectedUserPin');
+        const cmdClearUserBtn = document.getElementById('cmdClearUserBtn');
+        const cmdUserSearchWrapper = document.getElementById('cmdUserSearchWrapper');
+        const cmdUserSearchInput = document.getElementById('cmdUserSearchInput');
+        const cmdUserSearchSpinner = document.getElementById('cmdUserSearchSpinner');
+        const cmdUserDropdown = document.getElementById('cmdUserDropdown');
+        const cmdDynamicOptions = document.getElementById('cmdDynamicOptions');
+        const cmdDangerBox = document.getElementById('cmdDangerBox');
+        const cmdDangerText = document.getElementById('cmdDangerText');
+        const cmdConfirmDangerCheckbox = document.getElementById('cmdConfirmDangerCheckbox');
+        const cmdCliPreview = document.getElementById('cmdCliPreview');
+        const cmdCopyCliBtn = document.getElementById('cmdCopyCliBtn');
+        const cmdExecuteBtn = document.getElementById('cmdExecuteBtn');
+        const cmdExecuteIcon = document.getElementById('cmdExecuteIcon');
+        const cmdExecuteText = document.getElementById('cmdExecuteText');
+        const consoleStatusBadge = document.getElementById('consoleStatusBadge');
+        const consolePulse = document.getElementById('consolePulse');
+        const consoleOutputScreen = document.getElementById('consoleOutputScreen');
+        const consoleDuration = document.getElementById('consoleDuration');
+        const consoleTimestamp = document.getElementById('consoleTimestamp');
+        const cmdCopyOutputBtn = document.getElementById('cmdCopyOutputBtn');
+        const cmdClearOutputBtn = document.getElementById('cmdClearOutputBtn');
+        const cmdModalExpandBtn = document.getElementById('cmdModalExpandBtn');
+        const cmdModalExpandIcon = document.getElementById('cmdModalExpandIcon');
+        const commandRunnerCard = document.getElementById('commandRunnerCard');
+        let isCmdModalFullscreen = true;
+
+        // Fetch manifest and populate devices
+        async function initCommandRunner() {
+            if (cmdRunner.manifest) return;
+            try {
+                const res = await fetch('/api/command-runner/manifest');
+                const data = await res.json();
+                if (data.success) {
+                    cmdRunner.manifest = data.commands || {};
+                    cmdRunner.devices = data.devices || [];
+                    cmdRunner.fingerNames = data.finger_names || {};
+                    populateCmdDeviceDropdown(cmdRunner.devices);
+                    onCommandSelectionChange();
+                }
+            } catch (err) {
+                console.error('Failed to initialize Command Runner manifest:', err);
+            }
+        }
+
+        // Populate device dropdown
+        function populateCmdDeviceDropdown(devices) {
+            if (!cmdDeviceTarget) return;
+            const currentVal = cmdDeviceTarget.value || 'all';
+            let html = '<option value="all">⚡ All Active Registered Devices</option>';
+            if (Array.isArray(devices) && devices.length > 0) {
+                devices.forEach(d => {
+                    const sn = d.serial_number ? `(${d.serial_number})` : '(No SN)';
+                    const ip = d.ip_address || 'No IP';
+                    const activeTag = d.is_active ? '' : ' [Inactive]';
+                    html += `<option value="${d.id}">${escapeHtml(d.device_name)} - ${escapeHtml(ip)} ${escapeHtml(sn)}${activeTag}</option>`;
+                });
+            }
+            cmdDeviceTarget.innerHTML = html;
+            if (currentVal && cmdDeviceTarget.querySelector(`option[value="${currentVal}"]`)) {
+                cmdDeviceTarget.value = currentVal;
+            }
+        }
+
+        function updateCmdRunnerDevices(devices) {
+            if (devices && devices.length > 0) {
+                cmdRunner.devices = devices;
+                populateCmdDeviceDropdown(devices);
+            }
+        }
+
+        // Open modal for a specific device from row action
+        function openCommandRunnerForDevice(deviceId) {
+            initCommandRunner().then(() => {
+                if (cmdDeviceTarget) {
+                    cmdDeviceTarget.value = String(deviceId);
+                }
+                openModal(commandRunnerModal);
+                updateCliPreview();
+            });
+        }
+
+        if (openCommandRunnerBtn) {
+            openCommandRunnerBtn.addEventListener('click', () => {
+                initCommandRunner().then(() => {
+                    openModal(commandRunnerModal);
+                    updateCliPreview();
+                });
+            });
+        }
+
+        // Fullscreen Toggle for Command Runner Modal
+        if (cmdModalExpandBtn && commandRunnerCard) {
+            cmdModalExpandBtn.addEventListener('click', () => {
+                isCmdModalFullscreen = !isCmdModalFullscreen;
+                if (isCmdModalFullscreen) {
+                    commandRunnerModal.classList.remove('items-center', 'justify-center', 'p-3', 'sm:p-4');
+                    commandRunnerModal.classList.add('flex-col', 'w-full', 'h-full', 'p-0');
+                    commandRunnerCard.classList.remove('rounded-2xl', 'border', 'max-w-6xl', 'max-h-[94vh]');
+                    commandRunnerCard.classList.add('rounded-none', 'border-0', 'w-full', 'h-full');
+                    cmdModalExpandIcon.className = 'fas fa-compress';
+                    cmdModalExpandBtn.title = 'Switch to Windowed Modal';
+                } else {
+                    commandRunnerModal.classList.remove('flex-col', 'p-0');
+                    commandRunnerModal.classList.add('items-center', 'justify-center', 'p-3', 'sm:p-4');
+                    commandRunnerCard.classList.remove('rounded-none', 'border-0');
+                    commandRunnerCard.classList.add('rounded-2xl', 'border', 'max-w-6xl', 'max-h-[94vh]');
+                    cmdModalExpandIcon.className = 'fas fa-expand';
+                    cmdModalExpandBtn.title = 'Switch to Full Screen';
+                }
+            });
+        }
+
+        // Handle Command selection change
+        function onCommandSelectionChange() {
+            const cmd = cmdSelect.value;
+            const meta = (cmdRunner.manifest && cmdRunner.manifest[cmd]) ? cmdRunner.manifest[cmd] : null;
+
+            if (meta) {
+                cmdDescriptionText.textContent = meta.description || '';
+                cmdGuideBadge.textContent = meta.guide || 'GUIDE';
+
+                // Guide Badge Styling
+                if (meta.guide === 'MANUAL_DEVICE_LOG_PULLING_GUIDE.md') {
+                    cmdGuideBadge.className = 'text-[10px] px-2 py-0.5 rounded font-mono font-bold pill-purple shrink-0';
+                } else {
+                    cmdGuideBadge.className = 'text-[10px] px-2 py-0.5 rounded font-mono font-bold pill-blue shrink-0';
+                }
+
+                // PIN Requirement UI
+                if (meta.pin_requirement === 'required') {
+                    cmdPinGroup.classList.remove('hidden');
+                    cmdPinBadge.textContent = 'Required';
+                    cmdPinBadge.className = 'text-[10px] font-semibold px-2 py-0.5 rounded pill-rose';
+                } else if (meta.pin_requirement === 'optional') {
+                    cmdPinGroup.classList.remove('hidden');
+                    cmdPinBadge.textContent = 'Optional';
+                    cmdPinBadge.className = 'text-[10px] font-semibold px-2 py-0.5 rounded pill-blue';
+                } else {
+                    // none
+                    cmdPinGroup.classList.add('hidden');
+                    cmdPinBadge.textContent = 'Not Applicable';
+                    cmdPinBadge.className = 'text-[10px] font-semibold px-2 py-0.5 rounded pill-amber';
+                }
+
+                // Device Requirement UI
+                if (meta.device_requirement === 'none') {
+                    cmdDeviceGroup.classList.add('hidden');
+                } else {
+                    cmdDeviceGroup.classList.remove('hidden');
+                }
+
+                // Danger Warning Box
+                if (meta.danger_level === 'danger' || meta.danger_level === 'warning') {
+                    cmdDangerBox.classList.remove('hidden');
+                    cmdConfirmDangerCheckbox.checked = false;
+                    if (cmd === 'devices:clear-logs') {
+                        cmdDangerText.textContent = 'Clearing terminal logs permanently purges the local hardware attendance buffer (pre-synced to DB first).';
+                    } else if (cmd === 'biometrics:clear-queue') {
+                        cmdDangerText.textContent = 'Clearing the queue immediately deletes all pending command files. Devices stop receiving sync tasks.';
+                    } else if (cmd === 'biometrics:delete-user') {
+                        cmdDangerText.textContent = 'Deleting an enrolled user purges biometric templates from terminal(s) and optionally database.';
+                    } else if (cmd === 'device-logs:prune') {
+                        cmdDangerText.textContent = 'Pruning deletes historical attendance logs from MySQL database. Run Dry Run first to verify count.';
+                    } else {
+                        cmdDangerText.textContent = 'This administrative operation modifies or purges system data.';
+                    }
+                } else {
+                    cmdDangerBox.classList.add('hidden');
+                    cmdConfirmDangerCheckbox.checked = false;
+                }
+            }
+
+            renderDynamicOptions(cmd);
+            updateCliPreview();
+        }
+
+        cmdSelect.addEventListener('change', onCommandSelectionChange);
+        cmdDeviceTarget.addEventListener('change', updateCliPreview);
+
+        // Render Dynamic Options per Command
+        function renderDynamicOptions(cmd) {
+            let html = '';
+            const today = cmdRunner.todayDate;
+
+            switch (cmd) {
+                case 'biometrics:sync-device':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Sync & Provisioning Options</div>
+                            <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                <input type="checkbox" id="opt_clean_unused" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0" checked>
+                                <span>Deep clean unused finger slots (default; uncheck for fast sync: <code>--no-clean</code>)</span>
+                            </label>
+                            <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                <input type="checkbox" id="opt_table" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0" checked>
+                                <span>Display full summary table in console (<code>--table</code>)</span>
+                            </label>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:check-device':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Diagnostic & Fix Action</div>
+                            <div class="space-y-1.5 text-xs themed-text-secondary">
+                                <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg themed-subcard themed-hover transition-colors">
+                                    <input type="radio" name="opt_check_mode" value="inspect" checked class="text-blue-600 focus:ring-0">
+                                    <div>
+                                        <strong class="text-blue-600 dark:text-blue-400">Inspect Live Fingers Only</strong>
+                                        <p class="text-[11px] themed-text-muted">Direct hardware SOAP query of slots 0-9 vs central database</p>
+                                    </div>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg themed-subcard themed-hover transition-colors">
+                                    <input type="radio" name="opt_check_mode" value="fix" class="text-emerald-600 focus:ring-0">
+                                    <div>
+                                        <strong class="text-emerald-600 dark:text-emerald-400">Auto-Fix Discrepancies (<code>--fix</code>)</strong>
+                                        <p class="text-[11px] themed-text-muted">Push missing DB templates & clean ghost slots to achieve 100% sync</p>
+                                    </div>
+                                </label>
+                                <label class="flex items-center gap-2 cursor-pointer p-2 rounded-lg themed-subcard themed-hover transition-colors">
+                                    <input type="radio" name="opt_check_mode" value="clean" class="text-amber-600 focus:ring-0">
+                                    <div>
+                                        <strong class="text-amber-600 dark:text-amber-400">Purge Ghost Slots Only (<code>--clean</code>)</strong>
+                                        <p class="text-[11px] themed-text-muted">Purge unassigned finger slots from device without pushing templates</p>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:check-device-match':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Template Match & Conflict Options</div>
+                            <div class="space-y-1">
+                                <label class="text-[11px] themed-text-muted">Compare against another specific PIN (optional):</label>
+                                <input type="number" id="opt_compare_pin" placeholder="e.g. 8084 (detect if templates match this employee)" class="w-full themed-input rounded-lg px-3 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                            </div>
+                            <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                <input type="checkbox" id="opt_clean_match" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0">
+                                <span>Automatically purge detected conflicting slots from terminal (<code>--clean</code>)</span>
+                            </label>
+                            <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                <input type="checkbox" id="opt_db_only" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0">
+                                <span>Audit database templates only (skip physical terminal query: <code>--db-only</code>)</span>
+                            </label>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:find-duplicates':
+                    html = `
+                        <div class="space-y-2 text-xs themed-text-secondary">
+                            <div class="text-xs font-bold themed-text-primary">Database Duplicate Template Audit</div>
+                            <p class="text-[11px] themed-text-muted">
+                                Searches the central biometrics table for identical fingerprint templates.
+                            </p>
+                            <div class="p-2.5 rounded-lg pill-blue text-[11px]">
+                                <i class="fas fa-info-circle mr-1"></i> If an Employee PIN is selected above, audits against that PIN. If no PIN is selected, audits all enrolled employees across the hospital (<code>--all</code>).
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:command-status':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Queue Filters</div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="text-[11px] themed-text-muted">Filter Status:</label>
+                                    <select id="opt_status_filter" class="w-full themed-input rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                        <option value="">All Statuses</option>
+                                        <option value="PENDING">PENDING</option>
+                                        <option value="SENT">SENT</option>
+                                        <option value="SUCCESS">SUCCESS</option>
+                                        <option value="FAILED">FAILED</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="text-[11px] themed-text-muted">Record Limit:</label>
+                                    <input type="number" id="opt_limit" value="50" min="5" max="250" class="w-full themed-input rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:clear-queue':
+                    html = `
+                        <div class="p-3 rounded-lg alert-box-danger space-y-1 text-xs">
+                            <div class="text-xs font-bold text-rose-600 dark:text-rose-400">Emergency Queue Reset</div>
+                            <p class="text-[11px] opacity-90 leading-relaxed">
+                                Instantly resets <code>device_commands.json</code> and deletes all rotated queue files.
+                                Connected terminals will stop processing pending synchronization commands on their next poll.
+                            </p>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:delete-user':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">User Deletion Options</div>
+                            <p class="text-[11px] themed-text-muted">
+                                Dispatches <code>DATA DELETE USER PIN={pin}</code> command to target terminal(s).
+                            </p>
+                            <label class="flex items-center gap-2 text-xs text-rose-600 dark:text-rose-400 font-semibold cursor-pointer">
+                                <input type="checkbox" id="opt_with_db" class="rounded border-rose-500 text-rose-600 focus:ring-0">
+                                <span>Also delete user record from database biometrics table (<code>--with-db</code>)</span>
+                            </label>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:delete-finger':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Target Finger Slot</div>
+                            <label class="text-[11px] themed-text-muted">Select Finger Slot (0-9):</label>
+                            <select id="opt_fid" class="w-full themed-input rounded-lg px-3 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                <option value="0">Slot 0 - Right Thumb</option>
+                                <option value="1">Slot 1 - Right Index</option>
+                                <option value="2">Slot 2 - Right Middle</option>
+                                <option value="3">Slot 3 - Right Ring</option>
+                                <option value="4">Slot 4 - Right Little</option>
+                                <option value="5">Slot 5 - Left Thumb</option>
+                                <option value="6">Slot 6 - Left Index</option>
+                                <option value="7">Slot 7 - Left Middle</option>
+                                <option value="8">Slot 8 - Left Ring</option>
+                                <option value="9">Slot 9 - Left Little</option>
+                            </select>
+                            <p class="text-[10px] themed-text-muted">
+                                Deletes finger slot from DB and broadcasts deletion commands to all active connected devices.
+                            </p>
+                        </div>
+                    `;
+                    break;
+
+                case 'biometrics:import-from-logs':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Log Recovery Options</div>
+                            <p class="text-[11px] themed-text-muted">
+                                Scans raw logs in <code>storage/app/private/</code> to recover dropped templates.
+                            </p>
+                            <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                <input type="checkbox" id="opt_sync_devices" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0" checked>
+                                <span>Sync recovered templates to all active devices (<code>--sync-devices</code>)</span>
+                            </label>
+                        </div>
+                    `;
+                    break;
+
+                case 'devices:pull-logs':
+                    html = `
+                        <div class="space-y-2.5">
+                            <div class="text-xs font-bold themed-text-primary">Attendance Log Pull & Resend Mode</div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="text-[11px] themed-text-muted">Pull Protocol:</label>
+                                    <select id="opt_pull_mode" class="w-full themed-input rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                        <option value="soap">SOAP Pull (Instant Direct SOAP Port 80)</option>
+                                        <option value="adms">ADMS Push Resend (--resend)</option>
+                                    </select>
+                                </div>
+                                <div id="opt_adms_type_box" class="hidden">
+                                    <label class="text-[11px] themed-text-muted">ADMS Command Type:</label>
+                                    <select id="opt_adms_type" class="w-full themed-input rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                        <option value="DATA QUERY ATTLOG">DATA QUERY ATTLOG (Standard)</option>
+                                        <option value="LOG">LOG (Legacy Firmware)</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="space-y-1.5">
+                                <label class="text-[11px] themed-text-muted">Date Filter:</label>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <span class="text-[10px] themed-text-muted">Start Date:</span>
+                                        <input type="date" id="opt_pull_start_date" value="${today}" class="w-full themed-input rounded-lg px-2.5 py-1 text-xs font-mono font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                    </div>
+                                    <div>
+                                        <span class="text-[10px] themed-text-muted">End Date:</span>
+                                        <input type="date" id="opt_pull_end_date" value="${today}" class="w-full themed-input rounded-lg px-2.5 py-1 text-xs font-mono font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'devices:clear-logs':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Attendance Clearance Options</div>
+                            <div class="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label class="text-[11px] themed-text-muted">Wipe Protocol:</label>
+                                    <select id="opt_clear_method" class="w-full themed-input rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                        <option value="both">Both (SOAP instant + ADMS fallback)</option>
+                                        <option value="soap">SOAP Port 80 Only</option>
+                                        <option value="adms">ADMS HTTP Command Only</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="text-[11px] themed-text-muted">Catch-Up Age (Days):</label>
+                                    <input type="number" id="opt_older_than" value="7" min="1" max="90" class="w-full themed-input rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                </div>
+                            </div>
+                            <div class="space-y-1.5 pt-1">
+                                <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                    <input type="checkbox" id="opt_dry_run" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0">
+                                    <span>Dry Run (<code>--dry-run</code>) - Test pre-sync check without wiping</span>
+                                </label>
+                                <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                    <input type="checkbox" id="opt_catch_up" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0">
+                                    <span>Catch-up mode (<code>--catch-up</code>) - Target devices needing clearance</span>
+                                </label>
+                                <label class="flex items-center gap-2 text-xs text-rose-600 dark:text-rose-400 cursor-pointer">
+                                    <input type="checkbox" id="opt_skip_sync" class="rounded border-rose-500 text-rose-600 focus:ring-0">
+                                    <span>Skip pre-sync verification (<code>--skip-sync</code> - DANGEROUS)</span>
+                                </label>
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'device-logs:prune':
+                    html = `
+                        <div class="space-y-2">
+                            <div class="text-xs font-bold themed-text-primary">Database Retention Pruning</div>
+                            <div>
+                                <label class="text-[11px] themed-text-muted">Delete records older than (days):</label>
+                                <input type="number" id="opt_prune_days" value="365" min="30" max="3650" class="w-full themed-input rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                            </div>
+                            <label class="flex items-center gap-2 text-xs themed-text-secondary cursor-pointer">
+                                <input type="checkbox" id="opt_prune_dry_run" class="rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0" checked>
+                                <span>Dry Run (<code>--dry-run</code>) - Calculate matching row count without deleting</span>
+                            </label>
+                        </div>
+                    `;
+                    break;
+            }
+
+            cmdDynamicOptions.innerHTML = html;
+
+            // Attach change listeners to dynamic elements to update CLI preview
+            cmdDynamicOptions.querySelectorAll('input, select').forEach(el => {
+                el.addEventListener('input', updateCliPreview);
+                el.addEventListener('change', updateCliPreview);
+            });
+
+            // Handle toggle of ADMS command type box for pull-logs
+            const pullModeSelect = document.getElementById('opt_pull_mode');
+            const admsTypeBox = document.getElementById('opt_adms_type_box');
+            if (pullModeSelect && admsTypeBox) {
+                pullModeSelect.addEventListener('change', () => {
+                    admsTypeBox.classList.toggle('hidden', pullModeSelect.value !== 'adms');
+                    updateCliPreview();
+                });
+            }
+        }
+
+        // Build Live Command Preview string
+        function updateCliPreview() {
+            const cmd = cmdSelect.value;
+            const target = cmdDeviceTarget.value;
+            const pin = cmdRunner.selectedPin;
+            let parts = ['php artisan', cmd];
+
+            // Resolve device target representation
+            let targetDeviceObj = null;
+            if (target !== 'all') {
+                targetDeviceObj = (cmdRunner.devices || []).find(d => String(d.id) === String(target)) || (state.devices || []).find(d => String(d.id) === String(target));
+            }
+
+            switch (cmd) {
+                case 'biometrics:sync-device':
+                    if (target === 'all') {
+                        parts.push('--all-devices');
+                    } else if (targetDeviceObj) {
+                        parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
+                    }
+                    if (pin) parts.push(`--pin=${pin}`);
+                    const cleanUnused = document.getElementById('opt_clean_unused');
+                    if (cleanUnused && !cleanUnused.checked) parts.push('--no-clean');
+                    const showTable = document.getElementById('opt_table');
+                    if (showTable && showTable.checked) parts.push('--table');
+                    break;
+
+                case 'biometrics:check-device':
+                    parts.push(pin ? pin : '<PIN>');
+                    if (target === 'all') {
+                        parts.push('--all-devices');
+                    } else if (targetDeviceObj) {
+                        parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
+                    }
+                    const checkMode = document.querySelector('input[name="opt_check_mode"]:checked')?.value || 'inspect';
+                    if (checkMode === 'fix') parts.push('--fix --force');
+                    else if (checkMode === 'clean') parts.push('--clean --force');
+                    break;
+
+                case 'biometrics:check-device-match':
+                    parts.push(pin ? pin : '<PIN>');
+                    if (target === 'all') {
+                        parts.push('--all-devices');
+                    } else if (targetDeviceObj) {
+                        parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
+                    }
+                    const comparePin = document.getElementById('opt_compare_pin')?.value;
+                    if (comparePin) parts.push(`--compare-pin=${comparePin}`);
+                    if (document.getElementById('opt_clean_match')?.checked) parts.push('--clean --force');
+                    if (document.getElementById('opt_db_only')?.checked) parts.push('--db-only');
+                    break;
+
+                case 'biometrics:find-duplicates':
+                    if (pin) parts.push(pin);
+                    else parts.push('--all');
+                    break;
+
+                case 'biometrics:command-status':
+                    if (target !== 'all' && targetDeviceObj) parts.push(`--device=${targetDeviceObj.serial_number}`);
+                    if (pin) parts.push(`--pin=${pin}`);
+                    const statusFilter = document.getElementById('opt_status_filter')?.value;
+                    if (statusFilter) parts.push(`--status=${statusFilter}`);
+                    const limitVal = document.getElementById('opt_limit')?.value;
+                    if (limitVal) parts.push(`--limit=${limitVal}`);
+                    break;
+
+                case 'biometrics:clear-queue':
+                    // No options
+                    break;
+
+                case 'biometrics:delete-user':
+                    parts.push(pin ? pin : '<PIN>');
+                    if (target === 'all') {
+                        parts.push('--all-devices');
+                    } else if (targetDeviceObj) {
+                        parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
+                    }
+                    if (document.getElementById('opt_with_db')?.checked) parts.push('--with-db');
+                    break;
+
+                case 'biometrics:delete-finger':
+                    parts.push(pin ? pin : '<PIN>');
+                    const fidVal = document.getElementById('opt_fid')?.value || '0';
+                    parts.push(fidVal);
+                    break;
+
+                case 'biometrics:import-from-logs':
+                    if (pin) parts.push(`--pin=${pin}`);
+                    if (document.getElementById('opt_sync_devices')?.checked) parts.push('--sync-devices');
+                    break;
+
+                case 'devices:pull-logs':
+                    if (target === 'all') {
+                        parts.push('--all');
+                    } else if (targetDeviceObj) {
+                        parts.push(String(targetDeviceObj.id));
+                    }
+                    const pullMode = document.getElementById('opt_pull_mode')?.value;
+                    if (pullMode === 'adms') {
+                        parts.push('--resend');
+                        const admsType = document.getElementById('opt_adms_type')?.value;
+                        if (admsType && admsType !== 'DATA QUERY ATTLOG') parts.push(`--type="${admsType}"`);
+                    }
+                    const startDate = document.getElementById('opt_pull_start_date')?.value;
+                    const endDate = document.getElementById('opt_pull_end_date')?.value;
+                    if (startDate && endDate && startDate === endDate) {
+                        parts.push(`--date=${startDate}`);
+                    } else {
+                        if (startDate) parts.push(`--start-date=${startDate}`);
+                        if (endDate) parts.push(`--end-date=${endDate}`);
+                    }
+                    if (pin) parts.push(`--pin=${pin}`);
+                    break;
+
+                case 'devices:clear-logs':
+                    if (target === 'all') {
+                        parts.push('--all');
+                    } else if (targetDeviceObj) {
+                        parts.push(String(targetDeviceObj.id));
+                    }
+                    const clearMethod = document.getElementById('opt_clear_method')?.value;
+                    if (clearMethod && clearMethod !== 'both') parts.push(`--method=${clearMethod}`);
+                    if (document.getElementById('opt_dry_run')?.checked) parts.push('--dry-run');
+                    if (document.getElementById('opt_catch_up')?.checked) {
+                        parts.push('--catch-up');
+                        const olderThan = document.getElementById('opt_older_than')?.value;
+                        if (olderThan) parts.push(`--older-than=${olderThan}`);
+                    }
+                    if (document.getElementById('opt_skip_sync')?.checked) parts.push('--skip-sync');
+                    parts.push('--force');
+                    break;
+
+                case 'device-logs:prune':
+                    const pruneDays = document.getElementById('opt_prune_days')?.value || '365';
+                    parts.push(`--older-than=${pruneDays}`);
+                    if (document.getElementById('opt_prune_dry_run')?.checked) parts.push('--dry-run');
+                    parts.push('--force');
+                    break;
+            }
+
+            cmdCliPreview.textContent = '$ ' + parts.join(' ');
+        }
+
+        // Copy CLI Command
+        cmdCopyCliBtn.addEventListener('click', () => {
+            const text = cmdCliPreview.textContent.replace(/^\$\s*/, '');
+            navigator.clipboard.writeText(text);
+            showToast('Copied CLI command to clipboard', 'info', 2000);
+        });
+
+        // Copy Terminal Output
+        cmdCopyOutputBtn.addEventListener('click', () => {
+            const text = consoleOutputScreen.innerText;
+            navigator.clipboard.writeText(text);
+            showToast('Copied console output to clipboard', 'info', 2000);
+        });
+
+        // Clear Terminal Output
+        cmdClearOutputBtn.addEventListener('click', () => {
+            consoleOutputScreen.innerHTML = '<div class="text-slate-500 italic">Terminal console cleared. Ready for next command.</div>';
+            consoleStatusBadge.textContent = 'Idle';
+            consoleStatusBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 font-semibold';
+            consoleDuration.textContent = 'Duration: -';
+            consoleTimestamp.textContent = 'Ready';
+        });
+
+        // Employee Autocomplete Logic
+        cmdUserSearchInput.addEventListener('input', (e) => {
+            const query = e.target.value.trim();
+            clearTimeout(cmdRunner.debounceTimer);
+
+            if (!query) {
+                cmdUserDropdown.classList.add('hidden');
+                cmdUserDropdown.innerHTML = '';
+                return;
+            }
+
+            cmdUserSearchSpinner.classList.remove('hidden');
+
+            cmdRunner.debounceTimer = setTimeout(async () => {
+                try {
+                    const res = await fetch(`/api/command-runner/employees?q=${encodeURIComponent(query)}`);
+                    const data = await res.json();
+                    renderEmployeeSuggestions(query, data.employees || []);
+                } catch (err) {
+                    console.error('Employee autocomplete error:', err);
+                } finally {
+                    cmdUserSearchSpinner.classList.add('hidden');
+                }
+            }, 250);
+        });
+
+        // Allow pressing Enter in search box to use as raw PIN
+        cmdUserSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const val = cmdUserSearchInput.value.trim();
+                if (val && /^\d+$/.test(val)) {
+                    selectEmployeePin(val, `Manual Biometric PIN #${val}`);
+                }
+            }
+        });
+
+        function renderEmployeeSuggestions(query, employees) {
+            let html = '';
+
+            // Top item: manual PIN if numeric
+            if (/^\d+$/.test(query)) {
+                html += `
+                    <div class="p-2.5 themed-hover cursor-pointer flex items-center justify-between text-blue-600 dark:text-blue-400 transition-colors" data-pin="${query}" data-name="Manual PIN #${query}">
+                        <div class="flex items-center gap-2">
+                            <i class="fas fa-keyboard text-xs text-blue-500 dark:text-blue-400"></i>
+                            <span class="text-xs font-semibold">Use custom entered PIN: <strong class="font-mono underline">${escapeHtml(query)}</strong></span>
+                        </div>
+                        <span class="pill-amber text-[10px] px-2 py-0.5 rounded font-mono font-bold">PIN: ${escapeHtml(query)}</span>
+                    </div>
+                `;
+            }
+
+            if (employees.length > 0) {
+                employees.forEach(emp => {
+                    html += `
+                        <div class="p-2.5 themed-hover cursor-pointer flex items-center justify-between transition-colors themed-text-primary" data-pin="${emp.biometric_id}" data-name="${escapeHtml(emp.name)}">
+                            <div class="flex items-center gap-2.5 min-w-0">
+                                <div class="w-6 h-6 rounded-full pill-blue flex items-center justify-center text-[10px] shrink-0 font-bold">
+                                    <i class="fas fa-user text-[9px]"></i>
+                                </div>
+                                <div class="truncate text-xs font-semibold">${escapeHtml(emp.name)}</div>
+                            </div>
+                            <span class="pill-blue text-[10px] px-2 py-0.5 rounded font-mono font-bold shrink-0 ml-2">PIN: ${escapeHtml(emp.biometric_id)}</span>
+                        </div>
+                    `;
+                });
+            } else if (!/^\d+$/.test(query)) {
+                html += `
+                    <div class="p-3 text-center text-xs themed-text-muted italic">
+                        No enrolled employee found matching "${escapeHtml(query)}". You can enter a numeric PIN directly.
+                    </div>
+                `;
+            }
+
+            cmdUserDropdown.innerHTML = html;
+            cmdUserDropdown.classList.remove('hidden');
+
+            cmdUserDropdown.querySelectorAll('[data-pin]').forEach(el => {
+                el.addEventListener('click', () => {
+                    selectEmployeePin(el.dataset.pin, el.dataset.name);
+                });
+            });
+        }
+
+        function selectEmployeePin(pin, name) {
+            cmdRunner.selectedPin = pin;
+            cmdRunner.selectedEmployeeName = name;
+            cmdSelectedUserName.textContent = name;
+            cmdSelectedUserPin.textContent = pin;
+            cmdSelectedUserChip.classList.remove('hidden');
+            cmdUserSearchInput.value = '';
+            cmdUserDropdown.classList.add('hidden');
+            updateCliPreview();
+        }
+
+        cmdClearUserBtn.addEventListener('click', () => {
+            cmdRunner.selectedPin = null;
+            cmdRunner.selectedEmployeeName = null;
+            cmdSelectedUserChip.classList.add('hidden');
+            cmdUserSearchInput.value = '';
+            cmdUserDropdown.classList.add('hidden');
+            updateCliPreview();
+        });
+
+        // Hide dropdown on click outside
+        document.addEventListener('click', (e) => {
+            if (!cmdUserSearchWrapper.contains(e.target)) {
+                cmdUserDropdown.classList.add('hidden');
+            }
+        });
+
+        // Execute Command Handler
+        cmdExecuteBtn.addEventListener('click', async () => {
+            const cmd = cmdSelect.value;
+            const meta = cmdRunner.manifest ? cmdRunner.manifest[cmd] : null;
+
+            // 1. PIN validation
+            if (meta && meta.pin_requirement === 'required' && !cmdRunner.selectedPin) {
+                showToast('Please select or enter an Employee Biometric PIN for this command.', 'warning');
+                cmdUserSearchInput.focus();
+                cmdUserSearchInput.classList.add('ring-2', 'ring-rose-500');
+                setTimeout(() => cmdUserSearchInput.classList.remove('ring-2', 'ring-rose-500'), 2500);
+                return;
+            }
+
+            // 2. Destructive command confirmation
+            if ((meta && (meta.danger_level === 'danger' || meta.danger_level === 'warning')) && !cmdConfirmDangerCheckbox.checked) {
+                showToast('Please check the confirmation box below to acknowledge this high-impact command.', 'warning');
+                cmdDangerBox.scrollIntoView({ behavior: 'smooth' });
+                cmdDangerBox.classList.add('animate-pulse');
+                setTimeout(() => cmdDangerBox.classList.remove('animate-pulse'), 1500);
+                return;
+            }
+
+            // Collect parameters
+            const params = {};
+            switch (cmd) {
+                case 'biometrics:sync-device':
+                    params.no_clean = !document.getElementById('opt_clean_unused')?.checked;
+                    params.table = document.getElementById('opt_table')?.checked;
+                    break;
+                case 'biometrics:check-device':
+                    params.mode = document.querySelector('input[name="opt_check_mode"]:checked')?.value || 'inspect';
+                    break;
+                case 'biometrics:check-device-match':
+                    const comparePin = document.getElementById('opt_compare_pin')?.value;
+                    if (comparePin) params.compare_pin = comparePin;
+                    params.clean = document.getElementById('opt_clean_match')?.checked;
+                    params.db_only = document.getElementById('opt_db_only')?.checked;
+                    break;
+                case 'biometrics:command-status':
+                    const statusFilter = document.getElementById('opt_status_filter')?.value;
+                    if (statusFilter) params.status = statusFilter;
+                    const limitVal = document.getElementById('opt_limit')?.value;
+                    if (limitVal) params.limit = limitVal;
+                    break;
+                case 'biometrics:delete-user':
+                    params.with_db = document.getElementById('opt_with_db')?.checked;
+                    break;
+                case 'biometrics:delete-finger':
+                    params.fid = document.getElementById('opt_fid')?.value || '0';
+                    break;
+                case 'biometrics:import-from-logs':
+                    params.sync_devices = document.getElementById('opt_sync_devices')?.checked;
+                    break;
+                case 'devices:pull-logs':
+                    const pullMode = document.getElementById('opt_pull_mode')?.value;
+                    if (pullMode === 'adms') {
+                        params.resend = true;
+                        params.type = document.getElementById('opt_adms_type')?.value || 'DATA QUERY ATTLOG';
+                    }
+                    const startDate = document.getElementById('opt_pull_start_date')?.value;
+                    const endDate = document.getElementById('opt_pull_end_date')?.value;
+                    if (startDate && endDate && startDate === endDate) {
+                        params.date = startDate;
+                    } else {
+                        if (startDate) params.start_date = startDate;
+                        if (endDate) params.end_date = endDate;
+                    }
+                    break;
+                case 'devices:clear-logs':
+                    params.method = document.getElementById('opt_clear_method')?.value || 'both';
+                    params.dry_run = document.getElementById('opt_dry_run')?.checked;
+                    params.catch_up = document.getElementById('opt_catch_up')?.checked;
+                    params.older_than = document.getElementById('opt_older_than')?.value || '7';
+                    params.skip_sync = document.getElementById('opt_skip_sync')?.checked;
+                    break;
+                case 'device-logs:prune':
+                    params.older_than = document.getElementById('opt_prune_days')?.value || '365';
+                    params.dry_run = document.getElementById('opt_prune_dry_run')?.checked;
+                    break;
+            }
+
+            // Set running state
+            cmdRunner.isExecuting = true;
+            cmdExecuteBtn.disabled = true;
+            cmdExecuteIcon.className = 'fas fa-circle-notch fa-spin';
+            cmdExecuteText.textContent = 'Executing command...';
+
+            consoleStatusBadge.textContent = 'Running...';
+            consoleStatusBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold';
+            consolePulse.className = 'w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse';
+
+            const nowTime = new Date().toLocaleTimeString();
+            consoleTimestamp.textContent = `Started at ${nowTime}`;
+
+            const cliCommandText = cmdCliPreview.textContent.replace(/^\$\s*/, '');
+            consoleOutputScreen.innerHTML = `
+                <div class="text-blue-400 font-bold border-b border-slate-800 pb-1.5">
+                    <span class="text-slate-500">[${nowTime}]</span> $ ${escapeHtml(cliCommandText)}
+                </div>
+                <div class="text-slate-400 italic py-1 animate-pulse">
+                    Connecting to target terminal(s) & dispatching command...
+                </div>
+            `;
+
+            try {
+                const payload = {
+                    command: cmd,
+                    device_target: cmdDeviceTarget.value,
+                    pin: cmdRunner.selectedPin,
+                    params: params,
+                };
+
+                const res = await fetch('/api/command-runner/run', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': csrfToken,
+                    },
+                    body: JSON.stringify(payload),
+                });
+
+                const result = await res.json();
+
+                if (result.success) {
+                    consoleStatusBadge.textContent = 'Exit 0 (Success)';
+                    consoleStatusBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 font-bold';
+                    consolePulse.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500';
+                    showToast(`Command [${cmd}] finished successfully (${result.duration || '0s'})`, 'success');
+                } else {
+                    consoleStatusBadge.textContent = `Exit ${result.exit_code ?? 1} (Failed)`;
+                    consoleStatusBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 font-bold';
+                    consolePulse.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+                    showToast(result.message || 'Command execution finished with errors', 'error');
+                }
+
+                consoleDuration.textContent = `Duration: ${result.duration || '-'}`;
+                consoleTimestamp.textContent = `Completed at ${new Date().toLocaleTimeString()}`;
+
+                // Render terminal output text
+                const formattedOutput = escapeHtml(result.output || '(No output returned)');
+                consoleOutputScreen.innerHTML = `
+                    <div class="text-blue-400 font-bold border-b border-slate-800 pb-1.5">
+                        <span class="text-slate-500">[${nowTime}]</span> $ ${escapeHtml(result.command || cliCommandText)}
+                    </div>
+                    <pre class="font-mono text-xs whitespace-pre overflow-x-auto text-slate-200 mt-2">${formattedOutput}</pre>
+                `;
+                consoleOutputScreen.scrollTop = consoleOutputScreen.scrollHeight;
+
+            } catch (err) {
+                consoleStatusBadge.textContent = 'Network Error';
+                consoleStatusBadge.className = 'text-[10px] font-mono px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 font-bold';
+                consolePulse.className = 'w-2.5 h-2.5 rounded-full bg-rose-500';
+                showToast('Failed to contact Command Runner API: ' + err.message, 'error');
+
+                consoleOutputScreen.innerHTML = `
+                    <div class="text-rose-400 font-bold">
+                        API REQUEST FAILED: ${escapeHtml(err.message)}
+                    </div>
+                `;
+            } finally {
+                cmdRunner.isExecuting = false;
+                cmdExecuteBtn.disabled = false;
+                cmdExecuteIcon.className = 'fas fa-play';
+                cmdExecuteText.textContent = 'Run Command';
+            }
+        });
+
         // Auto Poll every 45 seconds to keep heartbeat live
         setInterval(() => {
             fetchDevices();
@@ -2069,6 +3239,8 @@
 
         // Initial Load
         fetchDevices();
+        initCommandRunner();
     </script>
+
 </body>
 </html>

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\CommandRunnerController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DeviceLogAlertController;
 use App\Http\Controllers\LogViewerController;
@@ -28,6 +29,11 @@ Route::match(['get', 'post'], '/logs/alert/preview-print', [DeviceLogAlertContro
 Route::get('/logs/alert/employees', [DeviceLogAlertController::class, 'searchEmployees'])->name('logs.alert.employees');
 Route::get('/logs/alert/attendance-logs', [DeviceLogAlertController::class, 'fetchAttendanceLogs'])->name('logs.alert.attendance-logs');
 Route::post('/logs/alert/generate-device-logs', [DeviceLogAlertController::class, 'generateDeviceLogs'])->name('logs.alert.generate-device-logs');
+
+// Command runner routes
+Route::get('/command-runner/manifest', [CommandRunnerController::class, 'getManifest'])->name('command-runner.manifest');
+Route::get('/command-runner/employees', [CommandRunnerController::class, 'searchEmployees'])->name('command-runner.employees');
+Route::post('/command-runner/run', [CommandRunnerController::class, 'runCommand'])->name('command-runner.run');
 
 // Device push data endpoint (ZKTeco iclock) - catch all paths for debugging
 Route::any('/iclock/{any}', [DeviceController::class, 'handleDevicePush'])->where('any', '.*');

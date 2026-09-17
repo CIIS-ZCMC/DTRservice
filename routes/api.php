@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\BiometricsController;
+use App\Http\Controllers\CommandRunnerController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DtrReportController;
 use App\Http\Controllers\TimeRecordController;
@@ -54,4 +55,9 @@ Route::get('/dtr-self', [DtrReportController::class, 'dtrSelf']);
 // Biometrics duplicate templates check
 Route::get('/biometrics/check-duplicates', [BiometricsController::class, 'checkDuplicates']);
 Route::get('/biometrics/{pin}/duplicates', [BiometricsController::class, 'checkDuplicates']);
+
+// Command runner routes
+Route::get('/command-runner/manifest', [CommandRunnerController::class, 'getManifest']);
+Route::get('/command-runner/employees', [CommandRunnerController::class, 'searchEmployees']);
+Route::post('/command-runner/run', [CommandRunnerController::class, 'runCommand']);
 
