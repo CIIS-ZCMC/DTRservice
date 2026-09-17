@@ -150,8 +150,13 @@ class LogsService
             $fpVer = ((int)$fpMatches[1] === 9) ? 'v9' : 'v10';
             $device = $this->deviceRepository->findByIP($clientIp);
             if ($device) {
-                $device->update(['fp_version' => $fpVer]);
-                Log::channel('device_logs')->info("Updated device {$device->serial_number} fingerprint algorithm version to {$fpVer}");
+                try {
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'fp_version')) {
+                        $device->update(['fp_version' => $fpVer]);
+                        Log::channel('device_logs')->info("Updated device {$device->serial_number} fingerprint algorithm version to {$fpVer}");
+                    }
+                } catch (\Throwable) {
+                }
             }
             return "OK";
         }

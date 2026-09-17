@@ -330,7 +330,13 @@ class CheckDeviceFingerprints extends Command
             // 1. Detect Device Algorithm (ZKFinger 10.0 vs 9.0)
             $algoVersion = $this->detectDeviceAlgorithm($tad);
             if ($algoVersion !== 'Unknown' && $device->fp_version !== $algoVersion) {
-                $device->update(['fp_version' => $algoVersion]);
+                try {
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'fp_version')) {
+                        $device->update(['fp_version' => $algoVersion]);
+                    }
+                } catch (\Throwable) {
+                    // Safe fallback if column is not yet present on active DB
+                }
             }
 
             $algoDisplay = match ($algoVersion) {
@@ -433,7 +439,8 @@ class CheckDeviceFingerprints extends Command
                 '_algo' => $algoVersion,
             ];
         } catch (\Throwable $e) {
-            $emptyRow['status'] = '<fg=red>ERROR: ' . substr($e->getMessage(), 0, 30) . '</>';
+            \Illuminate\Support\Facades\Log::channel('device_logs')->error("inspectDevice error for {$deviceName} ({$deviceSn}): " . $e->getMessage());
+            $emptyRow['status'] = '<fg=red>ERROR: ' . substr($e->getMessage(), 0, 45) . '</>';
             return $emptyRow;
         }
     }

@@ -887,7 +887,12 @@ class DeviceController extends Controller
             if (!empty($sn) && $sn !== 'Fail!') {
                 $device = $this->resolveAndTouchDevice($sn, $request->ip());
                 if ($device && $fpVer && $device->fp_version !== $fpVer) {
-                    $device->update(['fp_version' => $fpVer]);
+                    try {
+                        if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'fp_version')) {
+                            $device->update(['fp_version' => $fpVer]);
+                        }
+                    } catch (\Throwable) {
+                    }
                 }
             }
 
@@ -938,7 +943,12 @@ class DeviceController extends Controller
             if (preg_match('/(?:~ZKFPVersion|FPVersion|ZKFPVersion)\s*=\s*([0-9]+)/i', $raw, $m)) {
                 $fpVer = ((int)$m[1] === 9) ? 'v9' : 'v10';
                 if (!empty($sn)) {
-                    Devices::where('serial_number', $sn)->update(['fp_version' => $fpVer]);
+                    try {
+                        if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'fp_version')) {
+                            Devices::where('serial_number', $sn)->update(['fp_version' => $fpVer]);
+                        }
+                    } catch (\Throwable) {
+                    }
                 }
             }
         }
