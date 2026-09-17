@@ -875,8 +875,20 @@ class DeviceController extends Controller
             $rawSn = $request->input('SN') ?? $request->input('sn') ?? $request->query('SN') ?? $request->query('sn') ?? $request->header('SN') ?? $request->header('sn');
             $sn = $rawSn !== null ? trim((string)$rawSn) : null;
 
+            // Detect fingerprint version in push headers, query or body
+            $rawBody = (string)$request->getContent();
+            $rawQuery = (string)$request->getQueryString();
+            $fpVer = null;
+            if (preg_match('/(?:~ZKFPVersion|FPVersion|ZKFPVersion)\s*=\s*([0-9]+)/i', $rawBody, $m) ||
+                preg_match('/(?:~ZKFPVersion|FPVersion|ZKFPVersion)\s*=\s*([0-9]+)/i', $rawQuery, $m)) {
+                $fpVer = ((int)$m[1] === 9) ? 'v9' : 'v10';
+            }
+
             if (!empty($sn) && $sn !== 'Fail!') {
-                $this->resolveAndTouchDevice($sn, $request->ip());
+                $device = $this->resolveAndTouchDevice($sn, $request->ip());
+                if ($device && $fpVer && $device->fp_version !== $fpVer) {
+                    $device->update(['fp_version' => $fpVer]);
+                }
             }
 
             // Extract path segment after /iclock/
@@ -921,11 +933,21 @@ class DeviceController extends Controller
         $table = strtoupper($request->input('table') ?? $request->query('table', ''));
         $raw = $request->getContent();
 
-        // User registration push
-        if ($table === 'USER') {
+        // Check if options push with FPVersion
+        if ($table === 'OPTIONS' || str_contains($raw, 'FPVersion') || str_contains($raw, '~ZKFPVersion')) {
+            if (preg_match('/(?:~ZKFPVersion|FPVersion|ZKFPVersion)\s*=\s*([0-9]+)/i', $raw, $m)) {
+                $fpVer = ((int)$m[1] === 9) ? 'v9' : 'v10';
+                if (!empty($sn)) {
+                    Devices::where('serial_number', $sn)->update(['fp_version' => $fpVer]);
+                }
+            }
+        }
+
+        // User registration push (firmwares send USER, USERINFO, or USERS)
+        if (in_array($table, ['USER', 'USERINFO', 'USERS'])) {
             $records = ZkPushParser::parseKeyValues($raw);
             foreach ($records as $record) {
-                $pin = $record['PIN'] ?? null;
+                $pin = ZkPushParser::resolveEmployeePin($record);
                 $name = $record['Name'] ?? null;
                 $pri = $record['Pri'] ?? $record['Privilege'] ?? null;
 
@@ -967,10 +989,10 @@ class DeviceController extends Controller
         }
 
         // Biometric template registration push
-        if (in_array($table, ['TEMPLATEV10', 'FINGERTMP', 'BIOPHOTO', 'BIODATA', 'FACE', 'USERPIC', 'BIOPIC', 'FINGERTMPV10', 'FP', 'FPDATA', 'TEMPLATE'])) {
+        if (in_array($table, ['TEMPLATEV10', 'FINGERTMP', 'BIOPHOTO', 'BIODATA', 'FACE', 'USERPIC', 'BIOPIC', 'FINGERTMPV10', 'FP', 'FPDATA', 'TEMPLATE', 'TEMPLATEV9'])) {
             $records = ZkPushParser::parseKeyValues($raw);
             foreach ($records as $record) {
-                $pin = $record['PIN'] ?? null;
+                $pin = ZkPushParser::resolveEmployeePin($record);
                 if (!$pin) continue;
 
                 // A. Face templates (BIODATA, FACE)
@@ -1037,7 +1059,7 @@ class DeviceController extends Controller
         $records = ZkPushParser::parseKeyValues($raw);
 
         foreach ($records as $record) {
-            $pin = $record['PIN'] ?? null;
+            $pin = ZkPushParser::resolveEmployeePin($record);
             $fid = $record['Finger_ID'] ?? $record['FID'] ?? $record['FingerID'] ?? null;
             $size = $record['Size'] ?? strlen($record['Template'] ?? $record['TMP'] ?? '');
             $valid = $record['Valid'] ?? 1;

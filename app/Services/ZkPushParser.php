@@ -44,6 +44,9 @@ class ZkPushParser
                         if ($subKey === 'PIN') {
                             $parsedRow['PIN'] = $value;
                             $parsedRow['type'] = $type;
+                        } elseif ($subKey === 'PIN2') {
+                            $parsedRow['PIN2'] = $value;
+                            $parsedRow['type'] = $type;
                         }
                     }
 
@@ -104,6 +107,49 @@ class ZkPushParser
         }
 
         return false;
+    }
+
+    /**
+     * Resolve the employee's canonical PIN from a parsed record.
+     * In ZKTeco v9 / older models:
+     * - PIN is often an internal device slot (e.g., 2842).
+     * - PIN2 is the actual employee badge number (e.g., 493).
+     * In v10 / newer models:
+     * - PIN is usually the badge number, and PIN2 may be identical or omitted.
+     * Therefore, if PIN2 is provided and positive, it takes priority as the employee badge PIN.
+     *
+     * @param array<string, mixed> $record
+     * @return int|null
+     */
+    public static function resolveEmployeePin(array $record): ?int
+    {
+        // 1. Check PIN2 first (badge/employee ID in v9/older firmware)
+        if (isset($record['PIN2']) && is_numeric($record['PIN2'])) {
+            $val = (int) $record['PIN2'];
+            if ($val > 0) {
+                return $val;
+            }
+        }
+
+        // 2. Check PIN
+        if (isset($record['PIN']) && is_numeric($record['PIN'])) {
+            $val = (int) $record['PIN'];
+            if ($val > 0) {
+                return $val;
+            }
+        }
+
+        // 3. Fallback to common aliases
+        foreach (['user_id', 'UserID', 'pin', 'pin2'] as $key) {
+            if (isset($record[$key]) && is_numeric($record[$key])) {
+                $val = (int) $record[$key];
+                if ($val > 0) {
+                    return $val;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

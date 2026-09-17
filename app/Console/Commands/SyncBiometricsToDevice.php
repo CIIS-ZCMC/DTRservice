@@ -139,10 +139,10 @@ class SyncBiometricsToDevice extends Command
         $usersQuery->chunk(100, function ($usersChunk) use ($devices, &$totalCommands, &$tableRows, $bar, $cleanUnused, $showTable, $pushTime) {
             $batch = [];
             foreach ($usersChunk as $user) {
-                $commandStrings = $this->syncService->generateUserProvisionCommands($user, $cleanUnused);
-                $cmdCount = count($commandStrings);
-
                 foreach ($devices as $device) {
+                    $commandStrings = $this->syncService->generateUserProvisionCommands($user, $cleanUnused, $device);
+                    $cmdCount = count($commandStrings);
+
                     foreach ($commandStrings as $cmd) {
                         $batch[] = [
                             'device_sn' => $device->serial_number,

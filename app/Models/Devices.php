@@ -19,9 +19,34 @@ class Devices extends Model
         'is_active',
         'is_registration',
         'for_attendance',
+        'fp_version',
         'last_seen_at',
         'last_cleared_at',
     ];
+
+    /**
+     * Get the device's fingerprint algorithm version ('v10' or 'v9').
+     */
+    public function getFingerprintAlgorithm(): string
+    {
+        $val = trim((string)($this->fp_version ?? ''));
+        if ($val === '9' || $val === '9.0' || $val === 'v9') {
+            return 'v9';
+        }
+        if ($val === '10' || $val === '10.0' || $val === 'v10') {
+            return 'v10';
+        }
+
+        // Check persistent cache fallback
+        if (!empty($this->serial_number)) {
+            $cached = cache()->get("device_algo_{$this->serial_number}");
+            if ($cached === 'v9' || $cached === 'v10') {
+                return $cached;
+            }
+        }
+
+        return 'v10';
+    }
     
     protected $casts = [
         'last_seen_at' => 'datetime',

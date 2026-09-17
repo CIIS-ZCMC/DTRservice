@@ -70,7 +70,7 @@ class LogsService
             $sourceSn = $requestSn ?? $device?->serial_number;
 
             foreach ($parsedRecords as $record) {
-                $pin = $record['PIN'] ?? null;
+                $pin = ZkPushParser::resolveEmployeePin($record);
                 $fid = $record['Finger_ID'] ?? $record['FID'] ?? $record['FingerID'] ?? null;
                 $size = $record['Size'] ?? strlen($record['Template'] ?? $record['TMP'] ?? '');
                 $valid = $record['Valid'] ?? 1;
@@ -104,7 +104,7 @@ class LogsService
             $sourceSn = $requestSn ?? $device?->serial_number;
 
             foreach ($parsedRecords as $record) {
-                $pin = $record['PIN'] ?? null;
+                $pin = ZkPushParser::resolveEmployeePin($record);
                 $name = $record['Name'] ?? null;
                 $pri = $record['Pri'] ?? $record['pri'] ?? $record['Privilege'] ?? null;
 
@@ -142,6 +142,23 @@ class LogsService
                     }
                 }
             }
+            return "OK";
+        }
+
+        // Check if line is a device handshake / configuration parameter line (e.g. ~ZKFPVersion=10, FPVersion=9, ~DeviceName=...)
+        if (preg_match('/(?:~ZKFPVersion|FPVersion|ZKFPVersion)\s*=\s*([0-9]+)/i', $line, $fpMatches)) {
+            $fpVer = ((int)$fpMatches[1] === 9) ? 'v9' : 'v10';
+            $device = $this->deviceRepository->findByIP($clientIp);
+            if ($device) {
+                $device->update(['fp_version' => $fpVer]);
+                Log::channel('device_logs')->info("Updated device {$device->serial_number} fingerprint algorithm version to {$fpVer}");
+            }
+            return "OK";
+        }
+
+        if (str_contains($line, '=') && !str_contains($line, "\t")) {
+            // Standalone key-value option or config echo (e.g. ~DeviceName=..., Stamp=..., etc.)
+            Log::channel('device_logs')->debug('Device config line received: ' . $line);
             return "OK";
         }
 

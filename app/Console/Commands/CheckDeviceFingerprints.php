@@ -329,6 +329,10 @@ class CheckDeviceFingerprints extends Command
 
             // 1. Detect Device Algorithm (ZKFinger 10.0 vs 9.0)
             $algoVersion = $this->detectDeviceAlgorithm($tad);
+            if ($algoVersion !== 'Unknown' && $device->fp_version !== $algoVersion) {
+                $device->update(['fp_version' => $algoVersion]);
+            }
+
             $algoDisplay = match ($algoVersion) {
                 'v10' => '<fg=green>v10</>',
                 'v9'  => '<fg=yellow>v9</>',

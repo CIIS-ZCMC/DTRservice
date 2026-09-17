@@ -213,7 +213,10 @@ class Biometrics extends Model
                : 'APPENDED_NEW_FINGER';
        }
 
-       $record->addOrUpdateFingerprint($fingerId, $size, $valid, $template);
+       $device = $deviceSn && \Illuminate\Support\Facades\Schema::hasTable('devices') ? \App\Models\Devices::where('serial_number', $deviceSn)->first() : null;
+       $algo = $device ? $device->getFingerprintAlgorithm() : self::getTemplateAlgorithm($template);
+
+       $record->addOrUpdateFingerprint($fingerId, $size, $valid, $template, $algo);
        $record->saveQuietly();
 
        $currentFids = [];
@@ -312,53 +315,135 @@ class Biometrics extends Model
         return true;
     }
 
-   /**
-    * Add or update fingerprint template on the current model instance.
-    */
-   public function addOrUpdateFingerprint(
-       int|string $fingerId,
-       int|string $size,
-       int|string $valid,
-       string $template
-   ): self {
-       $existing = $this->biometric;
-       $templates = [];
+    /**
+     * Determine the algorithm version ('v10' or 'v9') of a raw Base64 template string.
+     */
+    public static function getTemplateAlgorithm(string $template): string
+    {
+        $sub = substr($template, 0, 32);
 
-       if (!empty($existing) && $existing !== 'NOT_YET_REGISTERED') {
-           $decoded = json_decode($existing, true);
-           if (is_array($decoded)) {
-               $templates = $decoded;
-           }
-       }
+        // Explicit v9 prefix or markers
+        if (str_starts_with($template, 'V9_') || str_contains($template, 'ZKFP9')) {
+            return 'v9';
+        }
 
-       $fingerIdStr = (string)$fingerId;
-       $sizeStr = (string)$size;
-       $validStr = (string)$valid;
-       $templateStr = (string)$template;
+        // ZKFinger 10.0 base64 payloads commonly contain 'UzIx' or start with known v10 prefixes
+        if (str_contains($sub, 'UzIx') || str_starts_with($sub, 'SIl') || str_starts_with($sub, 'SoV') || str_starts_with($sub, 'Skt') || str_starts_with($sub, 'Ss1') || str_starts_with($sub, 'S7F')) {
+            return 'v10';
+        }
 
-       $newEntry = [
-           'Finger_ID' => $fingerIdStr,
-           'Size' => $sizeStr,
-           'Valid' => $validStr,
-           'Template' => $templateStr,
-       ];
+        $decoded = @base64_decode($sub);
+        if ($decoded !== false && (str_contains($decoded, 'SS21') || str_contains($decoded, 'ZKSS') || str_contains($decoded, 'ZKFP10'))) {
+            return 'v10';
+        }
 
-       $found = false;
-       foreach ($templates as $idx => $t) {
-           if (isset($t['Finger_ID']) && (string)$t['Finger_ID'] === $fingerIdStr) {
-               $templates[$idx] = $newEntry;
-               $found = true;
-               break;
-           }
-       }
+        // Default to v10 because ZCMC hospital fleet is predominantly ZKFinger 10.0
+        return 'v10';
+    }
 
-       if (!$found) {
-           $templates[] = $newEntry;
-       }
+    /**
+     * Get enrolled templates for this user filtered by algorithm ('v10' or 'v9').
+     * If target is v10 and user has legacy untagged templates, returns them.
+     * If target is v9 and user only has v10 templates, returns empty array to prevent -1004 error.
+     */
+    public function getTemplatesForAlgorithm(string $algo = 'v10'): array
+    {
+        if (empty($this->biometric) || $this->biometric === 'NOT_YET_REGISTERED') {
+            return [];
+        }
 
-       $this->biometric = json_encode($templates);
-       return $this;
-   }
+        $decoded = is_array($this->biometric) ? $this->biometric : json_decode($this->biometric, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $matched = [];
+        $hasTaggedVersion = false;
+
+        foreach ($decoded as $t) {
+            $tVersion = $t['Version'] ?? null;
+            if ($tVersion !== null) {
+                $hasTaggedVersion = true;
+                if ($tVersion === $algo) {
+                    $matched[] = $t;
+                }
+            } else {
+                $rawTmpl = $t['Template'] ?? $t['TMP'] ?? '';
+                $detected = self::getTemplateAlgorithm($rawTmpl);
+                if ($detected === $algo) {
+                    $matched[] = $t;
+                }
+            }
+        }
+
+        if (!empty($matched)) {
+            return $matched;
+        }
+
+        // If target is v10 and user has legacy untagged templates, allow them
+        if ($algo === 'v10' && !$hasTaggedVersion) {
+            return $decoded;
+        }
+
+        return [];
+    }
+
+    /**
+     * Add or update fingerprint template on the current model instance.
+     * Supports multi-algorithm storage: a user can hold both a v10 and v9 template for the same finger.
+     */
+    public function addOrUpdateFingerprint(
+        int|string $fingerId,
+        int|string $size,
+        int|string $valid,
+        string $template,
+        ?string $version = null
+    ): self {
+        $existing = $this->biometric;
+        $templates = [];
+
+        if (!empty($existing) && $existing !== 'NOT_YET_REGISTERED') {
+            $decoded = json_decode($existing, true);
+            if (is_array($decoded)) {
+                $templates = $decoded;
+            }
+        }
+
+        $fingerIdStr = (string)$fingerId;
+        $sizeStr = (string)$size;
+        $validStr = (string)$valid;
+        $templateStr = (string)$template;
+        $algoVersion = $version ?? self::getTemplateAlgorithm($templateStr);
+
+        $newEntry = [
+            'Finger_ID' => $fingerIdStr,
+            'Size' => $sizeStr,
+            'Valid' => $validStr,
+            'Template' => $templateStr,
+            'Version' => $algoVersion,
+        ];
+
+        $found = false;
+        foreach ($templates as $idx => $t) {
+            $tFid = (string)($t['Finger_ID'] ?? $t['FID'] ?? '');
+            $tRaw = $t['Template'] ?? $t['TMP'] ?? '';
+            $tVer = $t['Version'] ?? self::getTemplateAlgorithm($tRaw);
+
+            // Match on both Finger_ID and Algorithm Version
+            if ($tFid === $fingerIdStr && $tVer === $algoVersion) {
+                $templates[$idx] = $newEntry;
+                $found = true;
+                break;
+            }
+        }
+
+        if (!$found) {
+            $templates[] = $newEntry;
+        }
+
+        $this->biometric = json_encode($templates);
+        return $this;
+    }
 
     /**
      * Delete a specific fingerprint template from a user and optionally sync deletion to all devices.

@@ -22,12 +22,15 @@ class BiometricSyncService
      */
     public function syncUserToAll(?string $sourceSn, array $userData): int
     {
-        $pin = $userData['PIN'] ?? $userData['Pin'] ?? $userData['pin'] ?? $userData['FP PIN'] ?? null;
+        $pin = ZkPushParser::resolveEmployeePin($userData);
         if (!$pin) {
-            foreach ($userData as $k => $v) {
-                if (str_contains(strtoupper($k), 'PIN')) {
-                    $pin = $v;
-                    break;
+            $pin = $userData['PIN'] ?? $userData['Pin'] ?? $userData['pin'] ?? $userData['FP PIN'] ?? null;
+            if (!$pin) {
+                foreach ($userData as $k => $v) {
+                    if (str_contains(strtoupper($k), 'PIN')) {
+                        $pin = $v;
+                        break;
+                    }
                 }
             }
         }
@@ -60,7 +63,8 @@ class BiometricSyncService
         $grp = 1;
         $tz = 1;
 
-        $command = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
+        // Output both PIN and PIN2 so that keypad authentication succeeds on all device generations (v9 and v10)
+        $command = "DATA USER PIN={$pin}\tPIN2={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
         $entries = [];
 
         foreach ($targetDevices as $device) {
@@ -101,7 +105,10 @@ class BiometricSyncService
      */
     public function syncBiometricToAll(?string $sourceSn, string $table, array $bioData, bool $ensureUser = true): int
     {
-        $pin = $bioData['PIN'] ?? $bioData['Pin'] ?? $bioData['pin'] ?? $bioData['FP PIN'] ?? null;
+        $pin = ZkPushParser::resolveEmployeePin($bioData);
+        if (!$pin) {
+            $pin = $bioData['PIN'] ?? $bioData['Pin'] ?? $bioData['pin'] ?? $bioData['FP PIN'] ?? null;
+        }
         if (!$pin) {
             return 0;
         }
@@ -123,7 +130,7 @@ class BiometricSyncService
             $privilege = $bioModel?->privilege ?? ($bioData['Pri'] ?? 0);
             $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
 
-            $userCommand = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
+            $userCommand = "DATA USER PIN={$pin}\tPIN2={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
             foreach ($targetDevices as $device) {
                 // Avoid duplicate consecutive pending user commands
                 $hasPendingUser = $this->commandService->hasPendingUserCommand($device->serial_number, (int)$pin);
@@ -137,14 +144,22 @@ class BiometricSyncService
         // 2. Queue the biometric template update command
         $tableName = strtolower($table);
         $payloadSegments = [];
+        $isFingerprint = in_array($tableName, ['fingertmp', 'templatev10', 'fp', 'template', 'fingertmpv10', 'templatev9']);
+        $templateAlgo = null;
 
         // Standardize fingerprint template payloads (always push downstream as fingertmp so all devices accept it)
-        if (in_array($tableName, ['fingertmp', 'templatev10', 'fp', 'template', 'fingertmpv10'])) {
+        if ($isFingerprint) {
             $tableName = 'fingertmp';
             $fid = $bioData['FID'] ?? $bioData['Finger_ID'] ?? $bioData['FingerID'] ?? '0';
             $size = $bioData['Size'] ?? $bioData['size'] ?? strlen($bioData['TMP'] ?? $bioData['Template'] ?? '');
             $valid = $bioData['Valid'] ?? $bioData['valid'] ?? '1';
             $tmp = $bioData['TMP'] ?? $bioData['Template'] ?? '';
+            $sourceDevice = (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices'))
+                ? Devices::where('serial_number', $sourceSn)->first()
+                : null;
+            $templateAlgo = ($sourceDevice && $sourceDevice->fp_version === 'v9')
+                ? 'v9'
+                : \App\Models\Biometrics::getTemplateAlgorithm($tmp);
 
             $payloadSegments = [
                 "PIN={$pin}",
@@ -169,6 +184,15 @@ class BiometricSyncService
         $command = "DATA UPDATE {$tableName}\t{$payload}";
 
         foreach ($targetDevices as $device) {
+            // For fingerprints, skip devices whose algorithm does not match the template algorithm
+            // (e.g. do not push v10 binary templates to v9 terminals, avoiding -1004 error and queue stall)
+            if ($isFingerprint && $templateAlgo) {
+                $devAlgo = $device->getFingerprintAlgorithm();
+                if ($devAlgo !== $templateAlgo) {
+                    Log::channel('device_logs')->debug("BiometricSyncService :: Skipping template sync to {$device->serial_number} due to algorithm mismatch (template={$templateAlgo}, device={$devAlgo})");
+                    continue;
+                }
+            }
             $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
 
@@ -190,39 +214,50 @@ class BiometricSyncService
      *
      * @param \App\Models\Biometrics $bioModel
      * @param bool $cleanUnusedFingers Whether to delete unenrolled finger slots (0-9)
+     * @param \App\Models\Devices|null $targetDevice Target device (used to match fingerprint algorithm v10 vs v9)
      * @return array Array of command strings
      */
-    public function generateUserProvisionCommands(\App\Models\Biometrics $bioModel, bool $cleanUnusedFingers = true): array
-    {
+    public function generateUserProvisionCommands(
+        \App\Models\Biometrics $bioModel,
+        bool $cleanUnusedFingers = true,
+        ?\App\Models\Devices $targetDevice = null
+    ): array {
         $pin = (int)$bioModel->biometric_id;
         $name = $bioModel->name ?? 'Unknown';
         $privilege = $bioModel->privilege ?? 0;
         $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
         $commands = [];
 
-        // 1. Create or ensure user profile exists on device (TZ=1 for 24/7 all-access, Grp=1)
-        $commands[] = "DATA USER PIN={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
+        // 1. Create or ensure user profile exists on device (TZ=1 for 24/7 all-access, Grp=1, dual PIN for v9/v10 cross-compatibility)
+        $commands[] = "DATA USER PIN={$pin}\tPIN2={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
 
         // 2. Fingerprints
         $enrolledFids = [];
         $templates = [];
 
+        $targetAlgo = $targetDevice ? $targetDevice->getFingerprintAlgorithm() : null;
+
         if (!empty($bioModel->biometric) && $bioModel->biometric !== 'NOT_YET_REGISTERED') {
-            $parsed = is_array($bioModel->biometric) ? $bioModel->biometric : json_decode($bioModel->biometric, true);
-            if (is_string($parsed)) {
-                $parsed = json_decode($parsed, true);
-            }
-            if (is_array($parsed)) {
-                $templates = $parsed;
-                foreach ($templates as $t) {
-                    $fid = (int)($t['Finger_ID'] ?? $t['FID'] ?? 0);
-                    $enrolledFids[$fid] = true;
+            if ($targetAlgo) {
+                $templates = $bioModel->getTemplatesForAlgorithm($targetAlgo);
+            } else {
+                $parsed = is_array($bioModel->biometric) ? $bioModel->biometric : json_decode($bioModel->biometric, true);
+                if (is_string($parsed)) {
+                    $parsed = json_decode($parsed, true);
                 }
+                if (is_array($parsed)) {
+                    $templates = $parsed;
+                }
+            }
+
+            foreach ($templates as $t) {
+                $fid = (int)($t['Finger_ID'] ?? $t['FID'] ?? 0);
+                $enrolledFids[$fid] = true;
             }
         }
 
         // Clean out any finger slots (0-9) that are not enrolled in DB
-        // When $cleanUnusedFingers is true and the user has fingerprint records
+        // When $cleanUnusedFingers is true and the user has matching fingerprint records
         if ($cleanUnusedFingers && !empty($enrolledFids)) {
             for ($slot = 0; $slot <= 9; $slot++) {
                 if (!isset($enrolledFids[$slot])) {
@@ -290,7 +325,8 @@ class BiometricSyncService
             return 0;
         }
 
-        $commandStrings = $this->generateUserProvisionCommands($bioModel, $cleanUnusedFingers);
+        $targetDevice = Devices::where('serial_number', $deviceSn)->first();
+        $commandStrings = $this->generateUserProvisionCommands($bioModel, $cleanUnusedFingers, $targetDevice);
         if (empty($commandStrings)) {
             return 0;
         }
