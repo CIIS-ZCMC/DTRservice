@@ -252,4 +252,29 @@ test('ghost slot cleanup queues ADMS deletion across both badge PIN and internal
     expect($cmdStrings)->toContain("DATA DELETE FINGERTMP\tPIN=1379\tFID=6");
 });
 
+test('missing slot fix queues template push for both badge PIN and internal terminal PIN', function () {
+    $missingFids = [4, 5];
+    $candPins = [498, 1434];
+    $deviceSn = 'TEST_SN_001';
+
+    $commandService = app(\App\Services\DeviceCommandService::class);
+    $commandService->clearCommands();
+
+    foreach ($missingFids as $mfid) {
+        foreach ($candPins as $cPin) {
+            $cmd = "DATA UPDATE fingertmp\tPIN={$cPin}\tFID={$mfid}\tSize=540\tValid=1\tTMP=TEST_TMP";
+            $commandService->queueCommand($deviceSn, $cmd);
+        }
+    }
+
+    $allCommands = $commandService->getAllCommands($deviceSn);
+    expect($allCommands)->toHaveCount(4);
+
+    $cmdStrings = array_column($allCommands, 'command');
+    expect($cmdStrings)->toContain("DATA UPDATE fingertmp\tPIN=498\tFID=4\tSize=540\tValid=1\tTMP=TEST_TMP");
+    expect($cmdStrings)->toContain("DATA UPDATE fingertmp\tPIN=1434\tFID=4\tSize=540\tValid=1\tTMP=TEST_TMP");
+    expect($cmdStrings)->toContain("DATA UPDATE fingertmp\tPIN=498\tFID=5\tSize=540\tValid=1\tTMP=TEST_TMP");
+    expect($cmdStrings)->toContain("DATA UPDATE fingertmp\tPIN=1434\tFID=5\tSize=540\tValid=1\tTMP=TEST_TMP");
+});
+
 

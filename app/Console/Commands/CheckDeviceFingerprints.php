@@ -198,13 +198,76 @@ class CheckDeviceFingerprints extends Command
 
             foreach ($devicesToFix as $fixTarget) {
                 $targetDev = $fixTarget['device'];
-                $candPins = $fixTarget['candidate_pins'];
-                $ghostFids = $fixTarget['ghost_fids'];
+                $candPins = $fixTarget['candidate_pins'] ?? [$pin];
+                $ghostFids = $fixTarget['ghost_fids'] ?? [];
+                $missingFids = $fixTarget['missing_fids'] ?? [];
+                $tad = $fixTarget['tad'] ?? null;
 
-                // 1. Sync User profile and DB templates
+                // 1. Sync User profile and DB templates (enforces Grp=1, TZ=1 on badge PIN)
                 $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $pin, false);
 
-                // 2. Queue ADMS deletion for all ghost slots across ALL candidate PINs (badge PIN + internal terminal PIN)
+                // 2. If the terminal has an internal PIN distinct from badge PIN, ensure Grp=1 TZ=1 is set on that internal PIN too
+                if ($bioUser) {
+                    $name = $bioUser->name ?? 'Unknown';
+                    $privilege = $bioUser->privilege ?? 0;
+                    $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
+                    foreach ($candPins as $cPin) {
+                        if ($cPin !== $pin && $cPin > 0) {
+                            $userCmd = "DATA USER PIN={$cPin}\tPIN2={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
+                            $this->commandService->queueCommand($targetDev->serial_number, $userCmd);
+                            $cmdCount++;
+                        }
+                    }
+                }
+
+                // 3. Push missing templates to ALL candidate PINs (including internal terminal PIN)
+                if ($bioUser && !empty($missingFids)) {
+                    $devAlgo = $targetDev->getFingerprintAlgorithm();
+                    $targetTemplates = $bioUser->getTemplatesForAlgorithm($devAlgo);
+                    $templatesByFid = [];
+                    foreach ($targetTemplates as $t) {
+                        $fid = (int)($t['Finger_ID'] ?? $t['FID'] ?? 0);
+                        $templatesByFid[$fid] = $t;
+                    }
+
+                    foreach ($missingFids as $mfid) {
+                        $t = $templatesByFid[$mfid] ?? null;
+                        if ($t) {
+                            $size = $t['Size'] ?? strlen($t['Template'] ?? $t['TMP'] ?? '');
+                            $valid = $t['Valid'] ?? '1';
+                            $tmp = $t['Template'] ?? $t['TMP'] ?? '';
+
+                            // Instant SOAP push if terminal is live
+                            if ($tad) {
+                                try {
+                                    foreach ($candPins as $cPin) {
+                                        $tad->set_user_template([
+                                            'pin' => $cPin,
+                                            'finger_id' => $mfid,
+                                            'size' => $size,
+                                            'valid' => $valid,
+                                            'template' => $tmp,
+                                        ]);
+                                    }
+                                    $this->line(" • <fg=green>[INSTANT SOAP PUSH]</> Pushed missing Slot {$mfid} to {$targetDev->device_name} ({$targetDev->serial_number})");
+                                } catch (\Throwable) {
+                                    // Fallback to ADMS queued command below
+                                }
+                            }
+
+                            // Queue ADMS DATA UPDATE for internal PINs
+                            foreach ($candPins as $cPin) {
+                                if ($cPin !== $pin && $cPin > 0) {
+                                    $cmd = "DATA UPDATE fingertmp\tPIN={$cPin}\tFID={$mfid}\tSize={$size}\tValid={$valid}\tTMP={$tmp}";
+                                    $this->commandService->queueCommand($targetDev->serial_number, $cmd);
+                                    $cmdCount++;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 4. Queue ADMS deletion for all ghost slots across ALL candidate PINs (badge PIN + internal terminal PIN)
                 foreach ($ghostFids as $gfid) {
                     foreach ($candPins as $cPin) {
                         $cmd = "DATA DELETE FINGERTMP\tPIN={$cPin}\tFID={$gfid}";
