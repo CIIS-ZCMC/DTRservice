@@ -7,6 +7,19 @@ use Illuminate\Database\Eloquent\Model;
 
 class Biometrics extends Model
 {
+    public const FINGER_NAMES = [
+        0 => 'Right Thumb',
+        1 => 'Right Index',
+        2 => 'Right Middle',
+        3 => 'Right Ring',
+        4 => 'Right Little',
+        5 => 'Left Thumb',
+        6 => 'Left Index',
+        7 => 'Left Middle',
+        8 => 'Left Ring',
+        9 => 'Left Little',
+    ];
+
    protected $table = "biometrics";
 
    protected $fillable = [
@@ -512,5 +525,322 @@ class Biometrics extends Model
         return ExternalSchedule::where('external_employee_id', $externalEmployee->id)
             ->where('dtr_date', $date)
             ->first();
+    }
+
+    /**
+     * Parse and extract structured fingerprint templates from raw/json biometric column.
+     * Supports both modern (Finger_ID, Template, Version, Size) and legacy (FID, TMP) formats.
+     *
+     * @param mixed $biometricData
+     * @return array<int, array{finger_id: string, finger_name: string, template: string, size: int, valid: string, version: string, hash: string}>
+     */
+    public static function extractFingerprintTemplates(mixed $biometricData): array
+    {
+        if (empty($biometricData) || $biometricData === 'NOT_YET_REGISTERED') {
+            return [];
+        }
+
+        $decoded = is_array($biometricData) ? $biometricData : json_decode((string)$biometricData, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        $templates = [];
+        foreach ($decoded as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $fid = (string)($item['Finger_ID'] ?? $item['FID'] ?? $item['finger_id'] ?? $item['fid'] ?? '');
+            $rawTemplate = (string)($item['Template'] ?? $item['TMP'] ?? $item['template'] ?? $item['tmp'] ?? '');
+            $rawTemplate = trim($rawTemplate);
+
+            if ($rawTemplate === '') {
+                continue;
+            }
+
+            $fingerInt = is_numeric($fid) ? (int)$fid : null;
+            $fingerName = $fingerInt !== null ? (self::FINGER_NAMES[$fingerInt] ?? "Slot {$fid}") : "Slot {$fid}";
+            $size = (int)($item['Size'] ?? $item['size'] ?? strlen($rawTemplate));
+            $valid = (string)($item['Valid'] ?? $item['valid'] ?? '1');
+            $version = (string)($item['Version'] ?? $item['version'] ?? self::getTemplateAlgorithm($rawTemplate));
+
+            $templates[] = [
+                'finger_id' => $fid,
+                'finger_name' => $fingerName,
+                'template' => $rawTemplate,
+                'size' => $size,
+                'valid' => $valid,
+                'version' => $version,
+                'hash' => md5($rawTemplate),
+            ];
+        }
+
+        return $templates;
+    }
+
+    /**
+     * Find duplicate/identical biometric fingerprint templates for a specific employee PIN.
+     * Searches all other enrolled users in the biometrics table to detect identical templates.
+     *
+     * @param int|string $pin
+     * @return array
+     */
+    public static function findDuplicateTemplates(int|string $pin): array
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            return [
+                'success' => false,
+                'error' => 'biometrics table does not exist',
+                'target_pin' => (int)$pin,
+            ];
+        }
+
+        $target = self::where('biometric_id', (int)$pin)->first();
+        if (!$target) {
+            return [
+                'success' => false,
+                'error' => "Biometric record for PIN {$pin} was not found in the database.",
+                'target_pin' => (int)$pin,
+            ];
+        }
+
+        $targetTemplates = self::extractFingerprintTemplates($target->biometric);
+
+        $enrolledFingers = array_map(function ($t) {
+            return [
+                'finger_id' => $t['finger_id'],
+                'finger_name' => $t['finger_name'],
+                'size' => $t['size'],
+                'version' => $t['version'],
+                'preview' => substr($t['template'], 0, 16) . '...' . substr($t['template'], -10),
+            ];
+        }, $targetTemplates);
+
+        if (empty($targetTemplates)) {
+            return [
+                'success' => true,
+                'target_pin' => (int)$pin,
+                'target_name' => $target->name,
+                'enrolled_templates_count' => 0,
+                'enrolled_fingers' => [],
+                'has_duplicates' => false,
+                'duplicates_count' => 0,
+                'internal_duplicates' => [],
+                'duplicates' => [],
+                'message' => "PIN {$pin} ({$target->name}) does not have any enrolled fingerprint templates.",
+            ];
+        }
+
+        // Check internal duplicate fingers within target PIN itself
+        $internalDuplicates = [];
+        $targetHashesSeen = [];
+        foreach ($targetTemplates as $t) {
+            $h = $t['hash'];
+            if (isset($targetHashesSeen[$h])) {
+                $prev = $targetHashesSeen[$h];
+                $internalDuplicates[] = [
+                    'finger_id_1' => $prev['finger_id'],
+                    'finger_name_1' => $prev['finger_name'],
+                    'finger_id_2' => $t['finger_id'],
+                    'finger_name_2' => $t['finger_name'],
+                    'algorithm' => $t['version'],
+                    'size' => $t['size'],
+                    'match_type' => 'INTERNAL_SAME_PIN_DUPLICATE',
+                ];
+            } else {
+                $targetHashesSeen[$h] = $t;
+            }
+        }
+
+        // Build target hash lookup map: hash => array of target templates
+        $targetHashMap = [];
+        foreach ($targetTemplates as $t) {
+            $targetHashMap[$t['hash']][] = $t;
+        }
+
+        // Search through all other records in the biometrics table
+        $duplicates = [];
+        $otherRecords = self::where('biometric_id', '!=', (int)$pin)
+            ->whereNotNull('biometric')
+            ->where('biometric', '!=', '')
+            ->where('biometric', '!=', 'NOT_YET_REGISTERED')
+            ->cursor(['id', 'biometric_id', 'name', 'biometric']);
+
+        foreach ($otherRecords as $other) {
+            $otherTemplates = self::extractFingerprintTemplates($other->biometric);
+            foreach ($otherTemplates as $otherTmpl) {
+                $otherHash = $otherTmpl['hash'];
+                if (isset($targetHashMap[$otherHash])) {
+                    foreach ($targetHashMap[$otherHash] as $matchingTarget) {
+                        $duplicates[] = [
+                            'target_pin' => (int)$pin,
+                            'target_name' => $target->name,
+                            'target_finger_id' => $matchingTarget['finger_id'],
+                            'target_finger_name' => $matchingTarget['finger_name'],
+                            'matched_pin' => (int)$other->biometric_id,
+                            'matched_name' => $other->name ?? 'Unknown',
+                            'matched_finger_id' => $otherTmpl['finger_id'],
+                            'matched_finger_name' => $otherTmpl['finger_name'],
+                            'is_same_finger_slot' => ((string)$matchingTarget['finger_id'] === (string)$otherTmpl['finger_id']),
+                            'algorithm' => $matchingTarget['version'] ?: $otherTmpl['version'],
+                            'size' => $matchingTarget['size'],
+                            'match_type' => 'EXACT_TEMPLATE_IDENTICAL',
+                            'template_preview' => substr($matchingTarget['template'], 0, 16) . '...' . substr($matchingTarget['template'], -10),
+                        ];
+                    }
+                }
+            }
+        }
+
+        return [
+            'success' => true,
+            'target_pin' => (int)$pin,
+            'target_name' => $target->name,
+            'enrolled_templates_count' => count($targetTemplates),
+            'enrolled_fingers' => $enrolledFingers,
+            'has_duplicates' => (count($duplicates) > 0 || count($internalDuplicates) > 0),
+            'duplicates_count' => count($duplicates),
+            'internal_duplicates' => $internalDuplicates,
+            'duplicates' => $duplicates,
+        ];
+    }
+
+    /**
+     * Scan entire biometrics table to find all duplicate fingerprint templates across all PINs.
+     *
+     * @return array
+     */
+    public static function findAllDuplicateTemplates(): array
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            return [];
+        }
+
+        $allRecords = self::whereNotNull('biometric')
+            ->where('biometric', '!=', '')
+            ->where('biometric', '!=', 'NOT_YET_REGISTERED')
+            ->cursor(['id', 'biometric_id', 'name', 'biometric']);
+
+        $templateMap = [];
+
+        foreach ($allRecords as $record) {
+            $templates = self::extractFingerprintTemplates($record->biometric);
+            foreach ($templates as $t) {
+                $templateMap[$t['hash']][] = [
+                    'pin' => (int)$record->biometric_id,
+                    'name' => $record->name ?? 'Unknown',
+                    'finger_id' => $t['finger_id'],
+                    'finger_name' => $t['finger_name'],
+                    'size' => $t['size'],
+                    'version' => $t['version'],
+                    'template_preview' => substr($t['template'], 0, 16) . '...' . substr($t['template'], -10),
+                ];
+            }
+        }
+
+        $duplicateGroups = [];
+        foreach ($templateMap as $hash => $entries) {
+            $uniquePins = array_unique(array_column($entries, 'pin'));
+            if (count($uniquePins) > 1 || count($entries) > 1) {
+                $duplicateGroups[] = [
+                    'template_hash' => $hash,
+                    'algorithm' => $entries[0]['version'] ?? 'v10',
+                    'size' => $entries[0]['size'] ?? 0,
+                    'template_preview' => $entries[0]['template_preview'] ?? '',
+                    'unique_pins_count' => count($uniquePins),
+                    'pins_involved' => array_values($uniquePins),
+                    'entries_count' => count($entries),
+                    'entries' => $entries,
+                ];
+            }
+        }
+
+        return $duplicateGroups;
+    }
+
+    /**
+     * Search the biometrics table to find identical matches for a set of given templates.
+     * Useful for checking templates extracted from a physical terminal or DB against other enrolled users.
+     *
+     * @param array $templates List of templates, each containing at least 'template' and optional metadata ('finger_id', 'source', etc.)
+     * @param int|string|null $excludePin Optional PIN to exclude from matches (usually the target employee PIN)
+     * @return array Matches found with details of the matched PIN, slot, and employee name
+     */
+    public static function findMatchesForTemplates(array $templates, int|string|null $excludePin = null): array
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics') || empty($templates)) {
+            return [];
+        }
+
+        // Build a normalized template map for incoming templates: hash => array of templates
+        $targetHashMap = [];
+        foreach ($templates as $t) {
+            $rawTmpl = trim((string)($t['template'] ?? $t['Template'] ?? $t['TMP'] ?? ''));
+            if ($rawTmpl === '') {
+                continue;
+            }
+            $hash = md5($rawTmpl);
+            $targetHashMap[$hash][] = [
+                'finger_id' => (string)($t['finger_id'] ?? $t['Finger_ID'] ?? $t['FID'] ?? '0'),
+                'finger_name' => $t['finger_name'] ?? (self::FINGER_NAMES[(int)($t['finger_id'] ?? 0)] ?? "Slot " . ($t['finger_id'] ?? 0)),
+                'size' => (int)($t['size'] ?? $t['Size'] ?? strlen($rawTmpl)),
+                'version' => (string)($t['version'] ?? $t['Version'] ?? self::getTemplateAlgorithm($rawTmpl)),
+                'template' => $rawTmpl,
+                'source' => $t['source'] ?? 'device',
+                'device_sn' => $t['device_sn'] ?? null,
+                'device_name' => $t['device_name'] ?? null,
+                'is_ghost' => (bool)($t['is_ghost'] ?? false),
+            ];
+        }
+
+        if (empty($targetHashMap)) {
+            return [];
+        }
+
+        $query = self::whereNotNull('biometric')
+            ->where('biometric', '!=', '')
+            ->where('biometric', '!=', 'NOT_YET_REGISTERED');
+
+        if ($excludePin !== null) {
+            $query->where('biometric_id', '!=', (int)$excludePin);
+        }
+
+        $records = $query->cursor(['id', 'biometric_id', 'name', 'biometric']);
+        $matches = [];
+
+        foreach ($records as $other) {
+            $otherTemplates = self::extractFingerprintTemplates($other->biometric);
+            foreach ($otherTemplates as $otherTmpl) {
+                $otherHash = $otherTmpl['hash'];
+                if (isset($targetHashMap[$otherHash])) {
+                    foreach ($targetHashMap[$otherHash] as $targetTmpl) {
+                        // Confirm exact template string match
+                        if ($targetTmpl['template'] === $otherTmpl['template']) {
+                            $matches[] = [
+                                'target_finger_id' => $targetTmpl['finger_id'],
+                                'target_finger_name' => $targetTmpl['finger_name'],
+                                'target_source' => $targetTmpl['source'],
+                                'target_device_sn' => $targetTmpl['device_sn'],
+                                'target_device_name' => $targetTmpl['device_name'],
+                                'is_ghost_on_device' => $targetTmpl['is_ghost'],
+                                'matched_pin' => (int)$other->biometric_id,
+                                'matched_name' => $other->name ?? 'Unknown',
+                                'matched_finger_id' => (string)$otherTmpl['finger_id'],
+                                'matched_finger_name' => $otherTmpl['finger_name'],
+                                'is_same_finger_slot' => ((string)$targetTmpl['finger_id'] === (string)$otherTmpl['finger_id']),
+                                'algorithm' => $otherTmpl['version'] ?: $targetTmpl['version'],
+                                'size' => $targetTmpl['size'],
+                                'template_hash' => $otherHash,
+                                'match_type' => 'EXACT_TEMPLATE_IDENTICAL',
+                                'template_preview' => substr($targetTmpl['template'], 0, 16) . '...' . substr($targetTmpl['template'], -10),
+                            ];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $matches;
     }
 }

@@ -61,6 +61,12 @@ Recent updates to the **ZCMC DTRService** introduce centralized biometric templa
 * **Automated Compressed Archive:** Pruned records are streamed to `.json.gz` files in `storage/app/archive/` before removal, cutting storage footprint by 90%+ while preserving permanent historical audit trails.
 * **DTR Tables Untouched:** All computed attendance entries in the `dtr` table are permanently preserved.
 
+### 9. 🔍 Real-Time Device Template Matching & Cross-PIN Duplicate Detection
+* **Real-Time Terminal Template Extraction:** Connects to physical biometric terminals in real-time via TAD/SOAP to extract full biometric fingerprint payloads (slots 0–9) for any employee PIN.
+* **Cross-PIN Conflict Detection:** Evaluates extracted terminal templates (including local ghost slots) against all other employee PINs in the central database to detect 100% identical fingerprint templates (e.g. PIN 1162 slot 9 matching PIN 8084).
+* **Direct Side-by-Side Compare (`--compare-pin=`):** Compare two specific PINs directly across physical terminals and the central masterlist.
+* **Automated Ghost & Duplicate Purging (`--clean`):** Instantly queues ADMS `DATA DELETE FINGERTMP` commands (and instant SOAP purge) to remove conflicting slots from terminals.
+
 ---
 
 ## 🛠️ Quick Reference: Management Commands
@@ -80,6 +86,10 @@ Recent updates to the **ZCMC DTRService** introduce centralized biometric templa
 | **Inspect Fingers Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices` |
 | **Auto-Fix Missing Templates & Ghosts Across ALL** | `php artisan biometrics:check-device <PIN> --all-devices --fix` |
 | **Inspect & Purge Ghost Slots Across ALL** | `php artisan biometrics:check-device <PIN> --all-devices --clean` |
+| **Detect Identical Templates Matching Other PINs** | `php artisan biometrics:check-device-match <PIN>` |
+| **Purge Conflicting Duplicate Slots from Terminals** | `php artisan biometrics:check-device-match <PIN> --clean` |
+| **Compare Two PINs Directly on Device/DB** | `php artisan biometrics:check-device-match <PIN> --compare-pin=<OTHER_PIN>` |
+| **Database Masterlist Duplicate Search** | `php artisan biometrics:find-duplicates <PIN>` |
 | **Delete Specific Fingerprint Globally** | `php artisan biometrics:delete-finger <PIN> <FID>` |
 | **Reconstruct Templates from Logs** | `php artisan biometrics:import-from-logs --sync-devices` |
 | **Run Full Test Suite** | `php artisan test` |

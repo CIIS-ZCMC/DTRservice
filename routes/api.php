@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\BiometricsController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DtrReportController;
 use App\Http\Controllers\TimeRecordController;
@@ -49,3 +50,8 @@ Route::middleware('dtr.token')->group(function () {
 
 // DTR Self-service
 Route::get('/dtr-self', [DtrReportController::class, 'dtrSelf']);
+
+// Biometrics duplicate templates check
+Route::get('/biometrics/check-duplicates', [BiometricsController::class, 'checkDuplicates']);
+Route::get('/biometrics/{pin}/duplicates', [BiometricsController::class, 'checkDuplicates']);
+

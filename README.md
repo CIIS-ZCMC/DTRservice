@@ -50,6 +50,10 @@ If logs were missed by the server or an offline/misconfigured terminal needs its
 | `php artisan biometrics:sync-device <SN>` | Provision full DB masterlist to a specific device |
 | `php artisan biometrics:sync-device <SN> --pin=<PIN>` | Provision a specific employee PIN to a device |
 | `php artisan biometrics:sync-device --all-devices` | Sync DB masterlist across all active devices |
+| `php artisan biometrics:check-device <PIN> --all-devices` | Inspect live registered finger slots and auto-fix/clean on devices |
+| `php artisan biometrics:check-device-match <PIN>` | Inspect terminal templates in real-time and detect identical templates matching other PINs |
+| `php artisan biometrics:check-device-match <PIN> --clean` | Automatically purge conflicting duplicate/ghost slots from physical terminals |
+| `php artisan biometrics:find-duplicates <PIN>` | Search database masterlist for identical templates against other employees |
 | `php artisan biometrics:delete-finger <PIN> <FID>` | Delete specific fingerprint across all connected devices |
 | `php artisan biometrics:import-from-logs` | Recover and reconstruct dropped templates from raw logs |
 | `php artisan dtr:process-records` | Compute daily time records |

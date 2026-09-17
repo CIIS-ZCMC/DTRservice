@@ -177,6 +177,11 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 | **Force Auto-Fix (Bypass Confirmation Prompt)** | `php artisan biometrics:check-device <PIN> --all-devices --fix --force` |
 | **Inspect & Purge Ghost Fingers on Device** | `php artisan biometrics:check-device <PIN> <SERIAL_NUMBER> --clean` |
 | **Inspect & Purge Ghosts Across ALL Devices** | `php artisan biometrics:check-device <PIN> --all-devices --clean` |
+| **Detect Identical Templates Matching Other PINs** | `php artisan biometrics:check-device-match <PIN>` |
+| **Check Identical Templates on Specific Terminal** | `php artisan biometrics:check-device-match <PIN> <SERIAL_NUMBER>` |
+| **Direct Template Comparison Between Two PINs** | `php artisan biometrics:check-device-match <PIN> --compare-pin=<OTHER_PIN>` |
+| **Purge Duplicate/Conflicting Slots from Device** | `php artisan biometrics:check-device-match <PIN> --clean` |
+| **Database Masterlist Duplicate Search** | `php artisan biometrics:find-duplicates <PIN>` |
 | **Check Live Command Queue & Sync Status** | `php artisan biometrics:command-status` |
 | **Instantly Stop & Clear Command Queue** | `php artisan biometrics:clear-queue` |
 | **Purge User Profile from All Devices** | `php artisan biometrics:delete-user <PIN> --all-devices` |
@@ -254,6 +259,35 @@ php artisan biometrics:check-device 493 --all-devices --clean
 # Force purge ghosts without confirmation prompt:
 php artisan biometrics:check-device 493 --all-devices --clean --force
 ```
+
+#### 6. Inspect Device & Database for Identical Template Duplicates Across PINs
+Connects directly to physical terminals in real-time to extract raw enrolled fingerprint templates (slots 0–9) and checks if any template is **100% identical to another employee's PIN** (e.g. **PIN 1162 slot 9** matching **PIN 8084**):
+
+```bash
+# Inspect PIN 1162 across all active devices and detect matches with any other PIN:
+php artisan biometrics:check-device-match 1162
+
+# Inspect a specific physical device:
+php artisan biometrics:check-device-match 1162 UCR6254000009
+
+# Compare directly between two specific PINs (e.g. PIN 1162 vs PIN 8084) on devices and DB:
+php artisan biometrics:check-device-match 1162 --compare-pin=8084
+
+# Automatically purge detected conflicting duplicate/ghost slots from physical devices:
+php artisan biometrics:check-device-match 1162 --clean
+
+# Force clean without confirmation prompt:
+php artisan biometrics:check-device-match 1162 --clean --force
+
+# Inspect database templates only (fast mode, skips physical terminal network queries):
+php artisan biometrics:check-device-match 1162 --db-only
+
+# Output results in structured JSON format:
+php artisan biometrics:check-device-match 1162 --json
+```
+
+> **Why Identical Fingerprint Templates Across PINs Must Be Resolved:**  
+> When a biometric terminal has identical fingerprint templates registered under two different PINs (e.g. PIN 1162 and PIN 8084), the terminal's 1:N recognition algorithm cannot distinguish between the two employees. This causes punches to be misattributed to the wrong employee or discarded, leading to missing attendance logs. Clean conflicting slots using the `--clean` flag or permanently delete via `php artisan biometrics:delete-finger <PIN> <FID>`.
 
 ---
 

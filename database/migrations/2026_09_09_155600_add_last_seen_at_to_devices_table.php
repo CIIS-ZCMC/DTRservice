@@ -11,13 +11,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        if (Schema::hasTable('devices') && !Schema::hasColumn('devices', 'last_cleared_at')) {
+        if (Schema::hasTable('devices') && !Schema::hasColumn('devices', 'last_seen_at')) {
             Schema::table('devices', function (Blueprint $table) {
-                if (Schema::hasColumn('devices', 'last_seen_at')) {
-                    $table->timestamp('last_cleared_at')->nullable()->after('last_seen_at');
-                } else {
-                    $table->timestamp('last_cleared_at')->nullable();
-                }
+                $table->dateTime('last_seen_at')->nullable()->after('is_active');
             });
         }
     }
@@ -27,9 +23,9 @@ return new class extends Migration
      */
     public function down(): void
     {
-        if (Schema::hasTable('devices') && Schema::hasColumn('devices', 'last_cleared_at')) {
+        if (Schema::hasTable('devices') && Schema::hasColumn('devices', 'last_seen_at')) {
             Schema::table('devices', function (Blueprint $table) {
-                $table->dropColumn('last_cleared_at');
+                $table->dropColumn('last_seen_at');
             });
         }
     }

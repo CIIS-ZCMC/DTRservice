@@ -14,6 +14,7 @@ use App\Services\ZkPushParser;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class DeviceController extends Controller
 {
@@ -32,8 +33,9 @@ class DeviceController extends Controller
      */
     public function managementView()
     {
+        $hasLastSeen = Schema::hasColumn('devices', 'last_seen_at');
         $totalDevices = Devices::count();
-        $onlineDevices = Devices::where('last_seen_at', '>=', now()->subMinutes(2))->count();
+        $onlineDevices = $hasLastSeen ? Devices::where('last_seen_at', '>=', now()->subMinutes(2))->count() : 0;
         $offlineDevices = $totalDevices - $onlineDevices;
         $registeringDevices = Devices::where('is_registration', 1)->count();
         $operatingDevices = $totalDevices - $registeringDevices;
@@ -69,16 +71,24 @@ class DeviceController extends Controller
                 });
             }
 
+            $hasLastSeen = Schema::hasColumn('devices', 'last_seen_at');
+
             // Status filter
             $status = $request->input('status', 'all');
             if ($status === 'online') {
-                $query->whereNotNull('last_seen_at')
-                      ->where('last_seen_at', '>=', now()->subMinutes(2));
+                if ($hasLastSeen) {
+                    $query->whereNotNull('last_seen_at')
+                          ->where('last_seen_at', '>=', now()->subMinutes(2));
+                } else {
+                    $query->whereRaw('1 = 0');
+                }
             } elseif ($status === 'offline') {
-                $query->where(function ($q) {
-                    $q->whereNull('last_seen_at')
-                      ->orWhere('last_seen_at', '<', now()->subMinutes(2));
-                });
+                if ($hasLastSeen) {
+                    $query->where(function ($q) {
+                        $q->whereNull('last_seen_at')
+                          ->orWhere('last_seen_at', '<', now()->subMinutes(2));
+                    });
+                }
             }
 
             // Device type / role filter
@@ -112,7 +122,10 @@ class DeviceController extends Controller
             // Dynamic Sorting
             $sortBy = $request->input('sort_by', 'id');
             $sortDir = strtolower($request->input('sort_dir', 'asc')) === 'desc' ? 'desc' : 'asc';
-            $allowedSort = ['id', 'device_name', 'ip_address', 'last_seen_at', 'is_active', 'is_registration'];
+            $allowedSort = ['id', 'device_name', 'ip_address', 'is_active', 'is_registration'];
+            if ($hasLastSeen) {
+                $allowedSort[] = 'last_seen_at';
+            }
             if (in_array($sortBy, $allowedSort)) {
                 $query->orderBy($sortBy, $sortDir);
             } else {
@@ -121,7 +134,7 @@ class DeviceController extends Controller
 
             // KPI Stats calculated across entire device inventory
             $totalDevices = Devices::count();
-            $onlineDevices = Devices::where('last_seen_at', '>=', now()->subMinutes(2))->count();
+            $onlineDevices = $hasLastSeen ? Devices::where('last_seen_at', '>=', now()->subMinutes(2))->count() : 0;
             $offlineDevices = $totalDevices - $onlineDevices;
             $registeringDevices = Devices::where('is_registration', 1)->count();
             $operatingDevices = $totalDevices - $registeringDevices;
