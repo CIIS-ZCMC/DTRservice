@@ -264,6 +264,36 @@ class DeviceCommandService
             return true;
         }
 
+        // Fast non-blocking check: if file already starts with '{' and ends with '\n', it is already clean NDJSON
+        $fpQuick = @fopen($filePath, 'rb');
+        if ($fpQuick) {
+            clearstatcache(true, $filePath);
+            $size = filesize($filePath);
+            if ($size === 0) {
+                fclose($fpQuick);
+                return true;
+            }
+
+            $readLen = min($size, 1024);
+            $chunk = fread($fpQuick, $readLen);
+            if ($chunk !== false) {
+                $trimmed = ltrim($chunk);
+                if ($trimmed !== '' && $trimmed[0] === '{') {
+                    // Check if last byte is newline
+                    fseek($fpQuick, -1, SEEK_END);
+                    $lastChar = fgetc($fpQuick);
+                    fclose($fpQuick);
+                    if ($lastChar === "\n") {
+                        return true; // Already 100% clean NDJSON! No write lock or full file read needed.
+                    }
+                } else {
+                    fclose($fpQuick);
+                }
+            } else {
+                fclose($fpQuick);
+            }
+        }
+
         $fp = $this->openWithLock($filePath, 'c+b', LOCK_EX);
         if (!$fp) {
             return false;
@@ -276,50 +306,40 @@ class DeviceCommandService
                 return true;
             }
 
-            $content = stream_get_contents($fp);
-            $trimmed = trim($content);
-            if ($trimmed === '') {
+            // Peek first non-whitespace character in O(1) time
+            $firstChar = '';
+            $readLen = min($size, 1024);
+            $chunk = fread($fp, $readLen);
+            if ($chunk !== false) {
+                $trimmed = ltrim($chunk);
+                if ($trimmed !== '') {
+                    $firstChar = $trimmed[0];
+                }
+            }
+
+            // If empty or whitespace only, truncate and return
+            if ($firstChar === '') {
                 ftruncate($fp, 0);
                 return true;
             }
 
-            $needsNormalization = false;
-
-            // Check if file starts with '[' (legacy JSON array)
-            if (str_starts_with($trimmed, '[')) {
-                $needsNormalization = true;
-            }
-
-            // Check if content does not end with newline
-            if (!str_ends_with($content, "\n")) {
-                $needsNormalization = true;
-            }
-
-            // Check if any line contains padded status ("status":"SENT   " or "status":"FAILED ") or padded return_code or invalid JSON
-            if (!$needsNormalization) {
-                $lines = explode("\n", $content);
-                foreach ($lines as $line) {
-                    $l = trim($line);
-                    if ($l === '') {
-                        continue;
-                    }
-                    if (str_contains($l, '"status":"SENT   "') || str_contains($l, '"status":"FAILED "') || str_contains($l, '   ,')) {
-                        $needsNormalization = true;
-                        break;
-                    }
-                    $decoded = json_decode($l, true);
-                    if (!is_array($decoded) || !isset($decoded['id'])) {
-                        $needsNormalization = true;
-                        break;
-                    }
+            // If already NDJSON format (starts with '{'), simply ensure trailing newline
+            if ($firstChar === '{') {
+                fseek($fp, -1, SEEK_END);
+                $lastChar = fgetc($fp);
+                if ($lastChar !== "\n") {
+                    fseek($fp, 0, SEEK_END);
+                    fwrite($fp, "\n");
+                    fflush($fp);
                 }
-            }
-
-            if (!$needsNormalization) {
                 return true;
             }
 
+            // Legacy JSON array format (starts with '[') or mixed format: parse and convert
+            rewind($fp);
+            $content = stream_get_contents($fp);
             $records = $this->extractRecordsFromRawContent($content);
+            unset($content);
 
             rewind($fp);
             ftruncate($fp, 0);
@@ -407,9 +427,10 @@ class DeviceCommandService
      * Automatically normalizes legacy JSON array format if detected.
      *
      * @param string $filePath
+     * @param string|null $deviceSn Optional filter to only parse commands for this device
      * @return array
      */
-    protected function parseCommandsFromFile(string $filePath): array
+    protected function parseCommandsFromFile(string $filePath, ?string $deviceSn = null): array
     {
         if (!file_exists($filePath) || filesize($filePath) === 0) {
             return [];
@@ -424,13 +445,21 @@ class DeviceCommandService
 
         try {
             $commands = [];
+            $snNeedle = $deviceSn !== null ? '"device_sn":"' . $deviceSn . '"' : null;
+
             while (($line = fgets($fp)) !== false) {
+                if ($snNeedle !== null && !str_contains($line, $snNeedle)) {
+                    continue;
+                }
                 $line = trim($line);
                 if ($line === '') {
                     continue;
                 }
                 $decoded = json_decode($line, true);
                 if (is_array($decoded)) {
+                    if ($deviceSn !== null && ($decoded['device_sn'] ?? '') !== $deviceSn) {
+                        continue;
+                    }
                     if (isset($decoded['status'])) {
                         $decoded['status'] = trim($decoded['status']);
                     }
@@ -446,6 +475,43 @@ class DeviceCommandService
     }
 
     /**
+     * Find an active pending or in-flight command record matching the given device and command string.
+     */
+    public function findPendingCommandRecord(string $deviceSn, string $command): ?array
+    {
+        $snNeedle = '"device_sn":"' . $deviceSn . '"';
+
+        foreach ($this->getAllCommandFiles() as $file) {
+            if (!file_exists($file) || filesize($file) === 0) {
+                continue;
+            }
+
+            $fp = $this->openWithLock($file, 'r', LOCK_SH);
+            if (!$fp) {
+                continue;
+            }
+
+            try {
+                while (($line = fgets($fp)) !== false) {
+                    if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT'))) {
+                        $decoded = json_decode(trim($line), true);
+                        if ($decoded && ($decoded['device_sn'] ?? '') === $deviceSn && 
+                            in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT']) && 
+                            ($decoded['command'] ?? '') === $command) {
+                            return $decoded;
+                        }
+                    }
+                }
+            } finally {
+                @flock($fp, LOCK_UN);
+                fclose($fp);
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Queue a new command for a device.
      *
      * @param string $deviceSn Target device serial number
@@ -454,27 +520,10 @@ class DeviceCommandService
      */
     public function queueCommand(string $deviceSn, string $command): array
     {
-        // 1. Check if command is already pending across all files
-        if ($this->hasPendingCommand($deviceSn, $command)) {
-            foreach ($this->getAllCommandFiles() as $file) {
-                if (!file_exists($file) || filesize($file) === 0) continue;
-                $this->normalizeFileIfNeeded($file);
-                $fp = $this->openWithLock($file, 'r', LOCK_SH);
-                if (!$fp) continue;
-                try {
-                    while (($line = fgets($fp)) !== false) {
-                        if ((str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) && str_contains($line, '"device_sn":"' . $deviceSn . '"')) {
-                            $decoded = json_decode(trim($line), true);
-                            if ($decoded && ($decoded['device_sn'] ?? '') === $deviceSn && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT']) && ($decoded['command'] ?? '') === $command) {
-                                return $decoded;
-                            }
-                        }
-                    }
-                } finally {
-                    @flock($fp, LOCK_UN);
-                    fclose($fp);
-                }
-            }
+        // 1. Check if command is already pending across all files (single pass)
+        $existing = $this->findPendingCommandRecord($deviceSn, $command);
+        if ($existing !== null) {
+            return $existing;
         }
 
         $targetFile = $this->getActiveWriteFile();
