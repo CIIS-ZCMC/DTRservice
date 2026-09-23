@@ -345,3 +345,46 @@ test('BiometricSyncService uses device-specific PIN during user provisioning', f
     expect($stdCmds)->not->toBeEmpty();
     expect($stdCmds[0])->toContain('PIN=3003');
 });
+
+test('punch ingestion accepts status 0 (In), 1 (Out), and 255 (Global) normally', function () {
+    $dev = Devices::create([
+        'device_name' => 'HRBLIZ Gate',
+        'serial_number' => 'SN-HRBLIZ-PUNCH',
+        'ip_address' => '192.168.1.123',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'for_attendance' => 0,
+    ]);
+
+    Biometrics::create([
+        'biometric_id' => 4004,
+        'hrbliz_biometric_id' => 9999,
+        'name' => 'Maria Clara',
+        'privilege' => 0,
+    ]);
+
+    $mockLogsRepo = Mockery::mock(LogsRepository::class, [app(\App\Contracts\DeviceRepositoryInterface::class)])->makePartial();
+    $mockLogsRepo->shouldReceive('logExists')->andReturn(false);
+    app()->instance(\App\Contracts\LogsRepositoryInterface::class, $mockLogsRepo);
+
+    // Push punch with status 0 (Check-In)
+    $payloadIn = "9999\t2026-09-23 08:00:00\t0";
+    $responseIn = $this->call('POST', '/iclock/cdata?SN=SN-HRBLIZ-PUNCH', [], [], [], ['REMOTE_ADDR' => '192.168.1.123', 'CONTENT_TYPE' => 'text/plain'], $payloadIn);
+    $responseIn->assertStatus(200);
+
+    // Push punch with status 1 (Check-Out)
+    $payloadOut = "9999\t2026-09-23 12:00:00\t1";
+    $responseOut = $this->call('POST', '/iclock/cdata?SN=SN-HRBLIZ-PUNCH', [], [], [], ['REMOTE_ADDR' => '192.168.1.123', 'CONTENT_TYPE' => 'text/plain'], $payloadOut);
+    $responseOut->assertStatus(200);
+
+    // Push punch with status 255 (Global / UMIS)
+    $payloadGlobal = "9999\t2026-09-23 17:00:00\t255";
+    $responseGlobal = $this->call('POST', '/iclock/cdata?SN=SN-HRBLIZ-PUNCH', [], [], [], ['REMOTE_ADDR' => '192.168.1.123', 'CONTENT_TYPE' => 'text/plain'], $payloadGlobal);
+    $responseGlobal->assertStatus(200);
+
+    $logs = DeviceLogs::where('biometric_id', 4004)->orderBy('date_time', 'asc')->get();
+    expect($logs)->toHaveCount(3);
+    expect($logs[0]->status)->toBe('0');
+    expect($logs[1]->status)->toBe('1');
+    expect($logs[2]->status)->toBe('255');
+});

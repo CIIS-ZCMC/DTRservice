@@ -270,11 +270,11 @@ class LogsService
             return "OK";
         }
 
-        // Standard ZKTeco attendance status codes:
-        // 0=Check-In, 1=Check-Out, 2=Break-Out, 3=Break-In, 4=OT-In, 5=OT-Out
+        // Standard ZKTeco / HRBLIZ / UMIS attendance status codes:
+        // 0=Check-In, 1=Check-Out, 2=Break-Out, 3=Break-In, 4=OT-In, 5=OT-Out, 255=Global/Undefined
         // OPLOG entries use parts[3] as an operation parameter, not attendance status.
         // Only accept standard attendance codes for OPLOG to prevent invalid data.
-        $validAttendanceCodes = [255];
+        $validAttendanceCodes = [0, 1, 2, 3, 4, 5, 255];
         if ($isOplog && !in_array((int)$dtr_type, $validAttendanceCodes)) {
             Log::channel('device_logs')->warning('OPLOG with non-attendance status code, skipping line', [
                 'dtr_type' => $dtr_type,
