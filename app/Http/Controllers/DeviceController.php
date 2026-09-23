@@ -362,6 +362,7 @@ class DeviceController extends Controller
                 'for_attendance' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
                 'is_hrbliz' => 'nullable|boolean',
+                'receiver_by_default' => 'nullable|boolean',
             ]);
 
             $updates = [];
@@ -407,6 +408,14 @@ class DeviceController extends Controller
                 }
             }
 
+            if ($request->has('receiver_by_default')) {
+                $receiverByDefault = (bool)$request->input('receiver_by_default');
+                if ($receiverByDefault !== (bool)($device->receiver_by_default ?? true)) {
+                    $updates['receiver_by_default'] = $receiverByDefault;
+                    $changesDesc[] = $receiverByDefault ? 'enabled sync receiving' : 'disabled sync receiving (send-only mode)';
+                }
+            }
+
             if (!empty($updates)) {
                 $device->update($updates);
                 $summary = implode(', ', $changesDesc);
@@ -440,6 +449,65 @@ class DeviceController extends Controller
     public function updateRoles(Request $request, int $id): JsonResponse
     {
         return $this->updateName($request, $id);
+    }
+
+    /**
+     * Manually create a new biometric device record.
+     * Hardware identifiers (IP, SN) must be provided by the operator.
+     */
+    public function store(Request $request): JsonResponse
+    {
+        try {
+            $validated = $request->validate([
+                'device_name'        => 'required|string|min:1|max:100',
+                'ip_address'         => 'required|string|max:45|unique:devices,ip_address',
+                'serial_number'      => 'nullable|string|max:100|unique:devices,serial_number',
+                'soap_port'          => 'nullable|integer|min:1|max:65535',
+                'udp_port'           => 'nullable|integer|min:1|max:65535',
+                'com_key'            => 'nullable|string|max:50',
+                'fp_version'         => 'nullable|string|in:v9,v10',
+                'is_active'          => 'nullable|boolean',
+                'is_registration'    => 'nullable|boolean',
+                'for_attendance'     => 'nullable|boolean',
+                'is_hrbliz'          => 'nullable|boolean',
+                'receiver_by_default'=> 'nullable|boolean',
+            ]);
+
+            $device = Devices::create([
+                'device_name'        => trim($validated['device_name']),
+                'ip_address'         => trim($validated['ip_address']),
+                'serial_number'      => isset($validated['serial_number']) ? trim($validated['serial_number']) : null,
+                'soap_port'          => $validated['soap_port'] ?? 80,
+                'udp_port'           => $validated['udp_port'] ?? 4370,
+                'com_key'            => $validated['com_key'] ?? '0',
+                'fp_version'         => $validated['fp_version'] ?? null,
+                'is_active'          => (bool)($validated['is_active'] ?? true),
+                'is_registration'    => (bool)($validated['is_registration'] ?? false),
+                'for_attendance'     => (bool)($validated['for_attendance'] ?? false),
+                'is_hrbliz'          => (bool)($validated['is_hrbliz'] ?? false),
+                'receiver_by_default'=> (bool)($validated['receiver_by_default'] ?? true),
+            ]);
+
+            Log::channel('device_logs')->info("Device manually created: [{$device->id}] {$device->device_name} @ {$device->ip_address}");
+
+            return response()->json([
+                'success' => true,
+                'message' => "Device '{$device->device_name}' created successfully",
+                'data'    => $this->formatDeviceItem($device->fresh()),
+            ], 201);
+        } catch (\Illuminate\Validation\ValidationException $ve) {
+            return response()->json([
+                'success' => false,
+                'message' => $ve->validator->errors()->first() ?? 'Invalid parameters',
+                'errors'  => $ve->errors(),
+            ], 422);
+        } catch (\Throwable $e) {
+            Log::channel('device_logs')->error('DeviceController::store() error: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to create device: ' . $e->getMessage(),
+            ], 500);
+        }
     }
 
     /**

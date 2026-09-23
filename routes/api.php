@@ -16,6 +16,7 @@ Route::get('/user', function (Request $request) {
 Route::get('/devices', [DeviceController::class, 'index']);
 Route::get('/devices/paginated', [DeviceController::class, 'getPaginatedDevices']);
 Route::get('/devices/all', [DeviceController::class, 'getAllWithStatus']);
+Route::post('/devices', [DeviceController::class, 'store']);
 Route::match(['get', 'post'], '/devices/test-all', [DeviceController::class, 'testAllConnections']);
 Route::match(['get', 'post'], '/devices/sync-time-all', [DeviceController::class, 'syncAllTime']);
 Route::post('/devices/restart-batch', [DeviceController::class, 'restartBatch']);

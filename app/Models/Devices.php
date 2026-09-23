@@ -20,6 +20,7 @@ class Devices extends Model
         'is_registration',
         'for_attendance',
         'is_hrbliz',
+        'receiver_by_default',
         'fp_version',
         'last_seen_at',
         'last_cleared_at',
@@ -56,6 +57,7 @@ class Devices extends Model
         'is_registration' => 'boolean',
         'for_attendance' => 'boolean',
         'is_hrbliz' => 'boolean',
+        'receiver_by_default' => 'boolean',
     ];
 
     /**

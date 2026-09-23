@@ -20,6 +20,8 @@ beforeEach(function () {
             $table->boolean('is_active')->default(1);
             $table->boolean('is_registration')->default(0);
             $table->boolean('for_attendance')->default(1);
+            $table->boolean('is_hrbliz')->default(0);
+            $table->boolean('receiver_by_default')->default(1);
             $table->timestamp('last_seen_at')->nullable();
             $table->timestamps();
         });

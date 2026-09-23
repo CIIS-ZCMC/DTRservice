@@ -472,6 +472,11 @@
                     <i class="fas fa-clock"></i> Sync All Clocks
                 </button>
 
+                <!-- Add Device Button -->
+                <button id="addDeviceBtn" class="bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-all" title="Manually register a new biometric device">
+                    <i class="fas fa-plus-circle"></i> Add Device
+                </button>
+
                 <!-- Refresh Button -->
                 <button id="refreshBtn" class="btn-secondary rounded-lg px-3.5 py-2 text-xs font-semibold flex items-center gap-1.5 shadow-2xs" title="Reload Device Table">
                     <i class="fas fa-sync-alt" id="refreshIcon"></i> Refresh
@@ -722,6 +727,190 @@
 
     <!-- ==================== MODALS ==================== -->
 
+    <!-- 0. ADD DEVICE MODAL -->
+    <div id="addDeviceModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: var(--modal-overlay); backdrop-filter: blur(4px);">
+        <div class="themed-card rounded-2xl border border-teal-500/30 max-w-md w-full p-6 shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto">
+            <div class="flex items-center justify-between pb-3 border-b themed-border">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-xl bg-teal-600/15 text-teal-500 flex items-center justify-center text-lg">
+                        <i class="fas fa-plus-circle"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold themed-text-primary">Add Biometric Device</h3>
+                        <p class="text-xs themed-text-muted">Manually register a new terminal</p>
+                    </div>
+                </div>
+                <button type="button" class="closeAddModalBtn text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 text-sm p-1">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+
+            <form id="addDeviceForm" class="space-y-4">
+
+                <!-- Hardware Identifiers -->
+                <div class="space-y-3">
+                    <label class="block text-xs font-semibold themed-text-secondary">Hardware Identifiers</label>
+
+                    <div>
+                        <label for="addDeviceNameInput" class="block text-xs font-semibold themed-text-secondary mb-1.5">
+                            Device Friendly Name <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="text" id="addDeviceNameInput" required maxlength="100"
+                            class="w-full px-3.5 py-2.5 text-sm rounded-lg themed-input font-medium"
+                            placeholder="e.g. Live - Admin-Lobby">
+                    </div>
+
+                    <div>
+                        <label for="addIpAddressInput" class="block text-xs font-semibold themed-text-secondary mb-1.5">
+                            IP Address <span class="text-rose-500">*</span>
+                        </label>
+                        <input type="text" id="addIpAddressInput" required maxlength="45"
+                            class="w-full px-3.5 py-2.5 text-sm rounded-lg themed-input font-mono"
+                            placeholder="e.g. 192.168.1.201">
+                    </div>
+
+                    <div>
+                        <label for="addSerialNumberInput" class="block text-xs font-semibold themed-text-secondary mb-1.5">
+                            Serial Number <span class="text-[10px] themed-text-muted font-normal">(optional)</span>
+                        </label>
+                        <input type="text" id="addSerialNumberInput" maxlength="100"
+                            class="w-full px-3.5 py-2.5 text-sm rounded-lg themed-input font-mono"
+                            placeholder="e.g. ADE9230600123">
+                    </div>
+
+                    <div class="grid grid-cols-3 gap-2">
+                        <div>
+                            <label for="addSoapPortInput" class="block text-xs font-semibold themed-text-secondary mb-1.5">SOAP Port</label>
+                            <input type="number" id="addSoapPortInput" min="1" max="65535" value="80"
+                                class="w-full px-3 py-2.5 text-sm rounded-lg themed-input font-mono">
+                        </div>
+                        <div>
+                            <label for="addUdpPortInput" class="block text-xs font-semibold themed-text-secondary mb-1.5">UDP Port</label>
+                            <input type="number" id="addUdpPortInput" min="1" max="65535" value="4370"
+                                class="w-full px-3 py-2.5 text-sm rounded-lg themed-input font-mono">
+                        </div>
+                        <div>
+                            <label for="addComKeyInput" class="block text-xs font-semibold themed-text-secondary mb-1.5">Comm Key</label>
+                            <input type="text" id="addComKeyInput" maxlength="50" value="0"
+                                class="w-full px-3 py-2.5 text-sm rounded-lg themed-input font-mono">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold themed-text-secondary mb-1.5">Fingerprint Algorithm</label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <label class="flex items-center gap-2 p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-blue-500/50 transition-colors">
+                                <input type="radio" name="addFpVersion" value="v10" id="addFpV10Radio" class="text-blue-600 focus:ring-0" checked>
+                                <div class="text-xs font-bold themed-text-primary">v10 <span class="font-normal themed-text-muted">(default)</span></div>
+                            </label>
+                            <label class="flex items-center gap-2 p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-amber-500/50 transition-colors">
+                                <input type="radio" name="addFpVersion" value="v9" id="addFpV9Radio" class="text-amber-500 focus:ring-0">
+                                <div class="text-xs font-bold themed-text-primary">v9 <span class="font-normal themed-text-muted">(legacy)</span></div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Terminal Role -->
+                <div class="space-y-2 pt-1">
+                    <label class="block text-xs font-semibold themed-text-secondary">Terminal Role / Classification</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center gap-2.5 p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-blue-500/50 transition-colors">
+                            <input type="radio" name="addDeviceRole" value="operating" id="addRoleOperatingRadio" class="text-blue-600 focus:ring-0" checked>
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary flex items-center gap-1">
+                                    <i class="fas fa-id-card text-blue-500 text-[10px]"></i> Operating
+                                </div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Daily staff clocking</div>
+                            </div>
+                        </label>
+                        <label class="flex items-center gap-2.5 p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-amber-500/50 transition-colors">
+                            <input type="radio" name="addDeviceRole" value="registering" id="addRoleRegisteringRadio" class="text-amber-500 focus:ring-0">
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary flex items-center gap-1">
+                                    <i class="fas fa-user-plus text-amber-500 text-[10px]"></i> Registering
+                                </div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Enroll fingerprints</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Operational Flags -->
+                <div class="space-y-2 pt-1">
+                    <label class="block text-xs font-semibold themed-text-secondary">Operational Flags</label>
+
+                    <!-- Attendance Capture -->
+                    <label class="flex items-center justify-between p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-purple-500/50 transition-colors">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-7 h-7 rounded-lg pill-purple flex items-center justify-center text-xs">
+                                <i class="fas fa-clipboard-check"></i>
+                            </span>
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary">Attendance Capture</div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Designate for official event &amp; flag ceremony attendance</div>
+                            </div>
+                        </div>
+                        <input type="checkbox" id="addForAttendanceCheckbox" class="rounded text-purple-600 focus:ring-0 w-4 h-4 cursor-pointer">
+                    </label>
+
+                    <!-- Active Terminal -->
+                    <label class="flex items-center justify-between p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-emerald-500/50 transition-colors">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-7 h-7 rounded-lg pill-emerald flex items-center justify-center text-xs">
+                                <i class="fas fa-power-off"></i>
+                            </span>
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary">Active Terminal</div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Enable terminal polling and template synchronization</div>
+                            </div>
+                        </div>
+                        <input type="checkbox" id="addIsActiveCheckbox" class="rounded text-emerald-600 focus:ring-0 w-4 h-4 cursor-pointer" checked>
+                    </label>
+
+                    <!-- HRBLIZ Terminal -->
+                    <label class="flex items-center justify-between p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-indigo-500/50 transition-colors">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-7 h-7 rounded-lg pill-indigo flex items-center justify-center text-xs">
+                                <i class="fas fa-fingerprint"></i>
+                            </span>
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary">HRBLIZ Terminal</div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Sync &amp; compare logs using hrbliz_biometric_id for dual-fleet operations</div>
+                            </div>
+                        </div>
+                        <input type="checkbox" id="addIsHrblizCheckbox" class="rounded text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer">
+                    </label>
+
+                    <!-- Receive Sync Updates -->
+                    <label class="flex items-center justify-between p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-teal-500/50 transition-colors">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-7 h-7 rounded-lg bg-teal-600/15 text-teal-500 flex items-center justify-center text-xs">
+                                <i class="fas fa-cloud-download-alt"></i>
+                            </span>
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary">Receive Sync Updates</div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Allow this device to receive biometric template &amp; user provisioning commands</div>
+                            </div>
+                        </div>
+                        <input type="checkbox" id="addReceiverByDefaultCheckbox" class="rounded text-teal-600 focus:ring-0 w-4 h-4 cursor-pointer" checked>
+                    </label>
+                </div>
+
+                <p id="addDeviceError" class="hidden text-xs text-rose-500 font-medium"></p>
+
+                <div class="flex items-center justify-end gap-2.5 pt-2 border-t themed-border">
+                    <button type="button" class="closeAddModalBtn btn-secondary px-4 py-2 rounded-lg text-xs font-semibold">
+                        Cancel
+                    </button>
+                    <button type="submit" id="saveAddDeviceBtn" class="px-4 py-2 rounded-lg text-xs font-semibold bg-teal-600 hover:bg-teal-700 active:bg-teal-800 text-white flex items-center gap-2 shadow-xs transition-colors">
+                        <i class="fas fa-plus"></i> Create Device
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <!-- 1. EDIT DEVICE & ROLES MODAL -->
     <div id="editNameModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: var(--modal-overlay); backdrop-filter: blur(4px);">
         <div class="themed-card rounded-2xl border max-w-md w-full p-6 shadow-2xl space-y-5">
@@ -845,10 +1034,24 @@
                             </span>
                             <div>
                                 <div class="text-xs font-bold themed-text-primary">HRBLIZ Terminal</div>
-                                <div class="text-[10px] themed-text-muted leading-tight">Sync & compare logs using hrbliz_biometric_id for dual-fleet operations</div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Sync &amp; compare logs using hrbliz_biometric_id for dual-fleet operations</div>
                             </div>
                         </div>
                         <input type="checkbox" id="editIsHrblizCheckbox" class="rounded text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer">
+                    </label>
+
+                    <!-- Receive Sync Updates Flag -->
+                    <label class="flex items-center justify-between p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-teal-500/50 transition-colors">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-7 h-7 rounded-lg bg-teal-600/15 text-teal-500 flex items-center justify-center text-xs">
+                                <i class="fas fa-cloud-download-alt"></i>
+                            </span>
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary">Receive Sync Updates</div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Allow this device to receive biometric template &amp; user provisioning commands</div>
+                            </div>
+                        </div>
+                        <input type="checkbox" id="editReceiverByDefaultCheckbox" class="rounded text-teal-600 focus:ring-0 w-4 h-4 cursor-pointer">
                     </label>
                 </div>
 
@@ -1523,7 +1726,7 @@
                                 <span class="font-bold themed-text-primary text-xs" id="nameText_${d.id}">${escapeHtml(d.device_name)}</span>
                                 <button class="btnEditName opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-opacity p-1 text-[11px]" 
                                     data-id="${d.id}" data-name="${escapeHtml(d.device_name)}" data-ip="${escapeHtml(d.ip_address)}" data-sn="${escapeHtml(d.serial_number || '')}"
-                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}" data-is-hrbliz="${d.is_hrbliz ? 1 : 0}"
+                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}" data-is-hrbliz="${d.is_hrbliz ? 1 : 0}" data-receiver="${d.receiver_by_default !== false ? 1 : 0}"
                                     title="Edit Device Settings & Roles">
                                     <i class="fas fa-pencil-alt"></i>
                                 </button>
@@ -1604,7 +1807,7 @@
                                 <!-- Edit Name & Roles -->
                                 <button class="btnEditName btn-action-edit p-2 rounded-lg text-xs font-semibold" 
                                     data-id="${d.id}" data-name="${escapeHtml(d.device_name)}" data-ip="${escapeHtml(d.ip_address)}" data-sn="${escapeHtml(d.serial_number || '')}"
-                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}" data-is-hrbliz="${d.is_hrbliz ? 1 : 0}"
+                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}" data-is-hrbliz="${d.is_hrbliz ? 1 : 0}" data-receiver="${d.receiver_by_default !== false ? 1 : 0}"
                                     title="Edit Device Name & Roles">
                                     <i class="fas fa-sliders-h"></i>
                                 </button>
@@ -1711,6 +1914,7 @@
                     document.getElementById('editForAttendanceCheckbox').checked = (btn.dataset.forAtt === '1');
                     document.getElementById('editIsActiveCheckbox').checked = (btn.dataset.isActive === '1');
                     document.getElementById('editIsHrblizCheckbox').checked = (btn.dataset.isHrbliz === '1');
+                    document.getElementById('editReceiverByDefaultCheckbox').checked = (btn.dataset.receiver !== '0');
 
                     editNameError.classList.add('hidden');
                     openModal(editNameModal);
@@ -1827,6 +2031,7 @@
             const forAtt = document.getElementById('editForAttendanceCheckbox').checked ? 1 : 0;
             const isActive = document.getElementById('editIsActiveCheckbox').checked ? 1 : 0;
             const isHrbliz = document.getElementById('editIsHrblizCheckbox').checked ? 1 : 0;
+            const receiverByDefault = document.getElementById('editReceiverByDefaultCheckbox').checked ? 1 : 0;
 
             if (!newName) {
                 editNameError.textContent = 'Device name cannot be blank.';
@@ -1852,7 +2057,8 @@
                         is_registration: isReg,
                         for_attendance: forAtt,
                         is_active: isActive,
-                        is_hrbliz: isHrbliz
+                        is_hrbliz: isHrbliz,
+                        receiver_by_default: receiverByDefault
                     })
                 });
                 const result = await res.json();
@@ -1865,6 +2071,7 @@
                         match.for_attendance = result.data.for_attendance;
                         match.is_active = result.data.is_active;
                         match.is_hrbliz = result.data.is_hrbliz;
+                        match.receiver_by_default = result.data.receiver_by_default;
                     }
 
                     recalculateStats();
@@ -2180,6 +2387,7 @@
                     document.getElementById('editForAttendanceCheckbox').checked = (d.for_attendance == 1);
                     document.getElementById('editIsActiveCheckbox').checked = (d.is_active == 1);
                     document.getElementById('editIsHrblizCheckbox').checked = (d.is_hrbliz == 1);
+                    document.getElementById('editReceiverByDefaultCheckbox').checked = (d.receiver_by_default !== false && d.receiver_by_default != 0);
 
                     editNameError.classList.add('hidden');
                     openModal(editNameModal);
@@ -2378,6 +2586,110 @@
 
         // Refresh Button
         refreshBtn.addEventListener('click', () => fetchDevices());
+
+        // ==================== ADD DEVICE MODAL ====================
+        const addDeviceModal = document.getElementById('addDeviceModal');
+        const addDeviceForm = document.getElementById('addDeviceForm');
+        const addDeviceError = document.getElementById('addDeviceError');
+
+        // Open Add Device modal
+        const addDeviceBtn = document.getElementById('addDeviceBtn');
+        if (addDeviceBtn) {
+            addDeviceBtn.addEventListener('click', () => {
+                // Reset form to defaults
+                addDeviceForm.reset();
+                document.getElementById('addFpV10Radio').checked = true;
+                document.getElementById('addRoleOperatingRadio').checked = true;
+                document.getElementById('addIsActiveCheckbox').checked = true;
+                document.getElementById('addIsHrblizCheckbox').checked = false;
+                document.getElementById('addReceiverByDefaultCheckbox').checked = true;
+                document.getElementById('addSoapPortInput').value = '80';
+                document.getElementById('addUdpPortInput').value = '4370';
+                document.getElementById('addComKeyInput').value = '0';
+                addDeviceError.classList.add('hidden');
+                openModal(addDeviceModal);
+                setTimeout(() => document.getElementById('addDeviceNameInput').focus(), 50);
+            });
+        }
+
+        // Close Add Device modal
+        document.querySelectorAll('.closeAddModalBtn').forEach(btn => {
+            btn.addEventListener('click', () => closeModal(addDeviceModal));
+        });
+
+        // Add Device Form Submit
+        if (addDeviceForm) {
+            addDeviceForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                const deviceName = document.getElementById('addDeviceNameInput').value.trim();
+                const ipAddress = document.getElementById('addIpAddressInput').value.trim();
+                const serialNumber = document.getElementById('addSerialNumberInput').value.trim();
+                const soapPort = parseInt(document.getElementById('addSoapPortInput').value) || 80;
+                const udpPort = parseInt(document.getElementById('addUdpPortInput').value) || 4370;
+                const comKey = document.getElementById('addComKeyInput').value.trim() || '0';
+                const fpVersion = document.querySelector('input[name="addFpVersion"]:checked')?.value || 'v10';
+                const isReg = document.getElementById('addRoleRegisteringRadio').checked ? 1 : 0;
+                const forAtt = document.getElementById('addForAttendanceCheckbox').checked ? 1 : 0;
+                const isActive = document.getElementById('addIsActiveCheckbox').checked ? 1 : 0;
+                const isHrbliz = document.getElementById('addIsHrblizCheckbox').checked ? 1 : 0;
+                const receiverByDefault = document.getElementById('addReceiverByDefaultCheckbox').checked ? 1 : 0;
+
+                if (!deviceName || !ipAddress) {
+                    addDeviceError.textContent = 'Device name and IP address are required.';
+                    addDeviceError.classList.remove('hidden');
+                    return;
+                }
+
+                const saveBtn = document.getElementById('saveAddDeviceBtn');
+                const originalText = saveBtn.innerHTML;
+                saveBtn.innerHTML = '<i class="fas fa-circle-notch fa-spin"></i> Creating...';
+                saveBtn.disabled = true;
+                addDeviceError.classList.add('hidden');
+
+                try {
+                    const res = await fetch('/api/devices', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-TOKEN': csrfToken,
+                            'Accept': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            device_name: deviceName,
+                            ip_address: ipAddress,
+                            serial_number: serialNumber || null,
+                            soap_port: soapPort,
+                            udp_port: udpPort,
+                            com_key: comKey,
+                            fp_version: fpVersion,
+                            is_registration: isReg,
+                            for_attendance: forAtt,
+                            is_active: isActive,
+                            is_hrbliz: isHrbliz,
+                            receiver_by_default: receiverByDefault
+                        })
+                    });
+
+                    const result = await res.json();
+
+                    if (result.success) {
+                        showToast(result.message || 'Device created successfully', 'success');
+                        closeModal(addDeviceModal);
+                        fetchDevices();
+                    } else {
+                        addDeviceError.textContent = result.message || 'Failed to create device.';
+                        addDeviceError.classList.remove('hidden');
+                    }
+                } catch (err) {
+                    addDeviceError.textContent = err.message || 'Network error.';
+                    addDeviceError.classList.remove('hidden');
+                } finally {
+                    saveBtn.innerHTML = originalText;
+                    saveBtn.disabled = false;
+                }
+            });
+        }
 
         function updateLastUpdated() {
             const d = new Date();

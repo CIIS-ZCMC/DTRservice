@@ -525,6 +525,9 @@ class BiometricSyncService
 
     /**
      * Get all active registered devices excluding the source device.
+     * Only returns devices where receiver_by_default is true (or NULL, for backward compat).
+     * Devices with receiver_by_default = false are operate in send-only mode and will
+     * not receive biometric template or user provisioning commands.
      */
     protected function getTargetDevices(?string $sourceSn)
     {
@@ -534,6 +537,14 @@ class BiometricSyncService
             ->whereNotNull('serial_number')
             ->where('serial_number', '!=', '')
             ->where('serial_number', '!=', 'Fail!');
+
+        // Only apply receiver_by_default filter if the column exists (guards against older
+        // installs and test environments where the column may not yet be present)
+        if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+            $query->where(function ($q) {
+                $q->whereNull('receiver_by_default')->orWhere('receiver_by_default', true);
+            });
+        }
 
         if (!empty($sourceSn)) {
             $query->where('serial_number', '!=', $sourceSn);
