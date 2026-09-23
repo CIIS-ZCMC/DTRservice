@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Contracts\DeviceRepositoryInterface;
 use App\Contracts\LogsRepositoryInterface;
 use App\Models\AttendanceInformation;
+use App\Models\Biometrics;
 use App\Models\DeviceLogs;
 use App\Models\Devices;
 use Illuminate\Support\Facades\DB;
@@ -507,14 +508,27 @@ class DeviceService
             }
 
             // Pre-fetch existing entries for fast O(1) deduplication
+            $isHrbliz = (bool)($device->is_hrbliz ?? false);
             $dates = array_unique(array_column($filteredRows, 'date'));
             $pins = array_unique(array_column($filteredRows, 'pin'));
             $existingKeys = [];
 
-            if (!empty($dates) && !empty($pins)) {
+            $pinToCanonicalMap = [];
+            if ($isHrbliz && !empty($pins)) {
+                $pinToCanonicalMap = Biometrics::whereIn('hrbliz_biometric_id', $pins)
+                    ->pluck('biometric_id', 'hrbliz_biometric_id')
+                    ->all();
+            }
+
+            $allLookupPins = $pins;
+            if (!empty($pinToCanonicalMap)) {
+                $allLookupPins = array_unique(array_merge($pins, array_values($pinToCanonicalMap)));
+            }
+
+            if (!empty($dates) && !empty($allLookupPins)) {
                 // Check DeviceLogs
                 $existingLogs = DeviceLogs::whereIn('dtr_date', $dates)
-                    ->whereIn('biometric_id', $pins)
+                    ->whereIn('biometric_id', $allLookupPins)
                     ->select(['biometric_id', 'date_time'])
                     ->get();
                 foreach ($existingLogs as $el) {
@@ -525,7 +539,7 @@ class DeviceService
                 $minDt = min(array_column($filteredRows, 'datetime'));
                 $maxDt = max(array_column($filteredRows, 'datetime'));
                 $existingAtt = AttendanceInformation::whereBetween('first_entry', [$minDt, $maxDt])
-                    ->whereIn('biometric_id', $pins)
+                    ->whereIn('biometric_id', $allLookupPins)
                     ->select(['biometric_id', 'first_entry'])
                     ->get();
                 foreach ($existingAtt as $ea) {
@@ -538,24 +552,33 @@ class DeviceService
             $sampleSaved = [];
 
             foreach ($filteredRows as $item) {
-                $dedupKey = $item['pin'] . '|' . $item['datetime'];
+                $rawPin = $item['pin'];
+                $canonicalPin = ($isHrbliz && isset($pinToCanonicalMap[$rawPin])) ? (int)$pinToCanonicalMap[$rawPin] : $rawPin;
 
-                if (isset($existingKeys[$dedupKey])) {
+                $dedupKey = $canonicalPin . '|' . $item['datetime'];
+                $rawDedupKey = $rawPin . '|' . $item['datetime'];
+
+                if (isset($existingKeys[$dedupKey]) || isset($existingKeys[$rawDedupKey])) {
                     $duplicatesSkipped++;
                     continue;
                 }
 
                 // Check logExists in LogsRepository (scans recent device_logs*.log)
-                if ($this->logsRepository->logExists($item['pin'], $item['datetime'])) {
+                if ($this->logsRepository->logExists($canonicalPin, $item['datetime']) ||
+                    ($canonicalPin !== $rawPin && $this->logsRepository->logExists($rawPin, $item['datetime']))) {
                     $duplicatesSkipped++;
                     $existingKeys[$dedupKey] = true;
+                    $existingKeys[$rawDedupKey] = true;
                     continue;
                 }
 
                 $existingKeys[$dedupKey] = true;
+                $existingKeys[$rawDedupKey] = true;
 
                 $logData = [
-                    'biometric_id' => $item['pin'],
+                    'biometric_id' => $canonicalPin,
+                    'raw_biometric_id' => $rawPin,
+                    'is_hrbliz' => $isHrbliz,
                     'dtr_date' => $item['date'],
                     'dtr_time' => $item['time'],
                     'dtr_type' => $item['status'],

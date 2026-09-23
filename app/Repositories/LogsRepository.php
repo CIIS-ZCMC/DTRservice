@@ -25,7 +25,17 @@ class LogsRepository implements LogsRepositoryInterface
     public function createLog(array $data): DeviceLogs
     {
         try {
-            $device = $this->deviceRepository->findByIP($data['ip_address']);
+            $device = !empty($data['ip_address']) ? $this->deviceRepository->findByIP($data['ip_address']) : null;
+            $isHrbliz = $device && (bool)$device->is_hrbliz;
+
+            $inputPin = (int)$data['biometric_id'];
+            $canonicalBiometricId = $inputPin;
+
+            // Dynamically compare against hrbliz_biometric_id if HRBLIZ terminal
+            $matchedBio = Biometrics::findByDevicePin($inputPin, $isHrbliz);
+            if ($matchedBio && !empty($matchedBio->biometric_id)) {
+                $canonicalBiometricId = (int)$matchedBio->biometric_id;
+            }
 
             // Check device type flags
             if ($device && $device->is_registration == 1) {
@@ -34,23 +44,26 @@ class LogsRepository implements LogsRepositoryInterface
             }
 
             if ($device && $device->for_attendance == 1) {
-                // Redirect to attendance saving
-                $saved = $this->saveForAttendance($data);
+                // Redirect to attendance saving using canonical biometric ID
+                $attData = $data;
+                $attData['biometric_id'] = $canonicalBiometricId;
+                $saved = $this->saveForAttendance($attData);
                 if ($saved) {
                     return new DeviceLogs();
                 }
                 // If attendance save failed (e.g. no active attendance event for that date),
                 // fall back to saving in DeviceLogs so employee log is NEVER lost!
-                Log::channel('attendance_logs')->info('Falling back to DeviceLogs for biometric_id: ' . $data['biometric_id']);
+                Log::channel('attendance_logs')->info('Falling back to DeviceLogs for biometric_id: ' . $canonicalBiometricId);
             }
 
-            $employee = $this->getEmployeeNameAndStatus((int)$data['biometric_id']);
+            $employee = $this->getEmployeeNameAndStatus($canonicalBiometricId);
+            $employeeName = $employee['name'] ?? $matchedBio?->name ?? 'Unknown';
             $date_time = $data['dtr_date'] . ' ' . $data['dtr_time'];
 
             $logData = [
-                'biometric_id' => $data['biometric_id'],
+                'biometric_id' => $canonicalBiometricId,
                 'dtr_date' => $data['dtr_date'],
-                'name' => $employee['name'] ?? 'Unknown',
+                'name' => $employeeName,
                 'date_time' => $date_time,
                 'status' => $data['dtr_type'],
                 'is_Shifting' => 0,
@@ -80,6 +93,14 @@ class LogsRepository implements LogsRepositoryInterface
 
         try {
             $device = $this->deviceRepository->findByIP($data['ip_address']);
+            $isHrbliz = $device && (bool)$device->is_hrbliz;
+            $inputPin = (int)$data['biometric_id'];
+            $canonicalBiometricId = $inputPin;
+
+            $matchedBio = Biometrics::findByDevicePin($inputPin, $isHrbliz);
+            if ($matchedBio && !empty($matchedBio->biometric_id)) {
+                $canonicalBiometricId = (int)$matchedBio->biometric_id;
+            }
 
             // Check device type flags
             if ($device && $device->is_registration == 1) {
@@ -92,12 +113,13 @@ class LogsRepository implements LogsRepositoryInterface
                 return;
             }
 
-            $employee = $this->getEmployeeNameAndStatus($data['biometric_id']);
+            $employee = $this->getEmployeeNameAndStatus($canonicalBiometricId);
+            $employeeName = $employee['name'] ?? $matchedBio?->name ?? 'Unknown';
 
             $logData = [
-                'biometric_id' => $data['biometric_id'],
+                'biometric_id' => $canonicalBiometricId,
                 'dtr_date' => $data['dtr_date'],
-                'name' => $employee['name'] ?? 'Unknown',
+                'name' => $employeeName,
                 'dtr_time' => $data['dtr_time'],
                 'dtr_type' => $data['dtr_type'],
                 'device_name' => $device?->device_name ?? 'Unknown',
@@ -122,12 +144,24 @@ class LogsRepository implements LogsRepositoryInterface
     {
         try {
             $device = $this->deviceRepository->findByIP($data['ip_address']);
-            $employee = $this->getEmployeeNameAndStatus((int)$data['biometric_id']);
+            $isHrbliz = $device && (bool)$device->is_hrbliz;
+            $inputPin = (int)$data['biometric_id'];
+            $canonicalBiometricId = $inputPin;
+
+            $matchedBio = Biometrics::findByDevicePin($inputPin, $isHrbliz);
+            if ($matchedBio && !empty($matchedBio->biometric_id)) {
+                $canonicalBiometricId = (int)$matchedBio->biometric_id;
+            }
+
+            $employee = $this->getEmployeeNameAndStatus($canonicalBiometricId);
+            $employeeName = $employee['name'] ?? $matchedBio?->name ?? 'Unknown';
 
             $logData = [
-                'biometric_id' => $data['biometric_id'],
+                'biometric_id' => $canonicalBiometricId,
+                'raw_biometric_id' => $inputPin,
+                'is_hrbliz' => $isHrbliz,
                 'dtr_date' => $data['dtr_date'],
-                'name' => $employee['name'] ?? 'Unknown',
+                'name' => $employeeName,
                 'dtr_time' => $data['dtr_time'],
                 'dtr_type' => $data['dtr_type'],
                 'device_name' => $device?->device_name ?? 'Unknown',
@@ -271,6 +305,17 @@ class LogsRepository implements LogsRepositoryInterface
     public function saveForAttendance(array $data): bool
     {
         try {
+            $device = $this->deviceRepository->findByIP($data['ip_address'] ?? '');
+            $isHrbliz = $device && (bool)$device->is_hrbliz;
+            $inputPin = (int)$data['biometric_id'];
+            $canonicalBiometricId = $inputPin;
+
+            $matchedBio = Biometrics::findByDevicePin($inputPin, $isHrbliz);
+            if ($matchedBio && !empty($matchedBio->biometric_id)) {
+                $canonicalBiometricId = (int)$matchedBio->biometric_id;
+            }
+            $data['biometric_id'] = $canonicalBiometricId;
+
             // 1. Get active attendances
             $activeAttendances = Attendance::where("attendance_key", 1)
                 ->get();

@@ -819,15 +819,13 @@ class DeviceCommandService
                 continue;
             }
 
-            $this->normalizeFileIfNeeded($file);
-
             $fp = $this->openWithLock($file, 'r', LOCK_SH);
             if (!$fp) {
                 continue;
             }
 
             try {
-                // Stream line-by-line
+                // Stream line-by-line in O(1) memory
                 while (($line = fgets($fp)) !== false) {
                     if (str_contains($line, $snNeedle) && str_contains($line, '"status":"PENDING"')) {
                         $cmd = json_decode(trim($line), true);
@@ -851,7 +849,7 @@ class DeviceCommandService
 
     /**
      * Mark dispatched commands as SENT across all files where they reside.
-     * Updates in-place under exclusive lock without creating any temporary files.
+     * Updates in-place under exclusive lock using a temporary stream with O(1) memory.
      *
      * @param array $commandIds Array of command IDs
      */
@@ -869,6 +867,10 @@ class DeviceCommandService
                 continue;
             }
 
+            if (empty($lookup)) {
+                break;
+            }
+
             $this->normalizeFileIfNeeded($file);
 
             $fp = $this->openWithLock($file, 'c+b', LOCK_EX);
@@ -876,10 +878,15 @@ class DeviceCommandService
                 continue;
             }
 
+            $tempStream = fopen('php://temp/maxmemory:1048576', 'w+b');
+            if (!$tempStream) {
+                @flock($fp, LOCK_UN);
+                fclose($fp);
+                continue;
+            }
+
             try {
-                $lines = [];
                 $fileModified = false;
-                $remainingLookup = $lookup;
 
                 while (($line = fgets($fp)) !== false) {
                     $trimmed = trim($line);
@@ -890,27 +897,27 @@ class DeviceCommandService
                     $cmd = json_decode($trimmed, true);
                     if ($cmd && isset($cmd['id'])) {
                         $idStr = (string)$cmd['id'];
-                        if (isset($remainingLookup[$idStr]) && trim($cmd['status'] ?? '') === 'PENDING') {
+                        if (isset($lookup[$idStr]) && trim($cmd['status'] ?? '') === 'PENDING') {
                             $cmd['status'] = 'SENT';
                             $cmd['updated_at'] = $now;
                             $fileModified = true;
-                            unset($remainingLookup[$idStr]);
-                            $lines[] = json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+                            unset($lookup[$idStr]);
+                            fwrite($tempStream, json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
                             continue;
                         }
                     }
-                    $lines[] = $trimmed . "\n";
+                    fwrite($tempStream, $trimmed . "\n");
                 }
 
                 if ($fileModified) {
                     rewind($fp);
                     ftruncate($fp, 0);
-                    foreach ($lines as $l) {
-                        fwrite($fp, $l);
-                    }
+                    rewind($tempStream);
+                    stream_copy_to_stream($tempStream, $fp);
                     fflush($fp);
                 }
             } finally {
+                fclose($tempStream);
                 @flock($fp, LOCK_UN);
                 fclose($fp);
             }
@@ -919,7 +926,7 @@ class DeviceCommandService
 
     /**
      * Record device execution acknowledgment (ACK) from /iclock/devicecmd across all files.
-     * Updates under exclusive lock cleanly without corrupting JSON formatting.
+     * Updates under exclusive lock using a temporary stream with O(1) memory.
      *
      * @param int|string $commandId Command ID
      * @param int $returnCode Return code from device (>= 0 is success)
@@ -945,8 +952,14 @@ class DeviceCommandService
                 continue;
             }
 
+            $tempStream = fopen('php://temp/maxmemory:1048576', 'w+b');
+            if (!$tempStream) {
+                @flock($fp, LOCK_UN);
+                fclose($fp);
+                continue;
+            }
+
             try {
-                $lines = [];
                 $fileModified = false;
 
                 while (($line = fgets($fp)) !== false) {
@@ -965,22 +978,22 @@ class DeviceCommandService
                             $fileModified = true;
                             $updated = true;
                             $matchedCmd = $cmd;
-                            $lines[] = json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+                            fwrite($tempStream, json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
                             continue;
                         }
                     }
-                    $lines[] = $trimmed . "\n";
+                    fwrite($tempStream, $trimmed . "\n");
                 }
 
                 if ($fileModified) {
                     rewind($fp);
                     ftruncate($fp, 0);
-                    foreach ($lines as $l) {
-                        fwrite($fp, $l);
-                    }
+                    rewind($tempStream);
+                    stream_copy_to_stream($tempStream, $fp);
                     fflush($fp);
                 }
             } finally {
+                fclose($tempStream);
                 @flock($fp, LOCK_UN);
                 fclose($fp);
             }
@@ -1014,8 +1027,6 @@ class DeviceCommandService
         if (!file_exists($filePath) || filesize($filePath) === 0) {
             return false;
         }
-
-        $this->normalizeFileIfNeeded($filePath);
 
         $fp = $this->openWithLock($filePath, 'r', LOCK_SH);
         if (!$fp) {
@@ -1097,38 +1108,7 @@ class DeviceCommandService
      */
     public function hasPendingCommand(string $deviceSn, string $command): bool
     {
-        $snNeedle = '"device_sn":"' . $deviceSn . '"';
-
-        foreach ($this->getAllCommandFiles() as $file) {
-            if (!file_exists($file) || filesize($file) === 0) {
-                continue;
-            }
-
-            $this->normalizeFileIfNeeded($file);
-
-            $fp = $this->openWithLock($file, 'r', LOCK_SH);
-            if (!$fp) {
-                continue;
-            }
-
-            try {
-                while (($line = fgets($fp)) !== false) {
-                    if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT'))) {
-                        $cmd = json_decode(trim($line), true);
-                        if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn && 
-                            in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
-                            ($cmd['command'] ?? '') === $command) {
-                            return true;
-                        }
-                    }
-                }
-            } finally {
-                @flock($fp, LOCK_UN);
-                fclose($fp);
-            }
-        }
-
-        return false;
+        return $this->findPendingCommandRecord($deviceSn, $command) !== null;
     }
 
     /**
@@ -1147,8 +1127,6 @@ class DeviceCommandService
             if (!file_exists($file) || filesize($file) === 0) {
                 continue;
             }
-
-            $this->normalizeFileIfNeeded($file);
 
             $fp = $this->openWithLock($file, 'r', LOCK_SH);
             if (!$fp) {
@@ -1186,11 +1164,9 @@ class DeviceCommandService
         $results = [];
 
         foreach ($this->getAllCommandFiles() as $file) {
-            $commands = $this->parseCommandsFromFile($file);
+            $commands = $this->parseCommandsFromFile($file, $deviceSn);
             foreach ($commands as $cmd) {
-                if ($deviceSn === null || ($cmd['device_sn'] ?? '') === $deviceSn) {
-                    $results[] = $cmd;
-                }
+                $results[] = $cmd;
             }
         }
 

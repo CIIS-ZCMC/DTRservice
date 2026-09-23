@@ -287,3 +287,65 @@ test('queueCommandsBatch atomically queues and deduplicates multiple entries in 
     expect($all[2]['device_sn'])->toBe('DEV_C');
 });
 
+test('normalizeFileIfNeeded and getPendingCommands operate with O(1) memory on large files', function () {
+    // Generate a file with 5,000 commands (with one failed record so file is not auto-pruned when 5000 succeeds)
+    $fp = fopen($this->testFilePath, 'w');
+    for ($i = 1; $i <= 5000; $i++) {
+        $rec = [
+            'id' => $i,
+            'device_sn' => 'DEV_' . ($i % 10),
+            'command' => 'DATA USER PIN=' . $i . ' Name=User' . $i,
+            'status' => $i === 5000 ? 'PENDING' : ($i === 4999 ? 'FAILED' : 'SUCCESS'),
+            'return_code' => $i === 5000 ? null : ($i === 4999 ? -1 : 0),
+            'created_at' => '2026-09-18 08:00:00',
+            'updated_at' => '2026-09-18 08:00:00',
+        ];
+        fwrite($fp, json_encode($rec, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+    }
+    fclose($fp);
+
+    $memBefore = memory_get_usage();
+    $normalized = $this->service->normalizeFileIfNeeded($this->testFilePath);
+    $memAfter = memory_get_usage();
+
+    expect($normalized)->toBeTrue();
+    // Memory overhead must remain negligible (well below 200KB)
+    expect($memAfter - $memBefore)->toBeLessThan(200000);
+
+    // Fetch pending command from large file
+    $pending = $this->service->getPendingCommands('DEV_0', 5);
+    expect($pending)->toHaveCount(1);
+    expect($pending[0]['id'])->toBe(5000);
+
+    // Mark command as SENT using stream-based update
+    $this->service->markCommandsAsSent([5000]);
+    $pendingAfter = $this->service->getPendingCommands('DEV_0', 5);
+    expect($pendingAfter)->toBeEmpty();
+
+    // ACK command using stream-based update
+    $ackSuccess = $this->service->recordCommandAck(5000, 0);
+    expect($ackSuccess)->toBeTrue();
+
+    // Verify record was updated to SUCCESS
+    $all = $this->service->getAllCommands('DEV_0');
+    $updated = collect($all)->firstWhere('id', 5000);
+    expect($updated['status'])->toBe('SUCCESS');
+    expect($updated['return_code'])->toBe(0);
+});
+
+test('getAllCommands with device_sn filter efficiently selects only matching records', function () {
+    $this->service->queueCommand('DEV_TARGET', 'CMD TARGET 1');
+    $this->service->queueCommand('DEV_OTHER', 'CMD OTHER 1');
+    $this->service->queueCommand('DEV_TARGET', 'CMD TARGET 2');
+
+    $targetCommands = $this->service->getAllCommands('DEV_TARGET');
+    expect($targetCommands)->toHaveCount(2);
+    expect($targetCommands[0]['command'])->toBe('CMD TARGET 1');
+    expect($targetCommands[1]['command'])->toBe('CMD TARGET 2');
+
+    $otherCommands = $this->service->getAllCommands('DEV_OTHER');
+    expect($otherCommands)->toHaveCount(1);
+    expect($otherCommands[0]['command'])->toBe('CMD OTHER 1');
+});
+
+

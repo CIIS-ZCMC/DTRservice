@@ -101,6 +101,10 @@
             --pill-purple-border: rgba(168, 85, 247, 0.3);
             --pill-purple-text: #c084fc;
 
+            --pill-indigo-bg: rgba(99, 102, 241, 0.12);
+            --pill-indigo-border: rgba(99, 102, 241, 0.35);
+            --pill-indigo-text: #818cf8;
+
             --pill-rose-bg: rgba(244, 63, 94, 0.12);
             --pill-rose-border: rgba(244, 63, 94, 0.3);
             --pill-rose-text: #f87171;
@@ -197,6 +201,10 @@
             --pill-purple-bg: #f5f3ff;
             --pill-purple-border: #ddd6fe;
             --pill-purple-text: #6d28d9;
+
+            --pill-indigo-bg: #e0e7ff;
+            --pill-indigo-border: #a5b4fc;
+            --pill-indigo-text: #4338ca;
 
             --pill-rose-bg: #fff1f2;
             --pill-rose-border: #fecdd3;
@@ -358,6 +366,11 @@
             background: var(--pill-purple-bg);
             border: 1px solid var(--pill-purple-border);
             color: var(--pill-purple-text);
+        }
+        .pill-indigo {
+            background: var(--pill-indigo-bg);
+            border: 1px solid var(--pill-indigo-border);
+            color: var(--pill-indigo-text);
         }
         .pill-rose {
             background: var(--pill-rose-bg);
@@ -527,6 +540,9 @@
                         <button type="button" id="kpiBtnAttendance" class="text-xs px-2 py-1 rounded pill-purple font-semibold cursor-pointer hover:opacity-85 transition-all active:scale-95" title="Click to filter Attendance devices">
                             <i class="fas fa-calendar-check mr-1"></i> <span id="statAttendance">{{ $attendanceDevices ?? 0 }}</span> Attendance
                         </button>
+                        <button type="button" id="kpiBtnHrbliz" class="text-xs px-2 py-1 rounded pill-indigo font-semibold cursor-pointer hover:opacity-85 transition-all active:scale-95" title="Click to filter HRBLIZ devices">
+                            <i class="fas fa-fingerprint mr-1"></i> <span id="statHrbliz">{{ $hrblizDevices ?? 0 }}</span> HRBLIZ
+                        </button>
                     </div>
                     <p class="text-xs themed-text-muted mt-1.5">Click any role to filter inventory</p>
                 </div>
@@ -599,6 +615,16 @@
                             <option value="all" selected>All</option>
                             <option value="1">Enabled</option>
                             <option value="0">Disabled</option>
+                        </select>
+                    </div>
+
+                    <!-- Platform / Fleet Filter -->
+                    <div class="flex items-center gap-1.5 text-xs">
+                        <span class="themed-text-muted font-medium">Fleet:</span>
+                        <select id="filterHrbliz" class="themed-input rounded-lg px-2.5 py-1.5 text-xs font-medium cursor-pointer">
+                            <option value="all" selected>All Fleets</option>
+                            <option value="1">HRBLIZ Only</option>
+                            <option value="0">Standard Only</option>
                         </select>
                     </div>
 
@@ -809,6 +835,20 @@
                             </div>
                         </div>
                         <input type="checkbox" id="editIsActiveCheckbox" class="rounded text-emerald-600 focus:ring-0 w-4 h-4 cursor-pointer">
+                    </label>
+
+                    <!-- HRBLIZ Terminal Flag -->
+                    <label class="flex items-center justify-between p-2.5 rounded-lg themed-subcard cursor-pointer border hover:border-indigo-500/50 transition-colors">
+                        <div class="flex items-center gap-2.5">
+                            <span class="w-7 h-7 rounded-lg pill-indigo flex items-center justify-center text-xs">
+                                <i class="fas fa-fingerprint"></i>
+                            </span>
+                            <div>
+                                <div class="text-xs font-bold themed-text-primary">HRBLIZ Terminal</div>
+                                <div class="text-[10px] themed-text-muted leading-tight">Sync & compare logs using hrbliz_biometric_id for dual-fleet operations</div>
+                            </div>
+                        </div>
+                        <input type="checkbox" id="editIsHrblizCheckbox" class="rounded text-indigo-600 focus:ring-0 w-4 h-4 cursor-pointer">
                     </label>
                 </div>
 
@@ -1171,11 +1211,12 @@
             devices: [],
             selectedIds: new Set(),
             meta: { current_page: 1, per_page: 10, total: 0, last_page: 1, from: 0, to: 0 },
-            stats: { total: {{ $totalDevices ?? 0 }}, online: {{ $onlineDevices ?? 0 }}, offline: {{ $offlineDevices ?? 0 }}, registering: {{ $registeringDevices ?? 0 }}, operating: {{ $operatingDevices ?? 0 }}, attendance: {{ $attendanceDevices ?? 0 }}, availability_rate: {{ $availabilityRate ?? 0 }} },
+            stats: { total: {{ $totalDevices ?? 0 }}, online: {{ $onlineDevices ?? 0 }}, offline: {{ $offlineDevices ?? 0 }}, registering: {{ $registeringDevices ?? 0 }}, operating: {{ $operatingDevices ?? 0 }}, attendance: {{ $attendanceDevices ?? 0 }}, hrbliz: {{ $hrblizDevices ?? 0 }}, availability_rate: {{ $availabilityRate ?? 0 }} },
             search: '',
             status: 'all',
             type: 'all',
             active: 'all',
+            hrbliz: 'all',
             perPage: 10,
             sortBy: 'id',
             sortDir: 'asc',
@@ -1192,6 +1233,7 @@
         const filterStatus = document.getElementById('filterStatus');
         const filterType = document.getElementById('filterType');
         const filterActive = document.getElementById('filterActive');
+        const filterHrbliz = document.getElementById('filterHrbliz');
         const filterPerPage = document.getElementById('filterPerPage');
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');
         const batchActionBar = document.getElementById('batchActionBar');
@@ -1334,6 +1376,7 @@
                     status: state.status,
                     type: state.type,
                     active: state.active,
+                    hrbliz: state.hrbliz,
                     sort_by: state.sortBy,
                     sort_dir: state.sortDir,
                 });
@@ -1371,6 +1414,10 @@
             const statAttendance = document.getElementById('statAttendance');
             if (statAttendance) {
                 statAttendance.textContent = state.stats.attendance || 0;
+            }
+            const statHrbliz = document.getElementById('statHrbliz');
+            if (statHrbliz) {
+                statHrbliz.textContent = state.stats.hrbliz || 0;
             }
 
             const rate = state.stats.availability_rate || 0;
@@ -1447,6 +1494,16 @@
                         <i class="fas fa-plus text-[8px]"></i> Attendance
                        </button>`;
 
+                const hrblizBadge = d.is_hrbliz
+                    ? `<button class="btnToggleRole px-1.5 py-0.5 rounded text-[9px] font-semibold pill-indigo hover:opacity-80 active:scale-95 transition-all flex items-center gap-1 shadow-2xs cursor-pointer" 
+                        data-id="${d.id}" data-field="is_hrbliz" data-val="0" title="HRBLIZ Fleet Terminal. Click to switch to Standard Terminal">
+                        <i class="fas fa-fingerprint text-[9px]"></i> HRBLIZ <i class="fas fa-exchange-alt text-[7px] opacity-60"></i>
+                       </button>`
+                    : `<button class="btnToggleRole px-1.5 py-0.5 rounded text-[9px] font-medium border border-dashed border-slate-300 dark:border-slate-700 text-slate-400 hover:text-indigo-600 hover:border-indigo-400 dark:hover:text-indigo-400 active:scale-95 transition-all flex items-center gap-1 cursor-pointer" 
+                        data-id="${d.id}" data-field="is_hrbliz" data-val="1" title="Standard Fleet Terminal. Click to designate as HRBLIZ Terminal">
+                        <i class="fas fa-plus text-[8px]"></i> HRBLIZ
+                       </button>`;
+
                 html += `
                     <tr class="themed-hover transition-colors ${isSelected ? 'bg-blue-500/5' : ''}" data-device-id="${d.id}">
                         <!-- Checkbox -->
@@ -1466,7 +1523,7 @@
                                 <span class="font-bold themed-text-primary text-xs" id="nameText_${d.id}">${escapeHtml(d.device_name)}</span>
                                 <button class="btnEditName opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 transition-opacity p-1 text-[11px]" 
                                     data-id="${d.id}" data-name="${escapeHtml(d.device_name)}" data-ip="${escapeHtml(d.ip_address)}" data-sn="${escapeHtml(d.serial_number || '')}"
-                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}"
+                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}" data-is-hrbliz="${d.is_hrbliz ? 1 : 0}"
                                     title="Edit Device Settings & Roles">
                                     <i class="fas fa-pencil-alt"></i>
                                 </button>
@@ -1506,7 +1563,10 @@
                         <td class="py-3 px-4">
                             <div class="flex flex-col gap-1">
                                 <div>${roleBadge}</div>
-                                <div>${attBadge}</div>
+                                <div class="flex items-center gap-1 flex-wrap">
+                                    ${attBadge}
+                                    ${hrblizBadge}
+                                </div>
                             </div>
                         </td>
 
@@ -1544,7 +1604,7 @@
                                 <!-- Edit Name & Roles -->
                                 <button class="btnEditName btn-action-edit p-2 rounded-lg text-xs font-semibold" 
                                     data-id="${d.id}" data-name="${escapeHtml(d.device_name)}" data-ip="${escapeHtml(d.ip_address)}" data-sn="${escapeHtml(d.serial_number || '')}"
-                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}"
+                                    data-is-reg="${d.is_registration ? 1 : 0}" data-for-att="${d.for_attendance ? 1 : 0}" data-is-active="${d.is_active ? 1 : 0}" data-is-hrbliz="${d.is_hrbliz ? 1 : 0}"
                                     title="Edit Device Name & Roles">
                                     <i class="fas fa-sliders-h"></i>
                                 </button>
@@ -1650,6 +1710,7 @@
                     document.getElementById('editRoleOperatingRadio').checked = !isReg;
                     document.getElementById('editForAttendanceCheckbox').checked = (btn.dataset.forAtt === '1');
                     document.getElementById('editIsActiveCheckbox').checked = (btn.dataset.isActive === '1');
+                    document.getElementById('editIsHrblizCheckbox').checked = (btn.dataset.isHrbliz === '1');
 
                     editNameError.classList.add('hidden');
                     openModal(editNameModal);
@@ -1765,6 +1826,7 @@
             const isReg = document.getElementById('editRoleRegisteringRadio').checked ? 1 : 0;
             const forAtt = document.getElementById('editForAttendanceCheckbox').checked ? 1 : 0;
             const isActive = document.getElementById('editIsActiveCheckbox').checked ? 1 : 0;
+            const isHrbliz = document.getElementById('editIsHrblizCheckbox').checked ? 1 : 0;
 
             if (!newName) {
                 editNameError.textContent = 'Device name cannot be blank.';
@@ -1789,7 +1851,8 @@
                         device_name: newName,
                         is_registration: isReg,
                         for_attendance: forAtt,
-                        is_active: isActive
+                        is_active: isActive,
+                        is_hrbliz: isHrbliz
                     })
                 });
                 const result = await res.json();
@@ -1801,6 +1864,7 @@
                         match.is_registration = result.data.is_registration;
                         match.for_attendance = result.data.for_attendance;
                         match.is_active = result.data.is_active;
+                        match.is_hrbliz = result.data.is_hrbliz;
                     }
 
                     recalculateStats();
@@ -1843,6 +1907,7 @@
                         dev.is_registration = result.data.is_registration;
                         dev.for_attendance = result.data.for_attendance;
                         dev.is_active = result.data.is_active;
+                        dev.is_hrbliz = result.data.is_hrbliz;
                     }
 
                     recalculateStats();
@@ -1861,12 +1926,15 @@
         function recalculateStats() {
             let reg = 0;
             let op = 0;
+            let hrbliz = 0;
             state.devices.forEach(d => {
                 if (d.is_registration) reg++;
                 else op++;
+                if (d.is_hrbliz) hrbliz++;
             });
             state.stats.registering = reg;
             state.stats.operating = op;
+            state.stats.hrbliz = hrbliz;
         }
 
         // Test All Connections
@@ -2071,6 +2139,10 @@
                     <div class="font-bold themed-text-primary mt-0.5">${d.for_attendance ? 'Attendance Capture' : 'General Terminal'}</div>
                 </div>
                 <div class="themed-subcard p-2.5 rounded-lg">
+                    <span class="text-[10px] uppercase font-semibold themed-text-muted">Device Fleet</span>
+                    <div class="font-bold ${d.is_hrbliz ? 'text-indigo-600 dark:text-indigo-400' : 'themed-text-primary'} mt-0.5">${d.is_hrbliz ? 'HRBLIZ Terminal' : 'Standard Terminal'}</div>
+                </div>
+                <div class="themed-subcard p-2.5 rounded-lg">
                     <span class="text-[10px] uppercase font-semibold themed-text-muted">Last Successful Ping</span>
                     <div class="font-bold themed-text-primary mt-0.5">${escapeHtml(d.last_seen_at || 'Never')}</div>
                 </div>
@@ -2107,6 +2179,7 @@
                     document.getElementById('editRoleOperatingRadio').checked = (d.is_registration != 1);
                     document.getElementById('editForAttendanceCheckbox').checked = (d.for_attendance == 1);
                     document.getElementById('editIsActiveCheckbox').checked = (d.is_active == 1);
+                    document.getElementById('editIsHrblizCheckbox').checked = (d.is_hrbliz == 1);
 
                     editNameError.classList.add('hidden');
                     openModal(editNameModal);
@@ -2231,6 +2304,7 @@
         const kpiBtnOperating = document.getElementById('kpiBtnOperating');
         const kpiBtnRegistering = document.getElementById('kpiBtnRegistering');
         const kpiBtnAttendance = document.getElementById('kpiBtnAttendance');
+        const kpiBtnHrbliz = document.getElementById('kpiBtnHrbliz');
 
         if (kpiBtnOperating) {
             kpiBtnOperating.addEventListener('click', () => {
@@ -2259,9 +2333,24 @@
                 fetchDevices();
             });
         }
+        if (kpiBtnHrbliz) {
+            kpiBtnHrbliz.addEventListener('click', () => {
+                const nextVal = filterHrbliz.value === '1' ? 'all' : '1';
+                filterHrbliz.value = nextVal;
+                state.hrbliz = nextVal;
+                state.meta.current_page = 1;
+                fetchDevices();
+            });
+        }
 
         filterActive.addEventListener('change', (e) => {
             state.active = e.target.value;
+            state.meta.current_page = 1;
+            fetchDevices();
+        });
+
+        filterHrbliz.addEventListener('change', (e) => {
+            state.hrbliz = e.target.value;
             state.meta.current_page = 1;
             fetchDevices();
         });

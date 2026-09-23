@@ -19,6 +19,7 @@ class Devices extends Model
         'is_active',
         'is_registration',
         'for_attendance',
+        'is_hrbliz',
         'fp_version',
         'last_seen_at',
         'last_cleared_at',
@@ -54,6 +55,7 @@ class Devices extends Model
         'is_active' => 'boolean',
         'is_registration' => 'boolean',
         'for_attendance' => 'boolean',
+        'is_hrbliz' => 'boolean',
     ];
 
     /**
@@ -96,5 +98,23 @@ class Devices extends Model
                     ->orWhere('last_cleared_at', '<=', $cutoff);
             });
     }
+
+    /**
+     * Scope for HRBLIZ devices
+     */
+    public function scopeHrbliz($query)
+    {
+        return $query->where('is_hrbliz', 1);
+    }
+
+    /**
+     * Scope for standard non-HRBLIZ devices
+     */
+     public function scopeStandard($query)
+     {
+         return $query->where(function ($q) {
+             $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
+         });
+     }
 }
 

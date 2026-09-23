@@ -68,6 +68,7 @@ class LogsService
             $parsedRecords = ZkPushParser::parseKeyValues($line);
             $device = $this->deviceRepository->findByIP($clientIp);
             $sourceSn = $requestSn ?? $device?->serial_number;
+            $isHrbliz = $device && (bool)$device->is_hrbliz;
 
             foreach ($parsedRecords as $record) {
                 $pin = ZkPushParser::resolveEmployeePin($record);
@@ -77,7 +78,7 @@ class LogsService
                 $template = $record['Template'] ?? $record['TMP'] ?? null;
 
                 if ($pin && $fid !== null && $template) {
-                    $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template);
+                    $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template, $isHrbliz);
                     if (!$isIdentical) {
                         $queuedCount = (int)($this->syncService?->syncBiometricToAll($sourceSn, 'FINGERTMP', $record) ?? 0);
 
@@ -89,7 +90,8 @@ class LogsService
                             $template,
                             $clientIp,
                             $sourceSn,
-                            $queuedCount
+                            $queuedCount,
+                            $isHrbliz
                         );
                     }
                 }
@@ -102,6 +104,7 @@ class LogsService
             $parsedRecords = ZkPushParser::parseKeyValues($line);
             $device = $this->deviceRepository->findByIP($clientIp);
             $sourceSn = $requestSn ?? $device?->serial_number;
+            $isHrbliz = $device && (bool)$device->is_hrbliz;
 
             foreach ($parsedRecords as $record) {
                 $pin = ZkPushParser::resolveEmployeePin($record);
@@ -109,11 +112,11 @@ class LogsService
                 $pri = $record['Pri'] ?? $record['pri'] ?? $record['Privilege'] ?? null;
 
                 if ($pin) {
-                    $isIdentical = Biometrics::isUserIdentical($pin, $record);
+                    $isIdentical = Biometrics::isUserIdentical($pin, $record, $isHrbliz);
 
                     if ($pri !== null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
                         $devAdmin = ((int)$pri === 1 || (int)$pri === 14) ? 1 : 0;
-                        $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                        $bioRecord = Biometrics::findByDevicePin($pin, $isHrbliz);
                         if ($bioRecord && (int)$bioRecord->privilege !== $devAdmin) {
                             $bioRecord->update(['privilege' => $devAdmin]);
                             $isIdentical = false;
@@ -292,20 +295,36 @@ class LogsService
             ]);
         }
 
+        $device = $this->deviceRepository->findByIP($clientIp);
+        $isHrbliz = $device && (bool)$device->is_hrbliz;
+        $rawPin = (int)$biometric_id;
+        $targetPin = $rawPin;
+
+        // Dynamic resolution based on device is_hrbliz marking
+        $matchedBio = Biometrics::findByDevicePin($rawPin, $isHrbliz);
+        if ($matchedBio && !empty($matchedBio->biometric_id)) {
+            $targetPin = (int)$matchedBio->biometric_id;
+        }
+
         $dateTime = \Carbon\Carbon::parse($datetime);
         $dateTimeStr = $dateTime->format('Y-m-d H:i:s');
 
-        // Skip duplicate entries — ZKTeco devices resend logs until they get OK
-        if ($this->logsRepository->logExists((int)$biometric_id, $dateTimeStr)) {
+        // Skip duplicate entries — check with both resolved canonical PIN and incoming raw PIN
+        if ($this->logsRepository->logExists($targetPin, $dateTimeStr) ||
+            ($targetPin !== $rawPin && $this->logsRepository->logExists($rawPin, $dateTimeStr))) {
             Log::channel('device_logs')->info('Duplicate log skipped', [
-                'biometric_id' => $biometric_id,
+                'biometric_id' => $targetPin,
+                'raw_pin' => $rawPin,
+                'is_hrbliz' => $isHrbliz,
                 'date_time' => $dateTimeStr,
             ]);
             return "OK";
         }
 
         $logData = [
-            'biometric_id' => $biometric_id,
+            'biometric_id' => $targetPin,
+            'raw_biometric_id' => $rawPin,
+            'is_hrbliz' => $isHrbliz,
             'dtr_date' => $dateTime->format('Y-m-d'),
             'dtr_time' => $dateTime->format('H:i:s'),
             'dtr_type' => $dtr_type,

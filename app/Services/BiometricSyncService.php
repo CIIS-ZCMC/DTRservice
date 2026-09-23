@@ -43,9 +43,18 @@ class BiometricSyncService
             return 0;
         }
 
+        $sourceDevice = (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices'))
+            ? Devices::where('serial_number', $sourceSn)->first()
+            : null;
+        $isSourceHrbliz = $sourceDevice && (bool)$sourceDevice->is_hrbliz;
+
+        $bioModel = null;
+        if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            $bioModel = \App\Models\Biometrics::findByDevicePin($pin, $isSourceHrbliz);
+        }
+
         $name = $userData['Name'] ?? $userData['name'] ?? null;
-        if (!$name && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
-            $bioModel = \App\Models\Biometrics::where('biometric_id', $pin)->first();
+        if (!$name) {
             $name = $bioModel?->name;
         }
         $name = $name ?? 'Unknown';
@@ -63,11 +72,19 @@ class BiometricSyncService
         $grp = 1;
         $tz = 1;
 
-        // Output both PIN and PIN2 so that keypad authentication succeeds on all device generations (v9 and v10)
-        $command = "DATA USER PIN={$pin}\tPIN2={$pin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
         $entries = [];
 
         foreach ($targetDevices as $device) {
+            $targetPin = $device->is_hrbliz
+                ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
+                : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
+
+            if (!$targetPin) {
+                continue;
+            }
+
+            // Output both PIN and PIN2 so that keypad authentication succeeds on all device generations (v9 and v10)
+            $command = "DATA USER PIN={$targetPin}\tPIN2={$targetPin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
             $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
 
@@ -78,7 +95,11 @@ class BiometricSyncService
         $sourceNeedsTimezoneFix = !empty($sourceSn) && ($isGrpInvalid || $isTzInvalid);
 
         if ($sourceNeedsTimezoneFix) {
-            $entries[] = ['device_sn' => $sourceSn, 'command' => $command];
+            $sourcePin = $isSourceHrbliz
+                ? ($bioModel?->hrbliz_biometric_id ?? $pin)
+                : ($bioModel?->biometric_id ?? $pin);
+            $fixCommand = "DATA USER PIN={$sourcePin}\tPIN2={$sourcePin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
+            $entries[] = ['device_sn' => $sourceSn, 'command' => $fixCommand];
         }
 
         $queuedCount = $this->commandService->queueCommandsBatch($entries);
@@ -120,22 +141,35 @@ class BiometricSyncService
 
         $entries = [];
 
+        $sourceDevice = (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices'))
+            ? Devices::where('serial_number', $sourceSn)->first()
+            : null;
+        $isSourceHrbliz = $sourceDevice && (bool)$sourceDevice->is_hrbliz;
+
+        $bioModel = null;
+        if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            $bioModel = \App\Models\Biometrics::findByDevicePin($pin, $isSourceHrbliz);
+        }
+        $name = $bioModel?->name ?? ($bioData['Name'] ?? 'Unknown');
+        $privilege = $bioModel?->privilege ?? ($bioData['Pri'] ?? 0);
+        $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
+
         // 1. Ensure user profile (DATA USER) is queued first so target device has the user record
         if ($ensureUser) {
-            $bioModel = null;
-            if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
-                $bioModel = \App\Models\Biometrics::where('biometric_id', $pin)->first();
-            }
-            $name = $bioModel?->name ?? ($bioData['Name'] ?? 'Unknown');
-            $privilege = $bioModel?->privilege ?? ($bioData['Pri'] ?? 0);
-            $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
-
-            $userCommand = "DATA USER PIN={$pin}\tPIN2={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
             foreach ($targetDevices as $device) {
+                $targetPin = $device->is_hrbliz
+                    ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
+                    : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
+
+                if (!$targetPin) {
+                    continue;
+                }
+
                 // Avoid duplicate consecutive pending user commands
-                $hasPendingUser = $this->commandService->hasPendingUserCommand($device->serial_number, (int)$pin);
+                $hasPendingUser = $this->commandService->hasPendingUserCommand($device->serial_number, (int)$targetPin);
 
                 if (!$hasPendingUser) {
+                    $userCommand = "DATA USER PIN={$targetPin}\tPIN2={$targetPin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
                     $entries[] = ['device_sn' => $device->serial_number, 'command' => $userCommand];
                 }
             }
@@ -143,49 +177,30 @@ class BiometricSyncService
 
         // 2. Queue the biometric template update command
         $tableName = strtolower($table);
-        $payloadSegments = [];
         $isFingerprint = in_array($tableName, ['fingertmp', 'templatev10', 'fp', 'template', 'fingertmpv10', 'templatev9']);
         $templateAlgo = null;
 
-        // Standardize fingerprint template payloads (always push downstream as fingertmp so all devices accept it)
         if ($isFingerprint) {
             $tableName = 'fingertmp';
             $fid = $bioData['FID'] ?? $bioData['Finger_ID'] ?? $bioData['FingerID'] ?? '0';
             $size = $bioData['Size'] ?? $bioData['size'] ?? strlen($bioData['TMP'] ?? $bioData['Template'] ?? '');
             $valid = $bioData['Valid'] ?? $bioData['valid'] ?? '1';
             $tmp = $bioData['TMP'] ?? $bioData['Template'] ?? '';
-            $sourceDevice = (!empty($sourceSn) && \Illuminate\Support\Facades\Schema::hasTable('devices'))
-                ? Devices::where('serial_number', $sourceSn)->first()
-                : null;
             $templateAlgo = ($sourceDevice && $sourceDevice->fp_version === 'v9')
                 ? 'v9'
                 : \App\Models\Biometrics::getTemplateAlgorithm($tmp);
-
-            $payloadSegments = [
-                "PIN={$pin}",
-                "FID={$fid}",
-                "Size={$size}",
-                "Valid={$valid}",
-                "TMP={$tmp}",
-            ];
-        } else {
-            foreach ($bioData as $k => $v) {
-                if ($k === 'type' || str_starts_with($k, '_') || str_contains($k, ' ')) {
-                    continue;
-                }
-                $payloadSegments[] = "{$k}={$v}";
-            }
-            if (!isset($bioData['PIN']) && !isset($bioData['Pin'])) {
-                array_unshift($payloadSegments, "PIN={$pin}");
-            }
         }
 
-        $payload = implode("\t", $payloadSegments);
-        $command = "DATA UPDATE {$tableName}\t{$payload}";
-
         foreach ($targetDevices as $device) {
+            $targetPin = $device->is_hrbliz
+                ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
+                : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
+
+            if (!$targetPin) {
+                continue;
+            }
+
             // For fingerprints, skip devices whose algorithm does not match the template algorithm
-            // (e.g. do not push v10 binary templates to v9 terminals, avoiding -1004 error and queue stall)
             if ($isFingerprint && $templateAlgo) {
                 $devAlgo = $device->getFingerprintAlgorithm();
                 if ($devAlgo !== $templateAlgo) {
@@ -193,6 +208,28 @@ class BiometricSyncService
                     continue;
                 }
             }
+
+            $payloadSegments = [];
+            if ($isFingerprint) {
+                $payloadSegments = [
+                    "PIN={$targetPin}",
+                    "FID={$fid}",
+                    "Size={$size}",
+                    "Valid={$valid}",
+                    "TMP={$tmp}",
+                ];
+            } else {
+                foreach ($bioData as $k => $v) {
+                    if ($k === 'type' || str_starts_with($k, '_') || str_contains($k, ' ') || strtoupper($k) === 'PIN') {
+                        continue;
+                    }
+                    $payloadSegments[] = "{$k}={$v}";
+                }
+                array_unshift($payloadSegments, "PIN={$targetPin}");
+            }
+
+            $payload = implode("\t", $payloadSegments);
+            $command = "DATA UPDATE {$tableName}\t{$payload}";
             $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
 
@@ -222,7 +259,16 @@ class BiometricSyncService
         bool $cleanUnusedFingers = true,
         ?\App\Models\Devices $targetDevice = null
     ): array {
-        $pin = (int)$bioModel->biometric_id;
+        $isHrbliz = $targetDevice && (bool)$targetDevice->is_hrbliz;
+        $pin = $isHrbliz 
+            ? ($bioModel->hrbliz_biometric_id ? (int)$bioModel->hrbliz_biometric_id : null)
+            : (int)$bioModel->biometric_id;
+
+        if ($pin === null || $pin <= 0) {
+            // Cannot provision user to this terminal without a valid assigned PIN for device fleet mode
+            return [];
+        }
+
         $name = $bioModel->name ?? 'Unknown';
         $privilege = $bioModel->privilege ?? 0;
         $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;

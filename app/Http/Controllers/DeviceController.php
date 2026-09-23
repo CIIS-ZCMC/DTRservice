@@ -40,6 +40,7 @@ class DeviceController extends Controller
         $registeringDevices = Devices::where('is_registration', 1)->count();
         $operatingDevices = $totalDevices - $registeringDevices;
         $attendanceDevices = Devices::where('for_attendance', 1)->count();
+        $hrblizDevices = Devices::where('is_hrbliz', 1)->count();
         $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
 
         return view('devices.index', compact(
@@ -49,6 +50,7 @@ class DeviceController extends Controller
             'registeringDevices',
             'operatingDevices',
             'attendanceDevices',
+            'hrblizDevices',
             'availabilityRate'
         ));
     }
@@ -119,10 +121,20 @@ class DeviceController extends Controller
                 $query->where('for_attendance', 0);
             }
 
+            // HRBLIZ filter
+            $hrbliz = $request->input('hrbliz', $request->input('is_hrbliz', 'all'));
+            if ($hrbliz === '1' || $hrbliz === 'true' || $hrbliz === 'hrbliz') {
+                $query->where('is_hrbliz', 1);
+            } elseif ($hrbliz === '0' || $hrbliz === 'false' || $hrbliz === 'standard') {
+                $query->where(function ($q) {
+                    $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
+                });
+            }
+
             // Dynamic Sorting
             $sortBy = $request->input('sort_by', 'id');
             $sortDir = strtolower($request->input('sort_dir', 'asc')) === 'desc' ? 'desc' : 'asc';
-            $allowedSort = ['id', 'device_name', 'ip_address', 'is_active', 'is_registration'];
+            $allowedSort = ['id', 'device_name', 'ip_address', 'is_active', 'is_registration', 'for_attendance', 'is_hrbliz'];
             if ($hasLastSeen) {
                 $allowedSort[] = 'last_seen_at';
             }
@@ -139,6 +151,7 @@ class DeviceController extends Controller
             $registeringDevices = Devices::where('is_registration', 1)->count();
             $operatingDevices = $totalDevices - $registeringDevices;
             $attendanceDevices = Devices::where('for_attendance', 1)->count();
+            $hrblizDevices = Devices::where('is_hrbliz', 1)->count();
             $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
 
             $perPage = $request->input('per_page', 10);
@@ -184,6 +197,7 @@ class DeviceController extends Controller
                     'registering' => $registeringDevices,
                     'operating' => $operatingDevices,
                     'attendance' => $attendanceDevices,
+                    'hrbliz' => $hrblizDevices,
                     'availability_rate' => $availabilityRate,
                 ],
             ]);
@@ -214,6 +228,7 @@ class DeviceController extends Controller
             'is_active' => (bool)$device->is_active,
             'is_registration' => (bool)$device->is_registration,
             'for_attendance' => (bool)$device->for_attendance,
+            'is_hrbliz' => (bool)$device->is_hrbliz,
             'receiver_by_default' => (bool)($device->receiver_by_default ?? false),
             'is_online' => $isOnline,
             'connection_status' => $isOnline ? 'online' : 'offline',
@@ -346,6 +361,7 @@ class DeviceController extends Controller
                 'is_registration' => 'nullable|boolean',
                 'for_attendance' => 'nullable|boolean',
                 'is_active' => 'nullable|boolean',
+                'is_hrbliz' => 'nullable|boolean',
             ]);
 
             $updates = [];
@@ -380,6 +396,14 @@ class DeviceController extends Controller
                 if ($isActive !== (bool)$device->is_active) {
                     $updates['is_active'] = $isActive;
                     $changesDesc[] = $isActive ? 'activated terminal' : 'deactivated terminal';
+                }
+            }
+
+            if ($request->has('is_hrbliz')) {
+                $isHrbliz = (bool)$request->input('is_hrbliz');
+                if ($isHrbliz !== (bool)$device->is_hrbliz) {
+                    $updates['is_hrbliz'] = $isHrbliz;
+                    $changesDesc[] = $isHrbliz ? 'marked as HRBLIZ terminal' : 'marked as Standard terminal';
                 }
             }
 
@@ -428,7 +452,7 @@ class DeviceController extends Controller
             $field = $request->input('field');
             $value = $request->input('value');
 
-            $allowedFields = ['is_active', 'is_registration', 'for_attendance', 'receiver_by_default'];
+            $allowedFields = ['is_active', 'is_registration', 'for_attendance', 'receiver_by_default', 'is_hrbliz'];
             if (!in_array($field, $allowedFields)) {
                 return response()->json(['message' => "Field '{$field}' cannot be updated"], 422);
             }
@@ -966,6 +990,9 @@ class DeviceController extends Controller
             }
         }
 
+        $device = !empty($sn) ? Devices::where('serial_number', $sn)->first() : null;
+        $isHrbliz = $device && (bool)$device->is_hrbliz;
+
         // User registration push (firmwares send USER, USERINFO, or USERS)
         if (in_array($table, ['USER', 'USERINFO', 'USERS'])) {
             $records = ZkPushParser::parseKeyValues($raw);
@@ -975,11 +1002,11 @@ class DeviceController extends Controller
                 $pri = $record['Pri'] ?? $record['Privilege'] ?? null;
 
                 if ($pin) {
-                    $isIdentical = Biometrics::isUserIdentical($pin, $record);
+                    $isIdentical = Biometrics::isUserIdentical($pin, $record, $isHrbliz);
 
                     if ($pri !== null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
                         $devAdmin = ((int)$pri === 1 || (int)$pri === 14) ? 1 : 0;
-                        $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                        $bioRecord = Biometrics::findByDevicePin($pin, $isHrbliz);
                         if ($bioRecord && (int)$bioRecord->privilege !== $devAdmin) {
                             $bioRecord->update(['privilege' => $devAdmin]);
                             $isIdentical = false;
@@ -1020,7 +1047,7 @@ class DeviceController extends Controller
 
                 // A. Face templates (BIODATA, FACE)
                 if (in_array($table, ['BIODATA', 'FACE'])) {
-                    $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                    $bioRecord = Biometrics::findByDevicePin($pin, $isHrbliz);
                     if ($bioRecord) {
                         $bioRecord->update(['face' => json_encode($record)]);
                     }
@@ -1030,7 +1057,7 @@ class DeviceController extends Controller
 
                 // B. BioPhoto / User picture (BIOPHOTO, USERPIC, BIOPIC)
                 if (in_array($table, ['BIOPHOTO', 'USERPIC', 'BIOPIC'])) {
-                    $bioRecord = Biometrics::where('biometric_id', $pin)->first();
+                    $bioRecord = Biometrics::findByDevicePin($pin, $isHrbliz);
                     if ($bioRecord) {
                         $bioRecord->update(['biophoto' => json_encode($record)]);
                     }
@@ -1045,7 +1072,7 @@ class DeviceController extends Controller
                 $template = $record['Template'] ?? $record['TMP'] ?? null;
 
                 if ($fid !== null && $template) {
-                    $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template);
+                    $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template, $isHrbliz);
 
                     if (!$isIdentical) {
                         $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, $table, $record);
@@ -1057,7 +1084,8 @@ class DeviceController extends Controller
                             $template,
                             $request->ip(),
                             $sn,
-                            $queuedCount
+                            $queuedCount,
+                            $isHrbliz
                         );
                     }
                 }
@@ -1080,6 +1108,8 @@ class DeviceController extends Controller
 
         $raw = $request->getContent();
         $records = ZkPushParser::parseKeyValues($raw);
+        $device = !empty($sn) ? Devices::where('serial_number', $sn)->first() : null;
+        $isHrbliz = $device && (bool)$device->is_hrbliz;
 
         foreach ($records as $record) {
             $pin = ZkPushParser::resolveEmployeePin($record);
@@ -1089,7 +1119,7 @@ class DeviceController extends Controller
             $template = $record['Template'] ?? $record['TMP'] ?? null;
 
             if ($pin && $fid !== null && $template) {
-                $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template);
+                $isIdentical = Biometrics::isFingerprintIdentical($pin, $fid, $template, $isHrbliz);
 
                 if (!$isIdentical) {
                     $queuedCount = (int)$this->syncService->syncBiometricToAll($sn, 'FINGERTMP', $record);
@@ -1101,7 +1131,8 @@ class DeviceController extends Controller
                         $template,
                         $request->ip(),
                         $sn,
-                        $queuedCount
+                        $queuedCount,
+                        $isHrbliz
                     );
                 }
             }

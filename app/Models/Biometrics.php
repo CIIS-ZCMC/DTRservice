@@ -24,12 +24,19 @@ class Biometrics extends Model
 
    protected $fillable = [
        'biometric_id',
+       'hrbliz_biometric_id',
        'name',
        'privilege',
        'biometric',
        'face',
        'biophoto',
        'name_with_biometric',
+   ];
+
+   protected $casts = [
+       'biometric_id' => 'integer',
+       'hrbliz_biometric_id' => 'integer',
+       'privilege' => 'integer',
    ];
 
     protected static function booted(): void
@@ -153,6 +160,47 @@ class Biometrics extends Model
         });
     }
 
+    /**
+     * Find a biometric record by device PIN based on the device fleet mode (HRBLIZ vs Standard).
+     *
+     * @param int|string $pin
+     * @param bool $isHrbliz Whether the originating device is marked as an HRBLIZ terminal
+     * @return static|null
+     */
+    public static function findByDevicePin(int|string $pin, bool $isHrbliz = false): ?self
+    {
+        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            return null;
+        }
+
+        $intPin = (int)$pin;
+        if ($isHrbliz) {
+            return self::where('hrbliz_biometric_id', $intPin)->first();
+        }
+
+        return self::where('biometric_id', $intPin)->first();
+    }
+
+    /**
+     * Get the device-appropriate PIN for this biometric record.
+     * Returns hrbliz_biometric_id for HRBLIZ devices, or biometric_id for standard devices.
+     *
+     * @param \App\Models\Devices|bool $deviceOrIsHrbliz
+     * @return int|null
+     */
+    public function getPinForDevice(\App\Models\Devices|bool $deviceOrIsHrbliz): ?int
+    {
+        $isHrbliz = $deviceOrIsHrbliz instanceof \App\Models\Devices 
+            ? (bool)$deviceOrIsHrbliz->is_hrbliz 
+            : (bool)$deviceOrIsHrbliz;
+
+        if ($isHrbliz) {
+            return $this->hrbliz_biometric_id ? (int)$this->hrbliz_biometric_id : null;
+        }
+
+        return $this->biometric_id ? (int)$this->biometric_id : null;
+    }
+
    /**
     * Add or update a fingerprint template for a biometric user.
     * If the biometric field is null, empty, or 'NOT_YET_REGISTERED', it replaces it with the new template array.
@@ -163,6 +211,10 @@ class Biometrics extends Model
     * @param int|string $size Template size
     * @param int|string $valid Validity flag (usually 1)
     * @param string $template Base64 / ZK template string
+    * @param string|null $ipAddress
+    * @param string|null $deviceSn
+    * @param int $syncedDevicesCount
+    * @param bool $isHrbliz
     * @return static
     */
    public static function saveFingerprintTemplate(
@@ -173,13 +225,16 @@ class Biometrics extends Model
        string $template,
        ?string $ipAddress = null,
        ?string $deviceSn = null,
-       int $syncedDevicesCount = 0
+       int $syncedDevicesCount = 0,
+       bool $isHrbliz = false
    ): ?self {
        if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
            return null;
        }
 
-       $record = self::where('biometric_id', $biometricId)->first();
+       $device = $deviceSn && \Illuminate\Support\Facades\Schema::hasTable('devices') ? \App\Models\Devices::where('serial_number', $deviceSn)->first() : null;
+       $effectiveHrbliz = $isHrbliz || ($device && (bool)$device->is_hrbliz);
+       $record = self::findByDevicePin($biometricId, $effectiveHrbliz);
 
        if (!$record) {
            $name = null;
@@ -202,7 +257,12 @@ class Biometrics extends Model
            }
 
            $record = new self();
-           $record->biometric_id = $biometricId;
+           if ($effectiveHrbliz) {
+               $record->hrbliz_biometric_id = $biometricId;
+               $record->biometric_id = $biometricId;
+           } else {
+               $record->biometric_id = $biometricId;
+           }
            $record->name = $name ?? 'Unknown';
            $record->privilege = 0;
        }
@@ -261,15 +321,16 @@ class Biometrics extends Model
      * @param int|string $biometricId
      * @param int|string $fingerId
      * @param string $template
+     * @param bool $isHrbliz
      * @return bool True if exact template already exists in database
      */
-    public static function isFingerprintIdentical(int|string $biometricId, int|string $fingerId, string $template): bool
+    public static function isFingerprintIdentical(int|string $biometricId, int|string $fingerId, string $template, bool $isHrbliz = false): bool
     {
         if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
             return false;
         }
 
-        $record = self::where('biometric_id', (int)$biometricId)->first();
+        $record = self::findByDevicePin($biometricId, $isHrbliz);
         if (!$record || empty($record->biometric) || $record->biometric === 'NOT_YET_REGISTERED') {
             return false;
         }
@@ -299,15 +360,16 @@ class Biometrics extends Model
      *
      * @param int|string $pin
      * @param array $userData
+     * @param bool $isHrbliz
      * @return bool True if user exists and name/privilege match
      */
-    public static function isUserIdentical(int|string $pin, array $userData): bool
+    public static function isUserIdentical(int|string $pin, array $userData, bool $isHrbliz = false): bool
     {
         if (!\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
             return false;
         }
 
-        $record = self::where('biometric_id', (int)$pin)->first();
+        $record = self::findByDevicePin($pin, $isHrbliz);
         if (!$record) {
             return false;
         }
