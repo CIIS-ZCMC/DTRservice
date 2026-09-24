@@ -134,3 +134,36 @@ test('command runner successfully runs a whitelisted command and captures output
     expect($data['exit_code'])->toBe(0);
     expect($data['output'])->not->toBeEmpty();
 });
+
+test('biometrics:delete-user enforces strict deletion using exact written PIN without translation', function () {
+    $dev = Devices::create([
+        'device_name' => 'Registration Device 161',
+        'serial_number' => 'UCR_TEST_DELETE',
+        'ip_address' => '192.168.5.161',
+        'is_active' => 1,
+    ]);
+
+    // Create a biometric record with a different ID (493) to ensure it is NOT substituted
+    Biometrics::create([
+        'biometric_id' => 493,
+        'name' => 'Existing User',
+    ]);
+
+    $cmdService = app(\App\Services\DeviceCommandService::class);
+    $cmdService->clearCommands('UCR_TEST_DELETE');
+
+    // Run strict deletion for PIN 5180
+    $exitCode = $this->artisan('biometrics:delete-user', [
+        'pin' => '5180',
+        'device_sn' => 'UCR_TEST_DELETE',
+    ])->run();
+
+    expect($exitCode)->toBe(0);
+
+    $queued = $cmdService->getPendingCommands('UCR_TEST_DELETE');
+    expect($queued)->toHaveCount(1);
+    expect($queued[0]['command'])->toBe('DATA DELETE USER PIN=5180');
+    expect($queued[0]['command'])->not->toContain('493');
+
+    $cmdService->clearCommands('UCR_TEST_DELETE');
+});

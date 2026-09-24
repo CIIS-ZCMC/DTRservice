@@ -30,7 +30,7 @@ class DeleteBiometricUser extends Command
 
     public function handle(BiometricSyncService $syncService, DeviceCommandService $commandService): int
     {
-        $pin = (string)$this->argument('pin');
+        $pin = trim((string)$this->argument('pin'));
         $deviceSn = $this->argument('device_sn');
         $allDevices = $this->option('all-devices');
         $withDb = $this->option('with-db');
@@ -40,9 +40,6 @@ class DeleteBiometricUser extends Command
             return 1;
         }
 
-        $bioModel = \App\Models\Biometrics::findByDevicePin((int)$pin, false)
-            ?? \App\Models\Biometrics::findByDevicePin((int)$pin, true);
-
         $queuedCount = 0;
 
         if ($allDevices) {
@@ -51,31 +48,15 @@ class DeleteBiometricUser extends Command
                 ->where('serial_number', '!=', '')
                 ->where('serial_number', '!=', 'Fail!');
 
-            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
-                \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
-                $query->canReceiveSync();
-            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
-                $query->where(function ($q) {
-                    $q->whereNull('receiver_by_default')->orWhere('receiver_by_default', 1);
-                });
-            }
-
             $devices = $query->get()->unique('serial_number');
 
             foreach ($devices as $dev) {
-                $targetPin = $dev->is_hrbliz
-                    ? ($bioModel?->hrbliz_biometric_id ?? null)
-                    : ($bioModel?->biometric_id ?? $pin);
-
-                if (!$targetPin) {
-                    continue;
-                }
-
-                $devCommand = "DATA DELETE USER PIN={$targetPin}";
+                // Strict deletion: what is written is what is used
+                $devCommand = "DATA DELETE USER PIN={$pin}";
                 $commandService->queueCommand($dev->serial_number, $devCommand);
                 $queuedCount++;
             }
-            $this->info("Queued DATA DELETE USER to {$queuedCount} active device(s).");
+            $this->info("Queued strict DATA DELETE USER PIN={$pin} to {$queuedCount} active device(s).");
         } else {
             $device = Devices::where('serial_number', $deviceSn)->first();
             if (!$device) {
@@ -83,30 +64,17 @@ class DeleteBiometricUser extends Command
                 return 1;
             }
 
-            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
-                \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
-                if (!$device->canReceiveSync()) {
-                    $this->error("Cannot dispatch delete to device [{$deviceSn}]: Device has receiver_by_default disabled.");
-                    return 1;
-                }
-            }
-
-            $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?? null)
-                : ($bioModel?->biometric_id ?? $pin);
-
-            if (!$targetPin) {
-                $this->error("Cannot delete user from HRBLIZ device: User has no hrbliz_biometric_id assigned.");
-                return 1;
-            }
-
-            $devCommand = "DATA DELETE USER PIN={$targetPin}";
+            // Strict deletion: what is written is what is used.
+            // Explicit manual deletion dispatched to target device directly.
+            $devCommand = "DATA DELETE USER PIN={$pin}";
             $commandService->queueCommand($deviceSn, $devCommand);
-            $this->info("Queued DATA DELETE USER PIN={$targetPin} to device {$device->device_name} ({$deviceSn}).");
+            $this->info("Queued strict DATA DELETE USER PIN={$pin} to device {$device->device_name} ({$deviceSn}).");
         }
 
         if ($withDb) {
-            $user = Biometrics::where('biometric_id', $pin)->first();
+            $user = Biometrics::where('biometric_id', $pin)
+                ->orWhere('hrbliz_biometric_id', $pin)
+                ->first();
             if ($user) {
                 $user->delete();
                 $this->info("Deleted PIN {$pin} from the database biometrics table.");
