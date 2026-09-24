@@ -138,8 +138,9 @@ php artisan biometrics:sync-device --all-devices --no-clean
 Once the provisioning command is executed:
 
 1. **Per-Device Queueing & File Segregation (`storage/app/device_queues/`)**:
-   - The server compiles all user profiles (`DATA USER`), fingerprint templates (`DATA UPDATE fingertmp`), and deletion commands into dedicated, segregated queue files named after each device: `storage/app/device_queues/<device_name>.json` (falling back to `<serial_number>.json` if device name is unassigned).
-   - **50MB Rotation**: If a terminal's queue file reaches 50MB, it automatically rotates to numbered files (`<device_name>_1.json`, `<device_name>_2.json`, etc.) while preserving all existing commands.
+   - The server compiles all user profiles (`DATA USER`), fingerprint templates (`DATA UPDATE fingertmp`), and deletion commands into dedicated, segregated queue files named with both device name and hardware serial number: `storage/app/device_queues/<device_name>_(<serial_number>).json` (e.g. `ATTENDANCE 160_(UCR6254000010).json`). If no name is assigned, it falls back to `<serial_number>_(<serial_number>).json`.
+   - **Hardware Serial Number Discovery**: When a terminal connects and polls `/iclock/getrequest?SN=<serial_number>`, the server discovers and reads its command queue files by matching its unique serial number pattern (`*(<serial_number>)*.json`). Even if the device name is modified in MySQL, the terminal immediately finds and processes all its assigned commands.
+   - **50MB Rotation**: If a terminal's queue file reaches 50MB, it automatically rotates to numbered files (`<device_name>_(<serial_number>)_1.json`, `<device_name>_(<serial_number>)_2.json`, etc.) while preserving all existing commands.
    - **Complete Isolation**: High-volume provisioning tasks on one terminal do not bloat or delay command delivery to any other terminal in the fleet.
 2. **Gradual Polling**:
    - The device regularly polls `/iclock/getrequest?SN=<SERIAL_NUMBER>`.

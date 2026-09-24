@@ -61,7 +61,7 @@ class DeviceCommandService
      */
     public function getSanitizedDeviceName(string $name): string
     {
-        $safe = preg_replace('[/\\\\:*?"<>|]', '_', trim($name));
+        $safe = str_replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], '_', trim($name));
         $safe = preg_replace('/[\x00-\x1F\x7F]/', '', $safe);
         return $safe !== '' ? $safe : 'unknown_device';
     }
@@ -95,45 +95,79 @@ class DeviceCommandService
     }
 
     /**
-     * Get the primary queue file path for a specific device.
+     * Get the standardized file prefix for a device: {deviceName}_({serialNumber})
+     */
+    public function getDeviceFilePrefix(string $deviceSn): string
+    {
+        $deviceName = $this->getDeviceNameForSn($deviceSn);
+        $sn = $this->getSanitizedDeviceName($deviceSn);
+        return "{$deviceName}_({$sn})";
+    }
+
+    /**
+     * Get the primary queue file path for a specific device: {deviceName}_({serialNumber}).json
      */
     public function getDeviceQueueFile(string $deviceSn): string
     {
-        $deviceName = $this->getDeviceNameForSn($deviceSn);
-        return $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}.json";
+        $prefix = $this->getDeviceFilePrefix($deviceSn);
+        return $this->baseDir . DIRECTORY_SEPARATOR . "{$prefix}.json";
     }
 
     /**
      * Get all command files for a specific device in chronological order (main + rotated numbered files).
+     * Discovers files by hardware serial number *({serialNumber})*.json as well as exact prefix.
      *
      * @param string $deviceSn
      * @return array<string>
      */
     public function getAllCommandFilesForDevice(string $deviceSn): array
     {
-        $deviceName = $this->getDeviceNameForSn($deviceSn);
-        $primary = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}.json";
+        $prefix = $this->getDeviceFilePrefix($deviceSn);
+        $sanitizedSn = $this->getSanitizedDeviceName($deviceSn);
+        $primary = $this->baseDir . DIRECTORY_SEPARATOR . "{$prefix}.json";
 
         $files = [];
-        if (file_exists($primary)) {
-            $files[0] = $primary;
+
+        // 1. Check for files matching current prefix: {prefix}.json and {prefix}_{number}.json
+        $currentMatches = glob($this->baseDir . DIRECTORY_SEPARATOR . $prefix . '*.json') ?: [];
+        foreach ($currentMatches as $match) {
+            $filename = basename($match);
+            if ($filename === "{$prefix}.json") {
+                $files[0] = $match;
+            } elseif (preg_match('/^' . preg_quote($prefix, '/') . '_(\d+)\.json$/', $filename, $m)) {
+                $files[(int)$m[1]] = $match;
+            }
         }
 
-        // Check for rotated numbered files: {deviceName}_{number}.json
-        $pattern = $this->baseDir . DIRECTORY_SEPARATOR . $deviceName . '_*.json';
-        $matches = glob($pattern) ?: [];
-
-        foreach ($matches as $match) {
+        // 2. Discover files by hardware serial number: *({sanitizedSn})*.json and *({sanitizedSn})_*.json
+        $snPattern = $this->baseDir . DIRECTORY_SEPARATOR . "*({$sanitizedSn})*.json";
+        $snMatches = glob($snPattern) ?: [];
+        foreach ($snMatches as $match) {
+            if (in_array($match, $files)) {
+                continue;
+            }
             $filename = basename($match);
-            if (preg_match('/^' . preg_quote($deviceName, '/') . '_(\d+)\.json$/', $filename, $m)) {
-                $num = (int)$m[1];
-                $files[$num] = $match;
+            if (preg_match('/_(\d+)\.json$/', $filename, $m)) {
+                $files[(int)$m[1]] = $match;
+            } else {
+                if (!isset($files[0])) {
+                    $files[0] = $match;
+                } else {
+                    $files[] = $match;
+                }
             }
         }
 
         ksort($files);
 
-        // Also check if any file in baseDir has commands matching this serial number (e.g. if device was renamed)
+        // 3. Fallback: check if legacy unsegregated or older named files exist (e.g. {deviceName}.json)
+        $deviceName = $this->getDeviceNameForSn($deviceSn);
+        $legacyPrimary = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}.json";
+        if (file_exists($legacyPrimary) && !in_array($legacyPrimary, $files)) {
+            $files[] = $legacyPrimary;
+        }
+
+        // 4. Content fallback: scan files containing `"device_sn":"<sn>"`
         $allBaseFiles = glob($this->baseDir . DIRECTORY_SEPARATOR . '*.json') ?: [];
         $snNeedle = '"device_sn":"' . $deviceSn . '"';
         foreach ($allBaseFiles as $f) {
@@ -179,7 +213,7 @@ class DeviceCommandService
 
     /**
      * Determine the active file to write new commands for a specific device.
-     * If the current file has reached maxSizeBytes (50MB), creates next numbered file: {deviceName}_{index}.json
+     * If the current file has reached maxSizeBytes (50MB), creates next numbered file: {deviceName}_({serialNumber})_{index}.json
      */
     public function getActiveWriteFileForDevice(string $deviceSn): string
     {
@@ -189,9 +223,9 @@ class DeviceCommandService
         if (file_exists($latestFile)) {
             clearstatcache(true, $latestFile);
             if (filesize($latestFile) >= $this->maxSizeBytes) {
-                $deviceName = $this->getDeviceNameForSn($deviceSn);
-                $nextIndex = $this->getNextFileIndexForDevice($deviceName);
-                return $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}_{$nextIndex}.json";
+                $prefix = $this->getDeviceFilePrefix($deviceSn);
+                $nextIndex = $this->getNextFileIndexForPrefix($prefix);
+                return $this->baseDir . DIRECTORY_SEPARATOR . "{$prefix}_{$nextIndex}.json";
             }
         }
 
@@ -199,15 +233,15 @@ class DeviceCommandService
     }
 
     /**
-     * Get the next incremental file number index for a device.
+     * Get the next incremental file number index for a device prefix.
      */
-    protected function getNextFileIndexForDevice(string $deviceName): int
+    public function getNextFileIndexForPrefix(string $prefix): int
     {
         $maxIndex = 0;
-        $matches = glob($this->baseDir . DIRECTORY_SEPARATOR . $deviceName . '_*.json') ?: [];
+        $matches = glob($this->baseDir . DIRECTORY_SEPARATOR . $prefix . '_*.json') ?: [];
         foreach ($matches as $match) {
             $filename = basename($match);
-            if (preg_match('/^' . preg_quote($deviceName, '/') . '_(\d+)\.json$/', $filename, $m)) {
+            if (preg_match('/^' . preg_quote($prefix, '/') . '_(\d+)\.json$/', $filename, $m)) {
                 $num = (int)$m[1];
                 if ($num > $maxIndex) {
                     $maxIndex = $num;
@@ -216,6 +250,14 @@ class DeviceCommandService
         }
 
         return $maxIndex + 1;
+    }
+
+    /**
+     * Backward-compatible helper for getting next file index by device name or prefix.
+     */
+    protected function getNextFileIndexForDevice(string $deviceName): int
+    {
+        return $this->getNextFileIndexForPrefix($deviceName);
     }
 
     /**
@@ -230,7 +272,7 @@ class DeviceCommandService
 
     /**
      * Safely open a file with the requested lock type (LOCK_SH or LOCK_EX).
-     * Retries on Windows lock contention and forces binary mode ('b').
+     * Retries with non-blocking LOCK_NB to prevent hanging processes on Windows.
      *
      * @param string $filePath
      * @param string $mode
@@ -248,7 +290,7 @@ class DeviceCommandService
         while ($attempts < $maxRetries) {
             $fp = @fopen($filePath, $mode);
             if ($fp) {
-                if (@flock($fp, $lockType)) {
+                if (@flock($fp, $lockType | LOCK_NB)) {
                     return $fp;
                 }
                 fclose($fp);
@@ -258,6 +300,42 @@ class DeviceCommandService
         }
 
         return false;
+    }
+
+    /**
+     * Extract the highest command ID from an already open file stream.
+     * Avoids opening a second handle to the same file which causes self-deadlocks on Windows.
+     */
+    public function getLastIdFromResource($fp): int
+    {
+        if (!is_resource($fp)) {
+            return 0;
+        }
+
+        fseek($fp, 0, SEEK_END);
+        $size = ftell($fp);
+        if ($size === 0) {
+            return 0;
+        }
+
+        $readSize = min($size, 8192);
+        fseek($fp, max(0, $size - $readSize));
+        $chunk = fread($fp, $readSize);
+        if ($chunk !== false && preg_match_all('/"id":\s*(\d+)/', $chunk, $matches)) {
+            $ids = array_map('intval', $matches[1]);
+            return !empty($ids) ? max($ids) : 0;
+        }
+
+        if ($size <= 1048576) {
+            rewind($fp);
+            $content = stream_get_contents($fp);
+            if (preg_match_all('/"id":\s*(\d+)/', $content, $matches)) {
+                $ids = array_map('intval', $matches[1]);
+                return !empty($ids) ? max($ids) : 0;
+            }
+        }
+
+        return 0;
     }
 
     /**
@@ -610,9 +688,9 @@ class DeviceCommandService
             if ($curSize >= $this->maxSizeBytes) {
                 @flock($fp, LOCK_UN);
                 fclose($fp);
-                $deviceName = $this->getDeviceNameForSn($deviceSn);
-                $nextIndex = $this->getNextFileIndexForDevice($deviceName);
-                $targetFile = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}_{$nextIndex}.json";
+                $prefix = $this->getDeviceFilePrefix($deviceSn);
+                $nextIndex = $this->getNextFileIndexForPrefix($prefix);
+                $targetFile = $this->baseDir . DIRECTORY_SEPARATOR . "{$prefix}_{$nextIndex}.json";
                 $this->normalizeFileIfNeeded($targetFile);
                 $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
                 if (!$fp) {
@@ -621,7 +699,19 @@ class DeviceCommandService
                 $curSize = 0;
             }
 
-            $maxId = $this->getMaxIdFromFiles($this->getAllCommandFiles());
+            // Exclude $targetFile from getMaxIdFromFiles to prevent self-deadlock on Windows.
+            // Read max ID for $targetFile directly from $fp!
+            $allFiles = $this->getAllCommandFiles();
+            $targetRealPath = realpath($targetFile) ?: $targetFile;
+            $otherFiles = array_filter($allFiles, function ($f) use ($targetRealPath) {
+                $fReal = realpath($f) ?: $f;
+                return strcasecmp($fReal, $targetRealPath) !== 0;
+            });
+            $maxId = $this->getMaxIdFromFiles($otherFiles);
+            $idFromFp = $this->getLastIdFromResource($fp);
+            if ($idFromFp > $maxId) {
+                $maxId = $idFromFp;
+            }
             $nextId = $maxId + 1;
             $now = now()->toDateTimeString();
 
@@ -781,9 +871,9 @@ class DeviceCommandService
                         @flock($fp, LOCK_UN);
                         fclose($fp);
 
-                        $deviceName = $this->getDeviceNameForSn($deviceSn);
-                        $nextIndex = $this->getNextFileIndexForDevice($deviceName);
-                        $targetFile = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}_{$nextIndex}.json";
+                        $prefix = $this->getDeviceFilePrefix($deviceSn);
+                        $nextIndex = $this->getNextFileIndexForPrefix($prefix);
+                        $targetFile = $this->baseDir . DIRECTORY_SEPARATOR . "{$prefix}_{$nextIndex}.json";
                         $this->normalizeFileIfNeeded($targetFile);
                         $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
                         if (!$fp) {

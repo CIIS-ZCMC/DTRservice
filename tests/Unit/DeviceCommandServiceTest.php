@@ -5,8 +5,8 @@ use App\Services\DeviceCommandService;
 uses(Tests\TestCase::class);
 
 beforeEach(function () {
-    $this->testFilePath = storage_path('app/test_device_commands.json');
-    $this->service = new DeviceCommandService($this->testFilePath);
+    $this->testDir = storage_path('framework/testing/device_queues');
+    $this->service = new DeviceCommandService($this->testDir);
     $this->service->clearCommands();
 });
 
@@ -109,11 +109,12 @@ test('hasPendingCommand and hasPendingUserCommand treat SENT commands as active 
 
 test('creates a new numbered file instead of clearing when size limit is reached and checks queue across all files', function () {
     // Create a service with a tiny size limit of 150 bytes to test file rotation
-    $smallLimitService = new DeviceCommandService($this->testFilePath, 150);
+    $smallLimitService = new DeviceCommandService($this->testDir, 150);
 
     $smallLimitService->queueCommand('DEV_001', 'CMD_A_INITIAL_COMMAND');
-    expect(file_exists($this->testFilePath))->toBeTrue();
-    expect(filesize($this->testFilePath))->toBeGreaterThan(0);
+    $devFile = $smallLimitService->getDeviceQueueFile('DEV_001');
+    expect(file_exists($devFile))->toBeTrue();
+    expect(filesize($devFile))->toBeGreaterThan(0);
 
     // Queue more commands so size exceeds 150 bytes and creates a numbered file
     $smallLimitService->queueCommand('DEV_001', 'CMD_B_LONGER_COMMAND_EXCEEDING_LIMIT_PADDING_1234567890');
@@ -136,18 +137,19 @@ test('creates a new numbered file instead of clearing when size limit is reached
 });
 
 test('automatically deletes queue file when all commands in it are SUCCESS and retains if pending', function () {
-    $cleanTestPath = storage_path('framework/testing/test_auto_prune.json');
-    $cleanTestPath1 = storage_path('framework/testing/test_auto_prune_1.json');
-    @unlink($cleanTestPath);
-    @unlink($cleanTestPath1);
-
-    $pruneService = new DeviceCommandService($cleanTestPath, 350);
+    $pruneService = new DeviceCommandService($this->testDir, 350);
+    $pruneService->clearCommands();
 
     // Queue 4 commands that span across 2 files
     $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=1');
     $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=2');
     $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=3');
     $pruneService->queueCommand('SN_TEST', 'DATA USER PIN=4');
+
+    $allFiles = $pruneService->getAllCommandFilesForDevice('SN_TEST');
+    expect(count($allFiles))->toBe(2);
+    $cleanTestPath = $allFiles[0];
+    $cleanTestPath1 = $allFiles[1];
 
     expect(file_exists($cleanTestPath))->toBeTrue();
     expect(file_exists($cleanTestPath1))->toBeTrue();
@@ -174,12 +176,11 @@ test('automatically deletes queue file when all commands in it are SUCCESS and r
     // Second file must now be automatically deleted!
     expect(file_exists($cleanTestPath1))->toBeFalse();
 
-    @unlink($cleanTestPath);
-    @unlink($cleanTestPath1);
+    $pruneService->clearCommands();
 });
 
 test('auto-migrates existing JSON array file to NDJSON on queueCommand without dropping records', function () {
-    // Write legacy JSON array directly to file
+    $devFile = $this->service->getDeviceQueueFile('DEV_LEGACY');
     $legacyArray = [
         [
             'id' => 1,
@@ -200,7 +201,7 @@ test('auto-migrates existing JSON array file to NDJSON on queueCommand without d
             'updated_at' => '2026-09-10 11:00:00',
         ],
     ];
-    file_put_contents($this->testFilePath, json_encode($legacyArray, JSON_PRETTY_PRINT));
+    file_put_contents($devFile, json_encode($legacyArray, JSON_PRETTY_PRINT));
 
     // Queue a new command using the service
     $newCmd = $this->service->queueCommand('DEV_LEGACY', 'DATA USER PIN=3');
@@ -217,12 +218,12 @@ test('auto-migrates existing JSON array file to NDJSON on queueCommand without d
     expect($pending)->toHaveCount(3);
 
     // Verify file content starts with '{' (NDJSON), NOT '[' (array)
-    $firstChar = trim(file_get_contents($this->testFilePath))[0];
+    $firstChar = trim(file_get_contents($devFile))[0];
     expect($firstChar)->toBe('{');
 });
 
 test('safely appends when existing file has missing trailing newline', function () {
-    // Write an NDJSON line without a trailing newline
+    $devFile = $this->service->getDeviceQueueFile('DEV_001');
     $record = json_encode([
         'id' => 1,
         'device_sn' => 'DEV_001',
@@ -232,13 +233,13 @@ test('safely appends when existing file has missing trailing newline', function 
         'created_at' => '2026-09-16 10:00:00',
         'updated_at' => '2026-09-16 10:00:00',
     ]);
-    file_put_contents($this->testFilePath, $record); // NO \n at end
+    file_put_contents($devFile, $record); // NO \n at end
 
     // Queue next command
     $cmd2 = $this->service->queueCommand('DEV_001', 'CMD 2');
     expect($cmd2['id'])->toBe(2);
 
-    $lines = file($this->testFilePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $lines = file($devFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
     expect($lines)->toHaveCount(2);
 
     // Ensure line 1 and line 2 are both independently valid JSON
@@ -257,7 +258,8 @@ test('recordCommandAck handles multi-digit negative return code without corrupti
     expect($ackSuccess)->toBeTrue();
 
     // Verify file remains perfectly valid JSON
-    $rawContent = file_get_contents($this->testFilePath);
+    $devFile = $this->service->getDeviceQueueFile('DEV_001');
+    $rawContent = file_get_contents($devFile);
     $decoded = json_decode(trim($rawContent), true);
     expect($decoded)->toBeArray();
     expect($decoded['status'])->toBe('FAILED');
@@ -288,12 +290,12 @@ test('queueCommandsBatch atomically queues and deduplicates multiple entries in 
 });
 
 test('normalizeFileIfNeeded and getPendingCommands operate with O(1) memory on large files', function () {
-    // Generate a file with 5,000 commands (with one failed record so file is not auto-pruned when 5000 succeeds)
-    $fp = fopen($this->testFilePath, 'w');
+    $dev0File = $this->service->getDeviceQueueFile('DEV_0');
+    $fp = fopen($dev0File, 'w');
     for ($i = 1; $i <= 5000; $i++) {
         $rec = [
             'id' => $i,
-            'device_sn' => 'DEV_' . ($i % 10),
+            'device_sn' => 'DEV_0',
             'command' => 'DATA USER PIN=' . $i . ' Name=User' . $i,
             'status' => $i === 5000 ? 'PENDING' : ($i === 4999 ? 'FAILED' : 'SUCCESS'),
             'return_code' => $i === 5000 ? null : ($i === 4999 ? -1 : 0),
@@ -305,7 +307,7 @@ test('normalizeFileIfNeeded and getPendingCommands operate with O(1) memory on l
     fclose($fp);
 
     $memBefore = memory_get_usage();
-    $normalized = $this->service->normalizeFileIfNeeded($this->testFilePath);
+    $normalized = $this->service->normalizeFileIfNeeded($dev0File);
     $memAfter = memory_get_usage();
 
     expect($normalized)->toBeTrue();
@@ -348,4 +350,50 @@ test('getAllCommands with device_sn filter efficiently selects only matching rec
     expect($otherCommands[0]['command'])->toBe('CMD OTHER 1');
 });
 
+test('queues commands into devicename_(serialnumber).json format and reads by serial number', function () {
+    // Test custom device name mapping
+    $ref = new ReflectionClass($this->service);
+    $cacheProp = $ref->getProperty('deviceNameCache');
+    $cacheProp->setAccessible(true);
+    $cache = $cacheProp->getValue();
+    $cache['UCR6254000010'] = 'ATTENDANCE 160';
+    $cacheProp->setValue(null, $cache);
 
+    expect($this->service->getDeviceFilePrefix('UCR6254000010'))->toBe('ATTENDANCE 160_(UCR6254000010)');
+
+    $cmd = $this->service->queueCommand('UCR6254000010', 'DATA USER PIN=777');
+    expect($cmd['id'])->toBeGreaterThan(0);
+
+    $expectedFile = $this->service->getDeviceQueueFile('UCR6254000010');
+    expect(basename($expectedFile))->toBe('ATTENDANCE 160_(UCR6254000010).json');
+    expect(file_exists($expectedFile))->toBeTrue();
+
+    // Verify polling by SN finds this file
+    $polled = $this->service->getPendingCommands('UCR6254000010');
+    expect($polled)->toHaveCount(1);
+    expect($polled[0]['command'])->toBe('DATA USER PIN=777');
+});
+
+test('device polling finds command files by serial number pattern even if renamed in DB', function () {
+    // Simulate an older queue file on disk that used an old name
+    $oldFile = $this->service->getBaseDirectory() . DIRECTORY_SEPARATOR . 'OLD_DEPARTMENT_NAME_(DEV_RENAME_TEST).json';
+    $rec = [
+        'id' => 999,
+        'device_sn' => 'DEV_RENAME_TEST',
+        'command' => 'DATA USER PIN=999 Name=RenamedDeviceUser',
+        'status' => 'PENDING',
+        'return_code' => null,
+        'created_at' => now()->toDateTimeString(),
+        'updated_at' => now()->toDateTimeString(),
+    ];
+    file_put_contents($oldFile, json_encode($rec) . "\n");
+
+    // Device connects and requests by its serial number 'DEV_RENAME_TEST'
+    $allFiles = $this->service->getAllCommandFilesForDevice('DEV_RENAME_TEST');
+    expect($allFiles)->toContain($oldFile);
+
+    $pending = $this->service->getPendingCommands('DEV_RENAME_TEST');
+    expect($pending)->toHaveCount(1);
+    expect($pending[0]['id'])->toBe(999);
+    expect($pending[0]['command'])->toBe('DATA USER PIN=999 Name=RenamedDeviceUser');
+});
