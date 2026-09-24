@@ -1428,6 +1428,53 @@
         };
 
         const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+        const API_BASE = "{{ rtrim(url('/'), '/') }}";
+
+        function apiUrl(path) {
+            if (!path) return '';
+            if (path.startsWith('http://') || path.startsWith('https://')) return path;
+            const clean = path.startsWith('/') ? path : '/' + path;
+            return `${API_BASE}${clean}`;
+        }
+
+        async function fetchJson(path, options = {}) {
+            const url = apiUrl(path);
+            const headers = Object.assign({
+                'Accept': 'application/json',
+            }, options.headers || {});
+
+            if (options.body && typeof options.body === 'string' && !headers['Content-Type']) {
+                headers['Content-Type'] = 'application/json';
+            }
+            if (csrfToken && !headers['X-CSRF-TOKEN']) {
+                headers['X-CSRF-TOKEN'] = csrfToken;
+            }
+
+            options.headers = headers;
+
+            const res = await fetch(url, options);
+            const contentType = res.headers.get('content-type') || '';
+
+            if (contentType.includes('application/json')) {
+                const data = await res.json();
+                return { ok: res.ok, status: res.status, data: data };
+            }
+
+            // Handle non-JSON or HTML responses gracefully
+            const rawText = await res.text();
+            const cleanText = rawText.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim().substring(0, 250);
+            const errSummary = cleanText ? ` - ${cleanText}` : '';
+
+            return {
+                ok: false,
+                status: res.status,
+                data: {
+                    success: false,
+                    message: `HTTP ${res.status} (${res.statusText || 'Error'})${errSummary}`,
+                    raw_html: rawText
+                }
+            };
+        }
 
         // DOM Elements
         const deviceTableBody = document.getElementById('deviceTableBody');
@@ -1584,8 +1631,8 @@
                     sort_dir: state.sortDir,
                 });
 
-                const res = await fetch(`/api/devices/paginated?${params.toString()}`);
-                const result = await res.json();
+                const res = await fetchJson(`/api/devices/paginated?${params.toString()}`);
+                const result = res.data || {};
 
                 if (result.success) {
                     state.devices = result.data || [];
@@ -2759,12 +2806,11 @@
         async function initCommandRunner() {
             if (cmdRunner.manifest) return;
             try {
-                const res = await fetch('/api/command-runner/manifest');
-                const data = await res.json();
-                if (data.success) {
-                    cmdRunner.manifest = data.commands || {};
-                    cmdRunner.devices = data.devices || [];
-                    cmdRunner.fingerNames = data.finger_names || {};
+                const res = await fetchJson('/api/command-runner/manifest');
+                if (res.ok && res.data && res.data.success) {
+                    cmdRunner.manifest = res.data.commands || {};
+                    cmdRunner.devices = res.data.devices || [];
+                    cmdRunner.fingerNames = res.data.finger_names || {};
                     populateCmdDeviceDropdown(cmdRunner.devices);
                     onCommandSelectionChange();
                 }
@@ -3375,9 +3421,10 @@
 
             cmdRunner.debounceTimer = setTimeout(async () => {
                 try {
-                    const res = await fetch(`/api/command-runner/employees?q=${encodeURIComponent(query)}`);
-                    const data = await res.json();
-                    renderEmployeeSuggestions(query, data.employees || []);
+                    const res = await fetchJson(`/api/command-runner/employees?q=${encodeURIComponent(query)}`);
+                    if (res.ok && res.data) {
+                        renderEmployeeSuggestions(query, res.data.employees || []);
+                    }
                 } catch (err) {
                     console.error('Employee autocomplete error:', err);
                 } finally {
@@ -3585,17 +3632,12 @@
                     params: params,
                 };
 
-                const res = await fetch('/api/command-runner/run', {
+                const response = await fetchJson('/api/command-runner/run', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json',
-                        'X-CSRF-TOKEN': csrfToken,
-                    },
                     body: JSON.stringify(payload),
                 });
 
-                const result = await res.json();
+                const result = response.data || {};
 
                 if (result.success) {
                     consoleStatusBadge.textContent = 'Exit 0 (Success)';
@@ -3613,7 +3655,7 @@
                 consoleTimestamp.textContent = `Completed at ${new Date().toLocaleTimeString()}`;
 
                 // Render terminal output text
-                const formattedOutput = escapeHtml(result.output || '(No output returned)');
+                const formattedOutput = escapeHtml(result.output || result.message || '(No output returned)');
                 consoleOutputScreen.innerHTML = `
                     <div class="text-blue-400 font-bold border-b border-slate-800 pb-1.5">
                         <span class="text-slate-500">[${nowTime}]</span> $ ${escapeHtml(result.command || cliCommandText)}

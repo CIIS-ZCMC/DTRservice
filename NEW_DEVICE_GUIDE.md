@@ -137,9 +137,10 @@ php artisan biometrics:sync-device --all-devices --no-clean
 
 Once the provisioning command is executed:
 
-1. **Queueing & Multi-File Rotation**:
-   - The server compiles all user profiles (`DATA USER`), fingerprint templates (`DATA UPDATE fingertmp`), and deletion commands into `storage/app/device_commands.json`.
-   - **50MB Rotation**: If a file reaches 50MB, it automatically rotates to numbered files (`device_commands_1.json`, `device_commands_2.json`, etc.) while preserving all existing commands.
+1. **Per-Device Queueing & File Segregation (`storage/app/device_queues/`)**:
+   - The server compiles all user profiles (`DATA USER`), fingerprint templates (`DATA UPDATE fingertmp`), and deletion commands into dedicated, segregated queue files named after each device: `storage/app/device_queues/<device_name>.json` (falling back to `<serial_number>.json` if device name is unassigned).
+   - **50MB Rotation**: If a terminal's queue file reaches 50MB, it automatically rotates to numbered files (`<device_name>_1.json`, `<device_name>_2.json`, etc.) while preserving all existing commands.
+   - **Complete Isolation**: High-volume provisioning tasks on one terminal do not bloat or delay command delivery to any other terminal in the fleet.
 2. **Gradual Polling**:
    - The device regularly polls `/iclock/getrequest?SN=<SERIAL_NUMBER>`.
    - The server delivers **10 commands per poll cycle**.
@@ -229,7 +230,7 @@ If a large sync is running and you need to stop devices from executing commands 
 ```bash
 php artisan biometrics:clear-queue
 ```
-*Deletes all numbered queue files, clears in-memory caches, and resets `device_commands.json` to 0 commands. Connected devices immediately stop executing on their next poll.*
+*Deletes all numbered queue files across `storage/app/device_queues/`, clears in-memory caches, and resets all device queues to 0 commands. Connected devices immediately stop executing on their next poll.*
 
 #### 3. Delete a User Profile from Devices (Orphan Cleanup)
 ```bash
