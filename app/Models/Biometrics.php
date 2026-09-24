@@ -153,7 +153,7 @@ class Biometrics extends Model
             }
 
             try {
-                app(\App\Services\BiometricSyncService::class)->deleteUserFromAll(null, (int)$model->biometric_id);
+                app(\App\Services\BiometricSyncService::class)->deleteUserFromAll(null, (int)$model->biometric_id, $model);
             } catch (\Throwable $th) {
                 \Illuminate\Support\Facades\Log::channel('device_logs')->error('Biometrics::deleted sync error: ' . $th->getMessage());
             }

@@ -233,6 +233,12 @@ class LogsService
                         continue;
                     }
 
+                    // Prevent auto-restore if server queued a delete command for this user
+                    if ($commandService->hasPendingCommand($device->serial_number, "DATA DELETE USER\tPIN={$pinToRestore}") ||
+                        $commandService->hasPendingCommand($device->serial_number, "DATA DELETE USER PIN={$pinToRestore}")) {
+                        continue;
+                    }
+
                     $bioUser = null;
                     if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
                         $bioUser = Biometrics::where('biometric_id', $pinToRestore)->first();

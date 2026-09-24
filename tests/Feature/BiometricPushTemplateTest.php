@@ -39,6 +39,12 @@ beforeEach(function () {
         });
     }
 
+    if (!Schema::hasColumn('biometrics', 'hrbliz_biometric_id')) {
+        Schema::table('biometrics', function (Blueprint $table) {
+            $table->unsignedBigInteger('hrbliz_biometric_id')->nullable()->after('biometric_id');
+        });
+    }
+
     app(DeviceCommandService::class)->clearCommands();
     Devices::query()->delete();
 
@@ -411,6 +417,135 @@ test('processing raw USER line through LogsService without table query param exe
     expect($cmds)->toHaveCount(1);
     expect($cmds[0]['command'])->toContain('DATA USER PIN=493');
     expect($cmds[0]['command'])->toContain('Pri=14');
+});
+
+test('live fingerprint registration push skips HRBLIZ device with receiver_by_default = 0 and delivers to HRBLIZ device with receiver_by_default = 1', function () {
+    // 1. HRBLIZ device with receiver_by_default = 0 (attend-only)
+    Devices::create([
+        'device_name' => 'HRBLIZ Turnstile Send-Only',
+        'serial_number' => 'DEV_SN_HRBLIZ_NO_RECV',
+        'ip_address' => '192.168.1.60',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 0,
+    ]);
+
+    // 2. HRBLIZ device with receiver_by_default = 1 (receives sync)
+    Devices::create([
+        'device_name' => 'HRBLIZ Turnstile Receiving',
+        'serial_number' => 'DEV_SN_HRBLIZ_RECV_1',
+        'ip_address' => '192.168.1.61',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 1,
+    ]);
+
+    $user = Biometrics::create([
+        'biometric_id' => 99890,
+        'hrbliz_biometric_id' => 77890,
+        'name' => 'Live HRBLIZ Test User',
+        'privilege' => 0,
+        'biometric' => 'NOT_YET_REGISTERED',
+    ]);
+
+    app(DeviceCommandService::class)->clearCommands();
+
+    $payload = "FP PIN=99890\tFID=2\tSize=700\tValid=1\tTMP=LIVE_REGISTRATION_TMP";
+
+    $response = $this->call(
+        'POST',
+        '/iclock/cdata?SN=DEV_SN_SOURCE',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        $payload
+    );
+
+    $response->assertStatus(200);
+
+    $commandService = app(DeviceCommandService::class);
+
+    // HRBLIZ device with receiver_by_default = 0 must receive ZERO commands
+    $noRecvCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_NO_RECV');
+    expect($noRecvCmds)->toBeEmpty();
+
+    // HRBLIZ device with receiver_by_default = 1 must receive commands using hrbliz_biometric_id (77890)
+    $recvCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_RECV_1');
+    expect($recvCmds)->not->toBeEmpty();
+    expect($recvCmds[0]['command'])->toContain('DATA USER PIN=77890');
+    expect($recvCmds[1]['command'])->toContain('DATA UPDATE fingertmp');
+    expect($recvCmds[1]['command'])->toContain('PIN=77890');
+    expect($recvCmds[1]['command'])->not->toContain('PIN=99890');
+
+    // Standard target device receives commands using standard PIN 99890
+    $stdCmds = $commandService->getAllCommands('DEV_SN_TARGET');
+    expect($stdCmds)->not->toBeEmpty();
+    expect($stdCmds[0]['command'])->toContain('DATA USER PIN=99890');
+    expect($stdCmds[1]['command'])->toContain('DATA UPDATE fingertmp');
+    expect($stdCmds[1]['command'])->toContain('PIN=99890');
+
+    $user->delete();
+});
+
+test('live user profile registration push skips HRBLIZ device with receiver_by_default = 0 and delivers to HRBLIZ device with receiver_by_default = 1', function () {
+    Devices::create([
+        'device_name' => 'HRBLIZ User Send-Only',
+        'serial_number' => 'DEV_SN_HRBLIZ_U_0',
+        'ip_address' => '192.168.1.62',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 0,
+    ]);
+
+    Devices::create([
+        'device_name' => 'HRBLIZ User Receiving',
+        'serial_number' => 'DEV_SN_HRBLIZ_U_1',
+        'ip_address' => '192.168.1.63',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 1,
+    ]);
+
+    $user = Biometrics::create([
+        'biometric_id' => 99891,
+        'hrbliz_biometric_id' => 77891,
+        'name' => 'Live User HRBLIZ Test',
+        'privilege' => 0,
+    ]);
+
+    app(DeviceCommandService::class)->clearCommands();
+
+    $payload = "PIN=99891\tName=Live User HRBLIZ Test\tPri=0\tPasswd=\tCard=0\tGrp=0\tTZ=0";
+
+    $response = $this->call(
+        'POST',
+        '/iclock/cdata?SN=DEV_SN_SOURCE&table=USER',
+        [],
+        [],
+        [],
+        ['CONTENT_TYPE' => 'text/plain'],
+        $payload
+    );
+
+    $response->assertStatus(200);
+
+    $commandService = app(DeviceCommandService::class);
+
+    // HRBLIZ device with receiver_by_default = 0 receives NOTHING
+    expect($commandService->getAllCommands('DEV_SN_HRBLIZ_U_0'))->toBeEmpty();
+
+    // HRBLIZ device with receiver_by_default = 1 receives DATA USER with PIN=77891
+    $hrblizCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_U_1');
+    expect($hrblizCmds)->toHaveCount(1);
+    expect($hrblizCmds[0]['command'])->toContain('DATA USER PIN=77891');
+
+    // Standard device receives DATA USER with PIN=99891
+    $stdCmds = $commandService->getAllCommands('DEV_SN_TARGET');
+    expect($stdCmds)->toHaveCount(1);
+    expect($stdCmds[0]['command'])->toContain('DATA USER PIN=99891');
+
+    $user->delete();
 });
 
 

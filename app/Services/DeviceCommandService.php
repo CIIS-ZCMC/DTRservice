@@ -2,94 +2,130 @@
 
 namespace App\Services;
 
+use App\Models\Devices;
 use Illuminate\Support\Facades\Log;
 
 class DeviceCommandService
 {
-    protected string $filePath;
+    protected string $baseDir;
     protected int $maxSizeBytes;
     protected static ?array $previousPendingCache = null;
+    protected static array $deviceNameCache = [];
 
     /**
-     * @param string|null $filePath Path to the command storage file. Defaults to storage/app/device_commands.json
+     * @param string|null $baseDir Base directory for per-device queues. Defaults to storage/app/device_queues
      * @param int $maxSizeBytes Maximum size per file before creating a new numbered file. Defaults to 50MB (52,428,800 bytes)
      */
-    public function __construct(?string $filePath = null, int $maxSizeBytes = 52428800)
+    public function __construct(?string $baseDir = null, int $maxSizeBytes = 52428800)
     {
-        if ($filePath !== null) {
-            $this->filePath = $filePath;
+        if ($baseDir !== null) {
+            if (str_ends_with(strtolower($baseDir), '.json')) {
+                // If a path ending with .json was passed, use a subfolder in its directory
+                $this->baseDir = dirname($baseDir) . DIRECTORY_SEPARATOR . 'device_queues';
+            } else {
+                $this->baseDir = rtrim($baseDir, '/\\');
+            }
         } elseif (app()->runningUnitTests() || config('app.env') === 'testing') {
-            $this->filePath = storage_path('framework/testing/test_device_commands.json');
+            $this->baseDir = storage_path('framework/testing/device_queues');
         } else {
-            $this->filePath = storage_path('app/device_commands.json');
+            $this->baseDir = storage_path('app/device_queues');
         }
 
         $this->maxSizeBytes = $maxSizeBytes;
+
+        $this->ensureBaseDirectory();
+        $this->migrateLegacyFileIfNeeded();
     }
 
     /**
-     * Check if the current active file exceeds maximum size limit (50MB) and rotate to a new numbered file if so.
+     * Ensure the base queue directory exists.
      */
-    public function checkAndRotateSize(): void
+    protected function ensureBaseDirectory(): void
     {
-        $this->getActiveWriteFile();
+        if (!is_dir($this->baseDir)) {
+            @mkdir($this->baseDir, 0755, true);
+        }
     }
 
     /**
-     * Get base directory containing command files.
+     * Get the base directory containing per-device command queue files.
      */
-    protected function getBaseDirectory(): string
+    public function getBaseDirectory(): string
     {
-        return dirname($this->filePath);
+        return $this->baseDir;
     }
 
     /**
-     * Get base filename without extension.
+     * Sanitize a device name so it is safe for filenames on Windows, Linux, and macOS.
+     * Replaces characters: \ / : * ? " < > | with _
      */
-    protected function getBaseFileName(): string
+    public function getSanitizedDeviceName(string $name): string
     {
-        $basename = basename($this->filePath);
-        return pathinfo($basename, PATHINFO_FILENAME);
+        $safe = preg_replace('[/\\\\:*?"<>|]', '_', trim($name));
+        $safe = preg_replace('/[\x00-\x1F\x7F]/', '', $safe);
+        return $safe !== '' ? $safe : 'unknown_device';
     }
 
     /**
-     * Get file extension (including dot).
+     * Resolve the device name for a given device serial number.
+     * Looks up Devices table if available; falls back to serial number.
      */
-    protected function getExtension(): string
+    public function getDeviceNameForSn(string $deviceSn): string
     {
-        $ext = pathinfo($this->filePath, PATHINFO_EXTENSION);
-        return $ext ? '.' . $ext : '.json';
+        if (isset(self::$deviceNameCache[$deviceSn])) {
+            return self::$deviceNameCache[$deviceSn];
+        }
+
+        if (\Illuminate\Support\Facades\Schema::hasTable('devices')) {
+            try {
+                $name = Devices::where('serial_number', $deviceSn)->value('device_name');
+                if (!empty($name)) {
+                    $sanitized = $this->getSanitizedDeviceName($name);
+                    self::$deviceNameCache[$deviceSn] = $sanitized;
+                    return $sanitized;
+                }
+            } catch (\Throwable $e) {
+                // Table might not exist yet during migration
+            }
+        }
+
+        $sanitized = $this->getSanitizedDeviceName($deviceSn);
+        self::$deviceNameCache[$deviceSn] = $sanitized;
+        return $sanitized;
     }
 
     /**
-     * Get all command files in chronological order (device_commands.json, device_commands_1.json, device_commands_2.json...).
+     * Get the primary queue file path for a specific device.
+     */
+    public function getDeviceQueueFile(string $deviceSn): string
+    {
+        $deviceName = $this->getDeviceNameForSn($deviceSn);
+        return $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}.json";
+    }
+
+    /**
+     * Get all command files for a specific device in chronological order (main + rotated numbered files).
      *
+     * @param string $deviceSn
      * @return array<string>
      */
-    public function getAllCommandFiles(): array
+    public function getAllCommandFilesForDevice(string $deviceSn): array
     {
-        $dir = $this->getBaseDirectory();
-        if (!is_dir($dir)) {
-            return [$this->filePath];
-        }
-
-        $base = $this->getBaseFileName();
-        $ext = $this->getExtension();
+        $deviceName = $this->getDeviceNameForSn($deviceSn);
+        $primary = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}.json";
 
         $files = [];
-
-        // Main file (index 0)
-        if (file_exists($this->filePath)) {
-            $files[0] = $this->filePath;
+        if (file_exists($primary)) {
+            $files[0] = $primary;
         }
 
-        // Numbered files: {base}_{number}{ext}
-        $pattern = $dir . DIRECTORY_SEPARATOR . $base . '_*' . $ext;
+        // Check for rotated numbered files: {deviceName}_{number}.json
+        $pattern = $this->baseDir . DIRECTORY_SEPARATOR . $deviceName . '_*.json';
         $matches = glob($pattern) ?: [];
 
         foreach ($matches as $match) {
             $filename = basename($match);
-            if (preg_match('/^' . preg_quote($base, '/') . '_(\d+)' . preg_quote($ext, '/') . '$/', $filename, $m)) {
+            if (preg_match('/^' . preg_quote($deviceName, '/') . '_(\d+)\.json$/', $filename, $m)) {
                 $num = (int)$m[1];
                 $files[$num] = $match;
             }
@@ -97,30 +133,65 @@ class DeviceCommandService
 
         ksort($files);
 
+        // Also check if any file in baseDir has commands matching this serial number (e.g. if device was renamed)
+        $allBaseFiles = glob($this->baseDir . DIRECTORY_SEPARATOR . '*.json') ?: [];
+        $snNeedle = '"device_sn":"' . $deviceSn . '"';
+        foreach ($allBaseFiles as $f) {
+            if (in_array($f, $files)) {
+                continue;
+            }
+            if (file_exists($f) && filesize($f) > 0) {
+                $fp = @fopen($f, 'rb');
+                if ($fp) {
+                    $header = fread($fp, 2048);
+                    fclose($fp);
+                    if ($header !== false && str_contains($header, $snNeedle)) {
+                        $files[] = $f;
+                    }
+                }
+            }
+        }
+
         if (empty($files)) {
-            $files[0] = $this->filePath;
+            $files[0] = $primary;
         }
 
         return array_values($files);
     }
 
     /**
-     * Determine the active file to write new commands to.
-     * If the current file has reached maxSizeBytes (50MB), it returns the next numbered file.
+     * Get all command queue files across all devices or for a specific device.
+     *
+     * @param string|null $deviceSn
+     * @return array<string>
      */
-    public function getActiveWriteFile(): string
+    public function getAllCommandFiles(?string $deviceSn = null): array
     {
-        $allFiles = $this->getAllCommandFiles();
+        if ($deviceSn !== null) {
+            return $this->getAllCommandFilesForDevice($deviceSn);
+        }
+
+        $pattern = $this->baseDir . DIRECTORY_SEPARATOR . '*.json';
+        $files = glob($pattern) ?: [];
+        sort($files);
+        return $files;
+    }
+
+    /**
+     * Determine the active file to write new commands for a specific device.
+     * If the current file has reached maxSizeBytes (50MB), creates next numbered file: {deviceName}_{index}.json
+     */
+    public function getActiveWriteFileForDevice(string $deviceSn): string
+    {
+        $allFiles = $this->getAllCommandFilesForDevice($deviceSn);
         $latestFile = end($allFiles);
 
         if (file_exists($latestFile)) {
             clearstatcache(true, $latestFile);
             if (filesize($latestFile) >= $this->maxSizeBytes) {
-                $nextIndex = $this->getNextFileIndex();
-                $dir = $this->getBaseDirectory();
-                $base = $this->getBaseFileName();
-                $ext = $this->getExtension();
-                return $dir . DIRECTORY_SEPARATOR . "{$base}_{$nextIndex}{$ext}";
+                $deviceName = $this->getDeviceNameForSn($deviceSn);
+                $nextIndex = $this->getNextFileIndexForDevice($deviceName);
+                return $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}_{$nextIndex}.json";
             }
         }
 
@@ -128,19 +199,15 @@ class DeviceCommandService
     }
 
     /**
-     * Get the next incremental file number index.
+     * Get the next incremental file number index for a device.
      */
-    protected function getNextFileIndex(): int
+    protected function getNextFileIndexForDevice(string $deviceName): int
     {
-        $dir = $this->getBaseDirectory();
-        $base = $this->getBaseFileName();
-        $ext = $this->getExtension();
-
         $maxIndex = 0;
-        $matches = glob($dir . DIRECTORY_SEPARATOR . $base . '_*' . $ext) ?: [];
+        $matches = glob($this->baseDir . DIRECTORY_SEPARATOR . $deviceName . '_*.json') ?: [];
         foreach ($matches as $match) {
             $filename = basename($match);
-            if (preg_match('/^' . preg_quote($base, '/') . '_(\d+)' . preg_quote($ext, '/') . '$/', $filename, $m)) {
+            if (preg_match('/^' . preg_quote($deviceName, '/') . '_(\d+)\.json$/', $filename, $m)) {
                 $num = (int)$m[1];
                 if ($num > $maxIndex) {
                     $maxIndex = $num;
@@ -149,6 +216,16 @@ class DeviceCommandService
         }
 
         return $maxIndex + 1;
+    }
+
+    /**
+     * Get the next unique command ID globally across all queue files.
+     */
+    public function getNextCommandId(): int
+    {
+        $allFiles = $this->getAllCommandFiles();
+        $maxId = $this->getMaxIdFromFiles($allFiles);
+        return $maxId + 1;
     }
 
     /**
@@ -218,7 +295,6 @@ class DeviceCommandService
                         }
                     }
                 }
-                // Strip the array part and leave the remainder
                 $content = substr($content, 0, $firstBracket) . "\n" . substr($content, $lastBracket + 1);
             }
         }
@@ -253,7 +329,6 @@ class DeviceCommandService
 
     /**
      * Normalize a command storage file to clean JSON Lines (NDJSON) format.
-     * Converts legacy JSON arrays ([...]), mixed formats, or broken lines into clean single-line records.
      *
      * @param string $filePath
      * @return bool
@@ -264,7 +339,7 @@ class DeviceCommandService
             return true;
         }
 
-        // Fast non-blocking check: if file already starts with '{' and ends with '\n', it is already clean NDJSON
+        // Fast check: if file already starts with '{' and ends with '\n', it is already clean NDJSON
         $fpQuick = @fopen($filePath, 'rb');
         if ($fpQuick) {
             clearstatcache(true, $filePath);
@@ -279,12 +354,11 @@ class DeviceCommandService
             if ($chunk !== false) {
                 $trimmed = ltrim($chunk);
                 if ($trimmed !== '' && $trimmed[0] === '{') {
-                    // Check if last byte is newline
                     fseek($fpQuick, -1, SEEK_END);
                     $lastChar = fgetc($fpQuick);
                     fclose($fpQuick);
                     if ($lastChar === "\n") {
-                        return true; // Already 100% clean NDJSON! No write lock or full file read needed.
+                        return true;
                     }
                 } else {
                     fclose($fpQuick);
@@ -306,7 +380,6 @@ class DeviceCommandService
                 return true;
             }
 
-            // Peek first non-whitespace character in O(1) time
             $firstChar = '';
             $readLen = min($size, 1024);
             $chunk = fread($fp, $readLen);
@@ -317,13 +390,11 @@ class DeviceCommandService
                 }
             }
 
-            // If empty or whitespace only, truncate and return
             if ($firstChar === '') {
                 ftruncate($fp, 0);
                 return true;
             }
 
-            // If already NDJSON format (starts with '{'), simply ensure trailing newline
             if ($firstChar === '{') {
                 fseek($fp, -1, SEEK_END);
                 $lastChar = fgetc($fp);
@@ -335,7 +406,6 @@ class DeviceCommandService
                 return true;
             }
 
-            // Legacy JSON array format (starts with '[') or mixed format: parse and convert
             rewind($fp);
             $content = stream_get_contents($fp);
             $records = $this->extractRecordsFromRawContent($content);
@@ -386,7 +456,6 @@ class DeviceCommandService
                 return !empty($ids) ? max($ids) : 0;
             }
 
-            // Fallback for legacy JSON array or small file
             if ($size <= 1048576) {
                 rewind($fp);
                 $content = stream_get_contents($fp);
@@ -408,23 +477,23 @@ class DeviceCommandService
      */
     protected function getMaxIdFromFiles(array $files): int
     {
+        $max = 0;
         foreach (array_reverse($files) as $file) {
             if (!file_exists($file) || filesize($file) === 0) {
                 continue;
             }
 
             $lastId = $this->getLastIdFromFile($file);
-            if ($lastId > 0) {
-                return $lastId;
+            if ($lastId > $max) {
+                $max = $lastId;
             }
         }
 
-        return 0;
+        return $max;
     }
 
     /**
      * Parse commands from a file, supporting clean JSON Lines (NDJSON).
-     * Automatically normalizes legacy JSON array format if detected.
      *
      * @param string $filePath
      * @param string|null $deviceSn Optional filter to only parse commands for this device
@@ -481,7 +550,7 @@ class DeviceCommandService
     {
         $snNeedle = '"device_sn":"' . $deviceSn . '"';
 
-        foreach ($this->getAllCommandFiles() as $file) {
+        foreach ($this->getAllCommandFilesForDevice($deviceSn) as $file) {
             if (!file_exists($file) || filesize($file) === 0) {
                 continue;
             }
@@ -495,8 +564,8 @@ class DeviceCommandService
                 while (($line = fgets($fp)) !== false) {
                     if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT'))) {
                         $decoded = json_decode(trim($line), true);
-                        if ($decoded && ($decoded['device_sn'] ?? '') === $deviceSn && 
-                            in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT']) && 
+                        if ($decoded && ($decoded['device_sn'] ?? '') === $deviceSn &&
+                            in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT']) &&
                             ($decoded['command'] ?? '') === $command) {
                             return $decoded;
                         }
@@ -512,26 +581,22 @@ class DeviceCommandService
     }
 
     /**
-     * Queue a new command for a device.
+     * Queue a new command into the target device's dedicated queue file.
      *
      * @param string $deviceSn Target device serial number
-     * @param string $command ZKTeco command string (e.g. DATA USER ... or DATA UPDATE fingertmp ...)
+     * @param string $command ZKTeco command string
      * @return array The created command record
      */
     public function queueCommand(string $deviceSn, string $command): array
     {
-        // 1. Check if command is already pending across all files (single pass)
+        // 1. Check if command is already pending in this device's queue files
         $existing = $this->findPendingCommandRecord($deviceSn, $command);
         if ($existing !== null) {
             return $existing;
         }
 
-        $targetFile = $this->getActiveWriteFile();
-        $dir = dirname($targetFile);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-
+        $targetFile = $this->getActiveWriteFileForDevice($deviceSn);
+        $this->ensureBaseDirectory();
         $this->normalizeFileIfNeeded($targetFile);
 
         $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
@@ -545,8 +610,9 @@ class DeviceCommandService
             if ($curSize >= $this->maxSizeBytes) {
                 @flock($fp, LOCK_UN);
                 fclose($fp);
-                $nextIndex = $this->getNextFileIndex();
-                $targetFile = $this->getBaseDirectory() . DIRECTORY_SEPARATOR . $this->getBaseFileName() . "_{$nextIndex}" . $this->getExtension();
+                $deviceName = $this->getDeviceNameForSn($deviceSn);
+                $nextIndex = $this->getNextFileIndexForDevice($deviceName);
+                $targetFile = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}_{$nextIndex}.json";
                 $this->normalizeFileIfNeeded($targetFile);
                 $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
                 if (!$fp) {
@@ -555,25 +621,7 @@ class DeviceCommandService
                 $curSize = 0;
             }
 
-            // Fast max ID extraction from last 8KB
-            $maxId = 0;
-            if ($curSize > 0) {
-                fseek($fp, max(0, $curSize - 8192));
-                $chunk = fread($fp, 8192);
-                if ($chunk !== false && preg_match_all('/"id":\s*(\d+)/', $chunk, $m)) {
-                    $ids = array_map('intval', $m[1]);
-                    $maxId = !empty($ids) ? max($ids) : 0;
-                }
-            }
-
-            if ($maxId === 0) {
-                $allFiles = $this->getAllCommandFiles();
-                $previousFiles = array_filter($allFiles, function ($f) use ($targetFile) {
-                    return strtolower(str_replace('\\', '/', $f)) !== strtolower(str_replace('\\', '/', $targetFile));
-                });
-                $maxId = $this->getMaxIdFromFiles($previousFiles);
-            }
-
+            $maxId = $this->getMaxIdFromFiles($this->getAllCommandFiles());
             $nextId = $maxId + 1;
             $now = now()->toDateTimeString();
 
@@ -587,7 +635,6 @@ class DeviceCommandService
                 'updated_at' => $now,
             ];
 
-            // Ensure preceding content ends with newline
             fseek($fp, 0, SEEK_END);
             $endPos = ftell($fp);
             if ($endPos > 0) {
@@ -612,8 +659,7 @@ class DeviceCommandService
     }
 
     /**
-     * Queue multiple commands in an atomic batch with deduplication and high performance.
-     * Automatically splits into numbered files if file size limit (50MB) is reached.
+     * Queue multiple commands in atomic batches separated per device into each device's file.
      *
      * @param array $entries Array of ['device_sn' => string, 'command' => string]
      * @return int Number of newly queued commands
@@ -624,8 +670,8 @@ class DeviceCommandService
             return 0;
         }
 
-        // 1. Deduplicate within the batch in memory
-        $uniqueEntries = [];
+        // Group entries by device_sn and deduplicate within batch
+        $byDevice = [];
         $seen = [];
         foreach ($entries as $entry) {
             $deviceSn = $entry['device_sn'] ?? null;
@@ -638,172 +684,132 @@ class DeviceCommandService
                 continue;
             }
             $seen[$key] = true;
-            $uniqueEntries[] = $entry;
+            $byDevice[$deviceSn][] = $entry;
         }
 
-        if (empty($uniqueEntries)) {
+        if (empty($byDevice)) {
             return 0;
         }
 
-        $targetFile = $this->getActiveWriteFile();
-        $allFiles = $this->getAllCommandFiles();
-        $previousFiles = array_filter($allFiles, function ($f) use ($targetFile) {
-            return strtolower(str_replace('\\', '/', $f)) !== strtolower(str_replace('\\', '/', $targetFile));
-        });
+        $this->ensureBaseDirectory();
+        $nextId = $this->getNextCommandId();
+        $totalQueued = 0;
+        $now = now()->toDateTimeString();
 
-        // 2. Load previous files pending commands once into in-memory cache
-        if (self::$previousPendingCache === null && !empty($previousFiles)) {
-            self::$previousPendingCache = [];
-            foreach ($previousFiles as $file) {
-                if (!file_exists($file) || filesize($file) === 0) {
-                    continue;
-                }
-                $this->normalizeFileIfNeeded($file);
-                $pfp = $this->openWithLock($file, 'r', LOCK_SH);
-                if (!$pfp) {
-                    continue;
-                }
-                try {
-                    while (($line = fgets($pfp)) !== false) {
+        foreach ($byDevice as $deviceSn => $devEntries) {
+            $targetFile = $this->getActiveWriteFileForDevice($deviceSn);
+            $this->normalizeFileIfNeeded($targetFile);
+
+            $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
+            if (!$fp) {
+                continue;
+            }
+
+            try {
+                clearstatcache(true, $targetFile);
+                $curSize = filesize($targetFile);
+
+                // Collect existing pending commands for this device to prevent duplicate queueing
+                $pendingMap = [];
+                if ($curSize > 0) {
+                    rewind($fp);
+                    while (($line = fgets($fp)) !== false) {
                         if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
                             $decoded = json_decode(trim($line), true);
-                            if ($decoded && isset($decoded['device_sn'], $decoded['command']) && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT'])) {
-                                self::$previousPendingCache[$decoded['device_sn'] . "\0" . $decoded['command']] = true;
+                            if ($decoded && isset($decoded['command']) && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT'])) {
+                                $pendingMap[$decoded['command']] = true;
                             }
                         }
                     }
-                } finally {
-                    @flock($pfp, LOCK_UN);
-                    fclose($pfp);
                 }
-            }
-        }
 
-        $dir = dirname($targetFile);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-
-        $this->normalizeFileIfNeeded($targetFile);
-
-        $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
-        if (!$fp) {
-            return 0;
-        }
-
-        try {
-            clearstatcache(true, $targetFile);
-            $curSize = filesize($targetFile);
-            if ($curSize >= $this->maxSizeBytes) {
-                @flock($fp, LOCK_UN);
-                fclose($fp);
-                $nextIndex = $this->getNextFileIndex();
-                $targetFile = $this->getBaseDirectory() . DIRECTORY_SEPARATOR . $this->getBaseFileName() . "_{$nextIndex}" . $this->getExtension();
-                $this->normalizeFileIfNeeded($targetFile);
-                $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
-                if (!$fp) {
-                    return 0;
-                }
-                $curSize = 0;
-            }
-
-            // 3. Scan open targetFile handle for maxId and active pending items
-            $pendingMap = self::$previousPendingCache ?? [];
-            $maxId = 0;
-            if ($curSize > 0) {
-                rewind($fp);
-                while (($line = fgets($fp)) !== false) {
-                    if (preg_match('/"id":\s*(\d+)/', $line, $m)) {
-                        $id = (int)$m[1];
-                        if ($id > $maxId) {
-                            $maxId = $id;
-                        }
+                // Check other rotated files for this device as well
+                foreach ($this->getAllCommandFilesForDevice($deviceSn) as $otherFile) {
+                    if (strtolower(str_replace('\\', '/', $otherFile)) === strtolower(str_replace('\\', '/', $targetFile)) || !file_exists($otherFile)) {
+                        continue;
                     }
-                    if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
-                        $decoded = json_decode(trim($line), true);
-                        if ($decoded && isset($decoded['device_sn'], $decoded['command']) && in_array(trim($decoded['status'] ?? ''), ['PENDING', 'SENT'])) {
-                            $pendingMap[$decoded['device_sn'] . "\0" . $decoded['command']] = true;
+                    $ofp = $this->openWithLock($otherFile, 'r', LOCK_SH);
+                    if ($ofp) {
+                        try {
+                            while (($oline = fgets($ofp)) !== false) {
+                                if (str_contains($oline, '"status":"PENDING"') || str_contains($oline, '"status":"SENT')) {
+                                    $odec = json_decode(trim($oline), true);
+                                    if ($odec && isset($odec['command']) && in_array(trim($odec['status'] ?? ''), ['PENDING', 'SENT'])) {
+                                        $pendingMap[$odec['command']] = true;
+                                    }
+                                }
+                            }
+                        } finally {
+                            @flock($ofp, LOCK_UN);
+                            fclose($ofp);
                         }
                     }
                 }
-            }
 
-            if ($maxId === 0) {
-                $maxId = $this->getMaxIdFromFiles($previousFiles);
-            }
-
-            $nextId = $maxId + 1;
-            $now = now()->toDateTimeString();
-            $queuedCount = 0;
-
-            // Ensure preceding content ends with newline
-            fseek($fp, 0, SEEK_END);
-            $endPos = ftell($fp);
-            if ($endPos > 0) {
-                fseek($fp, $endPos - 1, SEEK_SET);
-                $lastChar = fgetc($fp);
                 fseek($fp, 0, SEEK_END);
-                if ($lastChar !== "\n") {
-                    fwrite($fp, "\n");
-                }
-            }
-
-            foreach ($uniqueEntries as $entry) {
-                $deviceSn = $entry['device_sn'];
-                $command = $entry['command'];
-                $key = $deviceSn . "\0" . $command;
-
-                if (isset($pendingMap[$key])) {
-                    continue;
-                }
-                $pendingMap[$key] = true;
-
-                $record = [
-                    'id' => $nextId++,
-                    'device_sn' => $deviceSn,
-                    'command' => $command,
-                    'status' => 'PENDING',
-                    'return_code' => null,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ];
-
-                $jsonLine = json_encode($record, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
-                $lineLen = strlen($jsonLine);
-
-                // Check size limit: rotate to next file if writing this exceeds 50MB
-                if (ftell($fp) + $lineLen >= $this->maxSizeBytes) {
-                    fflush($fp);
-                    @flock($fp, LOCK_UN);
-                    fclose($fp);
-
-                    $nextIndex = $this->getNextFileIndex();
-                    $targetFile = $this->getBaseDirectory() . DIRECTORY_SEPARATOR . $this->getBaseFileName() . "_{$nextIndex}" . $this->getExtension();
-                    $this->normalizeFileIfNeeded($targetFile);
-                    $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
-                    if (!$fp) {
-                        return $queuedCount;
-                    }
+                $endPos = ftell($fp);
+                if ($endPos > 0) {
+                    fseek($fp, $endPos - 1, SEEK_SET);
+                    $lastChar = fgetc($fp);
                     fseek($fp, 0, SEEK_END);
+                    if ($lastChar !== "\n") {
+                        fwrite($fp, "\n");
+                    }
                 }
 
-                fwrite($fp, $jsonLine);
-                $queuedCount++;
-            }
+                foreach ($devEntries as $entry) {
+                    $cmd = $entry['command'];
+                    if (isset($pendingMap[$cmd])) {
+                        continue;
+                    }
+                    $pendingMap[$cmd] = true;
 
-            fflush($fp);
-            @flock($fp, LOCK_UN);
+                    $record = [
+                        'id' => $nextId++,
+                        'device_sn' => $deviceSn,
+                        'command' => $cmd,
+                        'status' => 'PENDING',
+                        'return_code' => null,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
 
-            return $queuedCount;
-        } finally {
-            if (is_resource($fp)) {
-                fclose($fp);
+                    $jsonLine = json_encode($record, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+
+                    if (ftell($fp) + strlen($jsonLine) >= $this->maxSizeBytes) {
+                        fflush($fp);
+                        @flock($fp, LOCK_UN);
+                        fclose($fp);
+
+                        $deviceName = $this->getDeviceNameForSn($deviceSn);
+                        $nextIndex = $this->getNextFileIndexForDevice($deviceName);
+                        $targetFile = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}_{$nextIndex}.json";
+                        $this->normalizeFileIfNeeded($targetFile);
+                        $fp = $this->openWithLock($targetFile, 'c+', LOCK_EX);
+                        if (!$fp) {
+                            break;
+                        }
+                        fseek($fp, 0, SEEK_END);
+                    }
+
+                    fwrite($fp, $jsonLine);
+                    $totalQueued++;
+                }
+
+                fflush($fp);
+                @flock($fp, LOCK_UN);
+            } finally {
+                if (is_resource($fp)) {
+                    fclose($fp);
+                }
             }
         }
+
+        return $totalQueued;
     }
 
     /**
-     * Get pending commands for a specific device, checking across all command files in chronological order.
+     * Get pending commands for a specific device directly from that device's queue file(s).
      *
      * @param string $deviceSn Target device serial number
      * @param int $limit Maximum number of commands to retrieve
@@ -814,7 +820,7 @@ class DeviceCommandService
         $pending = [];
         $snNeedle = '"device_sn":"' . $deviceSn . '"';
 
-        foreach ($this->getAllCommandFiles() as $file) {
+        foreach ($this->getAllCommandFilesForDevice($deviceSn) as $file) {
             if (!file_exists($file) || filesize($file) === 0) {
                 continue;
             }
@@ -825,7 +831,6 @@ class DeviceCommandService
             }
 
             try {
-                // Stream line-by-line in O(1) memory
                 while (($line = fgets($fp)) !== false) {
                     if (str_contains($line, $snNeedle) && str_contains($line, '"status":"PENDING"')) {
                         $cmd = json_decode(trim($line), true);
@@ -848,12 +853,12 @@ class DeviceCommandService
     }
 
     /**
-     * Mark dispatched commands as SENT across all files where they reside.
-     * Updates in-place under exclusive lock using a temporary stream with O(1) memory.
+     * Mark dispatched commands as SENT across device queue files.
      *
      * @param array $commandIds Array of command IDs
+     * @param string|null $deviceSn Optional device serial number to narrow target file
      */
-    public function markCommandsAsSent(array $commandIds): void
+    public function markCommandsAsSent(array $commandIds, ?string $deviceSn = null): void
     {
         if (empty($commandIds)) {
             return;
@@ -862,7 +867,11 @@ class DeviceCommandService
         $lookup = array_flip(array_map('strval', $commandIds));
         $now = now()->toDateTimeString();
 
-        foreach ($this->getAllCommandFiles() as $file) {
+        $files = $deviceSn !== null
+            ? $this->getAllCommandFilesForDevice($deviceSn)
+            : $this->getAllCommandFiles();
+
+        foreach ($files as $file) {
             if (!file_exists($file) || filesize($file) === 0) {
                 continue;
             }
@@ -925,8 +934,8 @@ class DeviceCommandService
     }
 
     /**
-     * Record device execution acknowledgment (ACK) from /iclock/devicecmd across all files.
-     * Updates under exclusive lock using a temporary stream with O(1) memory.
+     * Record device execution acknowledgment (ACK) from /iclock/devicecmd.
+     * If all commands in the target device file are SUCCESS, the file is automatically deleted.
      *
      * @param int|string $commandId Command ID
      * @param int $returnCode Return code from device (>= 0 is success)
@@ -939,6 +948,7 @@ class DeviceCommandService
         $now = now()->toDateTimeString();
         $status = $returnCode >= 0 ? 'SUCCESS' : 'FAILED';
         $cmdIdStr = (string)$commandId;
+        $affectedFile = null;
 
         foreach ($this->getAllCommandFiles() as $file) {
             if (!file_exists($file) || filesize($file) === 0) {
@@ -978,6 +988,7 @@ class DeviceCommandService
                             $fileModified = true;
                             $updated = true;
                             $matchedCmd = $cmd;
+                            $affectedFile = $file;
                             fwrite($tempStream, json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
                             continue;
                         }
@@ -999,14 +1010,21 @@ class DeviceCommandService
             }
 
             if ($updated) {
-                break; // Found and updated in this file; no need to scan remaining files
+                break;
             }
         }
 
         if ($updated && $matchedCmd) {
-            \App\Services\RegistrationLogger::logCommandAck($matchedCmd, $returnCode);
+            RegistrationLogger::logCommandAck($matchedCmd, $returnCode);
 
-            // Automatically clean up any file where all commands are SUCCESS
+            // Automatically check and delete this file if all commands in it have reached SUCCESS
+            if ($affectedFile && file_exists($affectedFile)) {
+                if ($this->isFileAllSuccess($affectedFile)) {
+                    $this->deleteFileSafely($affectedFile);
+                }
+            }
+
+            // Also check all files in case other files completed
             if ($status === 'SUCCESS') {
                 $this->pruneCompletedFiles();
             }
@@ -1024,8 +1042,13 @@ class DeviceCommandService
      */
     public function isFileAllSuccess(string $filePath): bool
     {
-        if (!file_exists($filePath) || filesize($filePath) === 0) {
+        if (!file_exists($filePath)) {
             return false;
+        }
+
+        clearstatcache(true, $filePath);
+        if (filesize($filePath) === 0) {
+            return true; // Empty files are safe to delete
         }
 
         $fp = $this->openWithLock($filePath, 'r', LOCK_SH);
@@ -1036,15 +1059,13 @@ class DeviceCommandService
         try {
             $hasCommands = false;
 
-            // Stream NDJSON line-by-line
             while (($line = fgets($fp)) !== false) {
                 $trimmed = trim($line);
                 if ($trimmed === '') {
                     continue;
                 }
 
-                // If line contains PENDING or SENT, it's definitely not completed; retain immediately
-                if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) {
+                if (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT') || str_contains($line, '"status":"FAILED"')) {
                     return false;
                 }
 
@@ -1055,7 +1076,7 @@ class DeviceCommandService
 
                 $hasCommands = true;
                 if (trim($cmd['status'] ?? '') !== 'SUCCESS') {
-                    return false; // Retain file if any command failed or is not SUCCESS
+                    return false;
                 }
             }
 
@@ -1067,8 +1088,36 @@ class DeviceCommandService
     }
 
     /**
-     * Automatically inspect all command queue files and delete any file where all commands are SUCCESS.
-     * Retains any files that still have PENDING, SENT, or non-SUCCESS commands.
+     * Safely delete a file with retry backoff for Windows file locks.
+     */
+    public function deleteFileSafely(string $filePath): bool
+    {
+        if (!file_exists($filePath)) {
+            return true;
+        }
+
+        clearstatcache(true, $filePath);
+        $deleted = @unlink($filePath);
+
+        if (!$deleted && file_exists($filePath)) {
+            usleep(20000); // 20ms backoff
+            clearstatcache(true, $filePath);
+            $deleted = @unlink($filePath);
+        }
+
+        if ($deleted) {
+            self::$previousPendingCache = null;
+            Log::channel('device_logs')->info(
+                'DeviceCommandService :: Automatically deleted completed command file (all commands SUCCESS)',
+                ['file' => basename($filePath)]
+            );
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * Inspect all command queue files and delete any file where all commands are SUCCESS or empty.
      *
      * @return array<string> List of deleted file paths
      */
@@ -1078,20 +1127,8 @@ class DeviceCommandService
 
         foreach ($this->getAllCommandFiles() as $file) {
             if ($this->isFileAllSuccess($file)) {
-                $fp = $this->openWithLock($file, 'c+', LOCK_EX);
-                if ($fp) {
-                    @flock($fp, LOCK_UN);
-                    fclose($fp);
-
-                    if (@unlink($file)) {
-                        $deleted[] = $file;
-                        self::$previousPendingCache = null;
-
-                        \Illuminate\Support\Facades\Log::channel('device_logs')->info(
-                            'DeviceCommandService :: Automatically deleted completed command file (all commands SUCCESS)',
-                            ['file' => basename($file)]
-                        );
-                    }
+                if ($this->deleteFileSafely($file)) {
+                    $deleted[] = $file;
                 }
             }
         }
@@ -1100,11 +1137,7 @@ class DeviceCommandService
     }
 
     /**
-     * Check if a pending command matching an exact string exists across all files.
-     *
-     * @param string $deviceSn
-     * @param string $command
-     * @return bool
+     * Check if a pending command matching an exact string exists for this device.
      */
     public function hasPendingCommand(string $deviceSn, string $command): bool
     {
@@ -1112,18 +1145,14 @@ class DeviceCommandService
     }
 
     /**
-     * Check if any pending DATA USER command exists for a specific PIN across all files.
-     *
-     * @param string $deviceSn
-     * @param int $pin
-     * @return bool
+     * Check if any pending DATA USER command exists for a specific PIN on this device.
      */
     public function hasPendingUserCommand(string $deviceSn, int $pin): bool
     {
         $snNeedle = '"device_sn":"' . $deviceSn . '"';
         $userNeedle = "DATA USER PIN={$pin}";
 
-        foreach ($this->getAllCommandFiles() as $file) {
+        foreach ($this->getAllCommandFilesForDevice($deviceSn) as $file) {
             if (!file_exists($file) || filesize($file) === 0) {
                 continue;
             }
@@ -1137,8 +1166,8 @@ class DeviceCommandService
                 while (($line = fgets($fp)) !== false) {
                     if (str_contains($line, $snNeedle) && (str_contains($line, '"status":"PENDING"') || str_contains($line, '"status":"SENT')) && str_contains($line, $userNeedle)) {
                         $cmd = json_decode(trim($line), true);
-                        if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn && 
-                            in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) && 
+                        if ($cmd && ($cmd['device_sn'] ?? '') === $deviceSn &&
+                            in_array(trim($cmd['status'] ?? ''), ['PENDING', 'SENT']) &&
                             str_contains($cmd['command'] ?? '', $userNeedle)) {
                             return true;
                         }
@@ -1154,7 +1183,7 @@ class DeviceCommandService
     }
 
     /**
-     * Get all commands across all command files, optionally filtered by device serial number.
+     * Get all commands across files, optionally filtered by device serial number.
      *
      * @param string|null $deviceSn
      * @return array
@@ -1163,7 +1192,11 @@ class DeviceCommandService
     {
         $results = [];
 
-        foreach ($this->getAllCommandFiles() as $file) {
+        $files = $deviceSn !== null
+            ? $this->getAllCommandFilesForDevice($deviceSn)
+            : $this->getAllCommandFiles();
+
+        foreach ($files as $file) {
             $commands = $this->parseCommandsFromFile($file, $deviceSn);
             foreach ($commands as $cmd) {
                 $results[] = $cmd;
@@ -1174,22 +1207,65 @@ class DeviceCommandService
     }
 
     /**
-     * Clear all stored commands across all files.
+     * Clear all stored commands across files (or for a specific device).
+     *
+     * @param string|null $deviceSn
      */
-    public function clearCommands(): void
+    public function clearCommands(?string $deviceSn = null): void
     {
-        foreach ($this->getAllCommandFiles() as $file) {
+        $files = $deviceSn !== null
+            ? $this->getAllCommandFilesForDevice($deviceSn)
+            : $this->getAllCommandFiles();
+
+        foreach ($files as $file) {
             if (file_exists($file)) {
-                @unlink($file);
+                $this->deleteFileSafely($file);
             }
         }
 
-        $dir = $this->getBaseDirectory();
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
+        self::$previousPendingCache = null;
+    }
+
+    /**
+     * Automatically migrate any records from legacy device_commands.json into per-device queue files.
+     */
+    public function migrateLegacyFileIfNeeded(): void
+    {
+        $legacyPath = storage_path('app/device_commands.json');
+        if (!file_exists($legacyPath) || filesize($legacyPath) === 0) {
+            return;
         }
 
-        file_put_contents($this->filePath, '');
-        self::$previousPendingCache = null;
+        try {
+            $content = file_get_contents($legacyPath);
+            $records = $this->extractRecordsFromRawContent($content);
+
+            if (!empty($records)) {
+                $byDevice = [];
+                foreach ($records as $r) {
+                    $sn = $r['device_sn'] ?? 'UNKNOWN';
+                    $byDevice[$sn][] = $r;
+                }
+
+                foreach ($byDevice as $sn => $devRecords) {
+                    $devFile = $this->getDeviceQueueFile($sn);
+                    $this->ensureBaseDirectory();
+                    $fp = $this->openWithLock($devFile, 'c+', LOCK_EX);
+                    if ($fp) {
+                        fseek($fp, 0, SEEK_END);
+                        foreach ($devRecords as $rec) {
+                            fwrite($fp, json_encode($rec, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+                        }
+                        fflush($fp);
+                        @flock($fp, LOCK_UN);
+                        fclose($fp);
+                    }
+                }
+            }
+
+            @unlink($legacyPath);
+        } catch (\Throwable $e) {
+            Log::channel('device_logs')->warning('DeviceCommandService :: Error migrating legacy commands file: ' . $e->getMessage());
+        }
     }
 }

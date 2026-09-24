@@ -75,6 +75,10 @@ class BiometricSyncService
         $entries = [];
 
         foreach ($targetDevices as $device) {
+            if (method_exists($device, 'canReceiveSync') && !$device->canReceiveSync()) {
+                continue;
+            }
+
             $targetPin = $device->is_hrbliz
                 ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
                 : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
@@ -94,7 +98,7 @@ class BiometricSyncService
         $isTzInvalid = ($incomingTz !== null && trim((string)$incomingTz) !== '1');
         $sourceNeedsTimezoneFix = !empty($sourceSn) && ($isGrpInvalid || $isTzInvalid);
 
-        if ($sourceNeedsTimezoneFix) {
+        if ($sourceNeedsTimezoneFix && (!$sourceDevice || !method_exists($sourceDevice, 'canReceiveSync') || $sourceDevice->canReceiveSync())) {
             $sourcePin = $isSourceHrbliz
                 ? ($bioModel?->hrbliz_biometric_id ?? $pin)
                 : ($bioModel?->biometric_id ?? $pin);
@@ -157,6 +161,10 @@ class BiometricSyncService
         // 1. Ensure user profile (DATA USER) is queued first so target device has the user record
         if ($ensureUser) {
             foreach ($targetDevices as $device) {
+                if (method_exists($device, 'canReceiveSync') && !$device->canReceiveSync()) {
+                    continue;
+                }
+
                 $targetPin = $device->is_hrbliz
                     ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
                     : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
@@ -192,6 +200,10 @@ class BiometricSyncService
         }
 
         foreach ($targetDevices as $device) {
+            if (method_exists($device, 'canReceiveSync') && !$device->canReceiveSync()) {
+                continue;
+            }
+
             $targetPin = $device->is_hrbliz
                 ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
                 : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
@@ -240,7 +252,7 @@ class BiometricSyncService
             'pin' => $pin,
             'source_sn' => $sourceSn,
             'target_count' => $queuedCount,
-            'command' => $command,
+            'command' => $entries[0]['command'] ?? null,
         ]);
 
         return $queuedCount;
@@ -259,6 +271,10 @@ class BiometricSyncService
         bool $cleanUnusedFingers = true,
         ?\App\Models\Devices $targetDevice = null
     ): array {
+        if ($targetDevice && method_exists($targetDevice, 'canReceiveSync') && !$targetDevice->canReceiveSync()) {
+            return [];
+        }
+
         $isHrbliz = $targetDevice && (bool)$targetDevice->is_hrbliz;
         $pin = $isHrbliz 
             ? ($bioModel->hrbliz_biometric_id ? (int)$bioModel->hrbliz_biometric_id : null)
@@ -372,6 +388,11 @@ class BiometricSyncService
         }
 
         $targetDevice = Devices::where('serial_number', $deviceSn)->first();
+        if ($targetDevice && method_exists($targetDevice, 'canReceiveSync') && !$targetDevice->canReceiveSync()) {
+            Log::channel('device_logs')->warning("BiometricSyncService :: Skipping sync to device {$deviceSn} because receiver_by_default is not enabled.");
+            return 0;
+        }
+
         $commandStrings = $this->generateUserProvisionCommands($bioModel, $cleanUnusedFingers, $targetDevice);
         if (empty($commandStrings)) {
             return 0;
@@ -454,17 +475,34 @@ class BiometricSyncService
      * @param string $pin
      * @return int
      */
-    public function deleteUserFromAll(?string $sourceSn, string $pin): int
+    public function deleteUserFromAll(?string $sourceSn, string $pin, ?\App\Models\Biometrics $bioModel = null): int
     {
         $targetDevices = $this->getTargetDevices($sourceSn);
         if ($targetDevices->isEmpty()) {
             return 0;
         }
 
-        $command = "DATA DELETE USER PIN={$pin}";
+        if ($bioModel === null && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            $bioModel = \App\Models\Biometrics::findByDevicePin($pin, false) 
+                ?? \App\Models\Biometrics::findByDevicePin($pin, true);
+        }
+
         $entries = [];
 
         foreach ($targetDevices as $device) {
+            if (method_exists($device, 'canReceiveSync') && !$device->canReceiveSync()) {
+                continue;
+            }
+
+            $targetPin = $device->is_hrbliz
+                ? ($bioModel?->hrbliz_biometric_id ?? null)
+                : ($bioModel?->biometric_id ?? $pin);
+
+            if (!$targetPin) {
+                continue;
+            }
+
+            $command = "DATA DELETE USER PIN={$targetPin}";
             $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
 
@@ -494,10 +532,28 @@ class BiometricSyncService
             return 0;
         }
 
-        $command = "DATA DELETE FINGERTMP\tPIN={$pin}\tFID={$fingerId}";
+        $bioModel = null;
+        if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+            $bioModel = \App\Models\Biometrics::findByDevicePin($pin, false) 
+                ?? \App\Models\Biometrics::findByDevicePin($pin, true);
+        }
+
         $entries = [];
 
         foreach ($targetDevices as $device) {
+            if (method_exists($device, 'canReceiveSync') && !$device->canReceiveSync()) {
+                continue;
+            }
+
+            $targetPin = $device->is_hrbliz
+                ? ($bioModel?->hrbliz_biometric_id ?? null)
+                : ($bioModel?->biometric_id ?? $pin);
+
+            if (!$targetPin) {
+                continue;
+            }
+
+            $command = "DATA DELETE FINGERTMP\tPIN={$targetPin}\tFID={$fingerId}";
             $entries[] = ['device_sn' => $device->serial_number, 'command' => $command];
         }
 
@@ -525,9 +581,9 @@ class BiometricSyncService
 
     /**
      * Get all active registered devices excluding the source device.
-     * Only returns devices where receiver_by_default is true (or NULL, for backward compat).
-     * Devices with receiver_by_default = false are operate in send-only mode and will
-     * not receive biometric template or user provisioning commands.
+     * Only returns devices where canReceiveSync() is true.
+     * HRBLIZ terminals (is_hrbliz = 1) strictly only receive sync if receiver_by_default is set to 1.
+     * Devices with receiver_by_default = false operate in send-only mode.
      */
     protected function getTargetDevices(?string $sourceSn)
     {
@@ -538,9 +594,11 @@ class BiometricSyncService
             ->where('serial_number', '!=', '')
             ->where('serial_number', '!=', 'Fail!');
 
-        // Only apply receiver_by_default filter if the column exists (guards against older
-        // installs and test environments where the column may not yet be present)
-        if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+        // Only apply receiver_by_default & is_hrbliz filter if columns exist
+        if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
+            \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+            $query->canReceiveSync();
+        } elseif (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
             $query->where(function ($q) {
                 $q->whereNull('receiver_by_default')->orWhere('receiver_by_default', true);
             });

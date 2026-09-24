@@ -229,7 +229,7 @@ class DeviceController extends Controller
             'is_registration' => (bool)$device->is_registration,
             'for_attendance' => (bool)$device->for_attendance,
             'is_hrbliz' => (bool)$device->is_hrbliz,
-            'receiver_by_default' => (bool)($device->receiver_by_default ?? false),
+            'receiver_by_default' => method_exists($device, 'canReceiveSync') ? $device->canReceiveSync() : (bool)($device->receiver_by_default ?? false),
             'is_online' => $isOnline,
             'connection_status' => $isOnline ? 'online' : 'offline',
             'last_seen_at' => $device->last_seen_at ? $device->last_seen_at->toDateTimeString() : null,
@@ -485,7 +485,9 @@ class DeviceController extends Controller
                 'is_registration'    => (bool)($validated['is_registration'] ?? false),
                 'for_attendance'     => (bool)($validated['for_attendance'] ?? false),
                 'is_hrbliz'          => (bool)($validated['is_hrbliz'] ?? false),
-                'receiver_by_default'=> (bool)($validated['receiver_by_default'] ?? true),
+                'receiver_by_default'=> isset($validated['receiver_by_default'])
+                    ? (bool)$validated['receiver_by_default']
+                    : (!($validated['is_hrbliz'] ?? false)),
             ]);
 
             Log::channel('device_logs')->info("Device manually created: [{$device->id}] {$device->device_name} @ {$device->ip_address}");

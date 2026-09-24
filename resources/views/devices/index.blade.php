@@ -2612,6 +2612,14 @@
             });
         }
 
+        const addIsHrblizCheckboxEl = document.getElementById('addIsHrblizCheckbox');
+        const addReceiverByDefaultCheckboxEl = document.getElementById('addReceiverByDefaultCheckbox');
+        if (addIsHrblizCheckboxEl && addReceiverByDefaultCheckboxEl) {
+            addIsHrblizCheckboxEl.addEventListener('change', () => {
+                addReceiverByDefaultCheckboxEl.checked = !addIsHrblizCheckboxEl.checked;
+            });
+        }
+
         // Close Add Device modal
         document.querySelectorAll('.closeAddModalBtn').forEach(btn => {
             btn.addEventListener('click', () => closeModal(addDeviceModal));

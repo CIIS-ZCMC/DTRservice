@@ -63,6 +63,8 @@ INSERT INTO devices (
     is_active,
     is_registration,
     for_attendance,
+    is_hrbliz,
+    receiver_by_default,
     created_at,
     updated_at
 ) VALUES (
@@ -76,13 +78,16 @@ INSERT INTO devices (
     1,                        -- 1 = Active, 0 = Inactive
     0,                        -- 1 if used for registration, 0 for attendance only
     1,                        -- 1 if used for attendance logs
+    0,                        -- 1 if HRBLIZ terminal, 0 for Standard terminal
+    1,                        -- 1 to receive sync updates, 0 for send-only (attend-only)
     NOW(),
     NOW()
 );
 ```
 
 > **IMPORTANT:**
-> Ensure **`is_active = 1`** and **`serial_number`** matches the terminal's hardware serial number exactly. Only active devices receive live synchronization broadcasts.
+> - Ensure **`is_active = 1`** and **`serial_number`** matches the terminal's hardware serial number exactly. Only active devices receive live synchronization broadcasts.
+> - **HRBLIZ Terminal Configuration:** For HRBLIZ terminals (`is_hrbliz = 1`), set **`receiver_by_default = 0`** if the terminal only captures attendances without receiving user provisioning. Set **`receiver_by_default = 1`** if it should receive biometric synchronization.
 
 ---
 
@@ -91,6 +96,14 @@ INSERT INTO devices (
 Because this is a **new device**, past employee enrollments and fingerprint templates were not queued for its serial number when they originally occurred.
 
 Run the Artisan sync command to queue the entire DB masterlist to the new device:
+
+> **🛡️ HRBLIZ Device & `receiver_by_default` Guardrail:**
+> - `php artisan biometrics:sync-device` will **NOT** run on any device where `is_hrbliz = 1` and `receiver_by_default = 0`.
+> - Synchronization will **only run if `receiver_by_default` is set to `1`**.
+> - When generating / throwing biometric commands:
+>   - **`is_hrbliz = 1`** $\rightarrow$ strictly uses **`hrbliz_biometric_id`** (`PIN=<hrbliz_biometric_id>`).
+>   - **`is_hrbliz = 0`** $\rightarrow$ strictly uses canonical **`biometric_id`** (`PIN=<biometric_id>`).
+> - When targeted directly (`php artisan biometrics:sync-device <SERIAL_NUMBER>`), if `receiver_by_default = 0` on an HRBLIZ device, execution will immediately abort with exit code `1`. In `--all-devices` fleet sync, such terminals are automatically skipped.
 
 ### Option A: Sync the Full Masterlist (All Active Employees & Fingerprints)
 ```bash
@@ -137,8 +150,9 @@ Once the provisioning command is executed:
 4. **Automatic File Cleanup (Zero Wasted Disk Space)**:
    - Once every command in a file reaches `SUCCESS`, the file is **automatically deleted** from disk.
    - Any file that still has commands with status `PENDING`, `SENT`, or non-success is **retained** until all devices finish acknowledging.
-5. **Live Future Updates**:
-   - Any time an employee is registered or updated on **any other device** (or in the database), the server **automatically broadcasts** the new profile and templates to this device in real time.
+5. **Live Future Updates & Registration Broadcasting**:
+   - Any time an employee is registered or updated on **any other device** (or in the database), the server **automatically broadcasts** the new profile and templates to eligible devices in real time.
+   - Devices marked `is_hrbliz = 1` will **only** receive live registration broadcasts if `receiver_by_default = 1`, and commands sent to them will strictly use `hrbliz_biometric_id`. Terminals with `receiver_by_default = 0` operate in attend-only mode and are excluded.
 
 ---
 

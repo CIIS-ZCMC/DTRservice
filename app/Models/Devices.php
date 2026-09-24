@@ -57,8 +57,23 @@ class Devices extends Model
         'is_registration' => 'boolean',
         'for_attendance' => 'boolean',
         'is_hrbliz' => 'boolean',
-        'receiver_by_default' => 'boolean',
     ];
+
+    /**
+     * Accessor for receiver_by_default attribute.
+     */
+    public function getReceiverByDefaultAttribute($value): bool
+    {
+        return $this->canReceiveSync();
+    }
+
+    /**
+     * Mutator for receiver_by_default attribute.
+     */
+    public function setReceiverByDefaultAttribute($value): void
+    {
+        $this->attributes['receiver_by_default'] = $value === null ? null : (bool)$value;
+    }
 
     /**
      * Check if device is currently online (seen in the last 2 minutes)
@@ -118,5 +133,44 @@ class Devices extends Model
              $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
          });
      }
+
+    /**
+     * Check if this device is eligible to receive biometric sync updates.
+     * HRBLIZ terminals (is_hrbliz = 1) strictly only receive sync if receiver_by_default is explicitly 1.
+     * Standard terminals receive sync unless receiver_by_default is explicitly 0.
+     */
+    public function canReceiveSync(): bool
+    {
+        $raw = $this->attributes['receiver_by_default'] ?? null;
+
+        if ($this->is_hrbliz) {
+            return $raw === true || $raw === 1 || $raw === '1';
+        }
+
+        return $raw !== false && $raw !== 0 && $raw !== '0';
+    }
+
+    /**
+     * Scope for devices eligible to receive biometric sync updates.
+     * HRBLIZ devices (is_hrbliz = 1) strictly require receiver_by_default = 1.
+     * Standard non-HRBLIZ devices receive unless receiver_by_default is 0.
+     */
+    public function scopeCanReceiveSync($query)
+    {
+        return $query->where(function ($q) {
+            $q->where(function ($sub) {
+                // Standard non-HRBLIZ devices: eligible unless receiver_by_default is 0
+                $sub->where(function ($h) {
+                    $h->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
+                })->where(function ($r) {
+                    $r->whereNull('receiver_by_default')->orWhere('receiver_by_default', 1);
+                });
+            })->orWhere(function ($sub) {
+                // HRBLIZ devices: strictly only eligible if receiver_by_default is explicitly 1
+                $sub->where('is_hrbliz', 1)
+                    ->where('receiver_by_default', 1);
+            });
+        });
+    }
 }
 

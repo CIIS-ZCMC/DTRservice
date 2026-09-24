@@ -24,6 +24,7 @@ beforeEach(function () {
             $table->boolean('is_registration')->default(0);
             $table->boolean('for_attendance')->default(0);
             $table->boolean('is_hrbliz')->default(0);
+            $table->boolean('receiver_by_default')->default(1);
             $table->string('fp_version')->default('v10')->nullable();
             $table->timestamp('last_seen_at')->nullable();
             $table->timestamp('last_cleared_at')->nullable();
@@ -34,6 +35,12 @@ beforeEach(function () {
     if (!Schema::hasColumn('devices', 'is_hrbliz')) {
         Schema::table('devices', function (Blueprint $table) {
             $table->boolean('is_hrbliz')->default(false)->after('for_attendance');
+        });
+    }
+
+    if (!Schema::hasColumn('devices', 'receiver_by_default')) {
+        Schema::table('devices', function (Blueprint $table) {
+            $table->boolean('receiver_by_default')->default(true)->after('is_hrbliz');
         });
     }
 
@@ -312,6 +319,7 @@ test('BiometricSyncService uses device-specific PIN during user provisioning', f
         'ip_address' => '192.168.1.80',
         'is_active' => true,
         'is_hrbliz' => true,
+        'receiver_by_default' => 1,
         'fp_version' => 'v10',
         'for_attendance' => 0,
     ]);

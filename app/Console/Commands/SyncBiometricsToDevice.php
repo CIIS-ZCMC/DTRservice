@@ -57,18 +57,40 @@ class SyncBiometricsToDevice extends Command
         // Get target devices
         $devices = [];
         if ($allDevices) {
-            $devices = Devices::where('is_active', 1)
+            $query = Devices::where('is_active', 1)
                 ->whereNotNull('serial_number')
                 ->where('serial_number', '!=', '')
-                ->where('serial_number', '!=', 'Fail!')
-                ->get()
-                ->unique('serial_number');
+                ->where('serial_number', '!=', 'Fail!');
+
+            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
+                \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+                $query->canReceiveSync();
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+                $query->where(function ($q) {
+                    $q->whereNull('receiver_by_default')->orWhere('receiver_by_default', 1);
+                });
+            }
+
+            $devices = $query->get()->unique('serial_number');
         } else {
             $device = Devices::where('serial_number', $deviceSn)->first();
             if (!$device) {
                 $this->error("Device with serial number {$deviceSn} not found.");
                 return 1;
             }
+
+            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
+                \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+                if (!$device->canReceiveSync()) {
+                    if ($device->is_hrbliz) {
+                        $this->error("Cannot sync to device [{$deviceSn}]: Device is configured as HRBLIZ (is_hrbliz = 1) with receiver_by_default disabled (receiver_by_default = " . ($device->receiver_by_default ? '1' : '0') . "). Provisioning only runs on HRBLIZ terminals if receiver_by_default is set to 1.");
+                    } else {
+                        $this->error("Cannot sync to device [{$deviceSn}]: Device has receiver_by_default set to 0 (attend-only mode). Provisioning cannot run unless receiver_by_default is set to 1.");
+                    }
+                    return 1;
+                }
+            }
+
             $devices = collect([$device]);
         }
 
@@ -104,7 +126,13 @@ class SyncBiometricsToDevice extends Command
         });
 
         if ($pin) {
-            $usersQuery->where('biometric_id', $pin);
+            $hasHrblizIdCol = \Illuminate\Support\Facades\Schema::hasColumn('biometrics', 'hrbliz_biometric_id');
+            $usersQuery->where(function ($q) use ($pin, $hasHrblizIdCol) {
+                $q->where('biometric_id', $pin);
+                if ($hasHrblizIdCol) {
+                    $q->orWhere('hrbliz_biometric_id', $pin);
+                }
+            });
         }
 
         $totalUsers = (clone $usersQuery)->count();
@@ -136,6 +164,11 @@ class SyncBiometricsToDevice extends Command
                     $commandStrings = $this->syncService->generateUserProvisionCommands($user, $cleanUnused, $device);
                     $cmdCount = count($commandStrings);
 
+                    if ($cmdCount === 0) {
+                        $bar->advance();
+                        continue;
+                    }
+
                     foreach ($commandStrings as $cmd) {
                         $batch[] = [
                             'device_sn' => $device->serial_number,
@@ -143,9 +176,16 @@ class SyncBiometricsToDevice extends Command
                         ];
                     }
 
+                    // On throwing or selecting a biometric_id:
+                    // is_hrbliz = 1 --> hrbliz_biometric_id
+                    // is_hrbliz = 0 --> biometric_id
+                    $targetPin = ($device->is_hrbliz && !empty($user->hrbliz_biometric_id))
+                        ? (int)$user->hrbliz_biometric_id
+                        : (int)$user->biometric_id;
+
                     // Log each push event
                     \App\Services\RegistrationLogger::logPushSync(
-                        $user->biometric_id,
+                        $targetPin,
                         $user->name,
                         $device,
                         $cmdCount
@@ -153,7 +193,7 @@ class SyncBiometricsToDevice extends Command
 
                     if ($showTable && count($tableRows) < 500) {
                         $tableRows[] = [
-                            'biometric_id' => $user->biometric_id,
+                            'biometric_id' => $targetPin,
                             'name' => $user->name ?? 'Unknown',
                             'device_name' => $device->device_name ?? 'Unknown',
                             'serial_number' => $device->serial_number,

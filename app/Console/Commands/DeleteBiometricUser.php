@@ -40,30 +40,69 @@ class DeleteBiometricUser extends Command
             return 1;
         }
 
-        $command = "DATA DELETE USER PIN={$pin}";
+        $bioModel = \App\Models\Biometrics::findByDevicePin((int)$pin, false)
+            ?? \App\Models\Biometrics::findByDevicePin((int)$pin, true);
+
         $queuedCount = 0;
 
         if ($allDevices) {
-            $devices = Devices::where('is_active', 1)
+            $query = Devices::where('is_active', 1)
                 ->whereNotNull('serial_number')
                 ->where('serial_number', '!=', '')
-                ->where('serial_number', '!=', 'Fail!')
-                ->get()
-                ->unique('serial_number');
+                ->where('serial_number', '!=', 'Fail!');
+
+            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
+                \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+                $query->canReceiveSync();
+            } elseif (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+                $query->where(function ($q) {
+                    $q->whereNull('receiver_by_default')->orWhere('receiver_by_default', 1);
+                });
+            }
+
+            $devices = $query->get()->unique('serial_number');
 
             foreach ($devices as $dev) {
-                $commandService->queueCommand($dev->serial_number, $command);
+                $targetPin = $dev->is_hrbliz
+                    ? ($bioModel?->hrbliz_biometric_id ?? null)
+                    : ($bioModel?->biometric_id ?? $pin);
+
+                if (!$targetPin) {
+                    continue;
+                }
+
+                $devCommand = "DATA DELETE USER PIN={$targetPin}";
+                $commandService->queueCommand($dev->serial_number, $devCommand);
                 $queuedCount++;
             }
-            $this->info("Queued DATA DELETE USER PIN={$pin} to {$queuedCount} active device(s).");
+            $this->info("Queued DATA DELETE USER to {$queuedCount} active device(s).");
         } else {
             $device = Devices::where('serial_number', $deviceSn)->first();
             if (!$device) {
                 $this->error("Device with serial number {$deviceSn} not found.");
                 return 1;
             }
-            $commandService->queueCommand($deviceSn, $command);
-            $this->info("Queued DATA DELETE USER PIN={$pin} to device {$device->device_name} ({$deviceSn}).");
+
+            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
+                \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+                if (!$device->canReceiveSync()) {
+                    $this->error("Cannot dispatch delete to device [{$deviceSn}]: Device has receiver_by_default disabled.");
+                    return 1;
+                }
+            }
+
+            $targetPin = $device->is_hrbliz
+                ? ($bioModel?->hrbliz_biometric_id ?? null)
+                : ($bioModel?->biometric_id ?? $pin);
+
+            if (!$targetPin) {
+                $this->error("Cannot delete user from HRBLIZ device: User has no hrbliz_biometric_id assigned.");
+                return 1;
+            }
+
+            $devCommand = "DATA DELETE USER PIN={$targetPin}";
+            $commandService->queueCommand($deviceSn, $devCommand);
+            $this->info("Queued DATA DELETE USER PIN={$targetPin} to device {$device->device_name} ({$deviceSn}).");
         }
 
         if ($withDb) {
