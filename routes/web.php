@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\BiometricHrblizMappingController;
 use App\Http\Controllers\CommandRunnerController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DeviceLogAlertController;
@@ -12,6 +13,15 @@ Route::get('/', function () {
 
 // Device management web view
 Route::get('/devices', [DeviceController::class, 'managementView'])->name('devices.index');
+
+// HRBLIZ Biometrics Mapping & Verification (Temporary Tool)
+Route::get('/biometrics/hrbliz', [BiometricHrblizMappingController::class, 'index'])->name('biometrics.hrbliz');
+Route::get('/biometrics/hrbliz/list', [BiometricHrblizMappingController::class, 'list'])->name('biometrics.hrbliz.list');
+Route::post('/biometrics/hrbliz/update', [BiometricHrblizMappingController::class, 'updateSingle'])->name('biometrics.hrbliz.update');
+Route::post('/biometrics/hrbliz/analyze', [BiometricHrblizMappingController::class, 'analyze'])->name('biometrics.hrbliz.analyze');
+Route::post('/biometrics/hrbliz/batch-merge', [BiometricHrblizMappingController::class, 'batchMerge'])->name('biometrics.hrbliz.batch-merge');
+Route::get('/biometrics/hrbliz/candidates', [BiometricHrblizMappingController::class, 'searchCandidates'])->name('biometrics.hrbliz.candidates');
+Route::get('/biometrics/hrbliz/sample', [BiometricHrblizMappingController::class, 'getSampleData'])->name('biometrics.hrbliz.sample');
 
 // Log viewer routes
 Route::get('/logs', [LogViewerController::class, 'index'])->name('logs.index');

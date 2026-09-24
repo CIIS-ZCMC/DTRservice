@@ -57,6 +57,16 @@ Route::get('/dtr-self', [DtrReportController::class, 'dtrSelf']);
 Route::get('/biometrics/check-duplicates', [BiometricsController::class, 'checkDuplicates']);
 Route::get('/biometrics/{pin}/duplicates', [BiometricsController::class, 'checkDuplicates']);
 
+// HRBLIZ Biometrics Mapping & Management
+Route::prefix('biometrics/hrbliz')->group(function () {
+    Route::get('/list', [\App\Http\Controllers\BiometricHrblizMappingController::class, 'list']);
+    Route::post('/update', [\App\Http\Controllers\BiometricHrblizMappingController::class, 'updateSingle']);
+    Route::post('/analyze', [\App\Http\Controllers\BiometricHrblizMappingController::class, 'analyze']);
+    Route::post('/batch-merge', [\App\Http\Controllers\BiometricHrblizMappingController::class, 'batchMerge']);
+    Route::get('/candidates', [\App\Http\Controllers\BiometricHrblizMappingController::class, 'searchCandidates']);
+    Route::get('/sample', [\App\Http\Controllers\BiometricHrblizMappingController::class, 'getSampleData']);
+});
+
 // Command runner routes
 Route::get('/command-runner/manifest', [CommandRunnerController::class, 'getManifest']);
 Route::get('/command-runner/employees', [CommandRunnerController::class, 'searchEmployees']);

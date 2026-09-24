@@ -457,6 +457,11 @@
                     <i id="fullscreenIcon" class="fas fa-expand"></i>
                 </button>
 
+                <!-- HRBLIZ Biometrics Mapping Tool -->
+                <a href="/biometrics/hrbliz" class="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-all" title="Manage & Merge HRBLIZ Biometric IDs">
+                    <i class="fas fa-fingerprint text-emerald-200"></i> HRBLIZ Mapping
+                </a>
+
                 <!-- Command Runner Console Button -->
                 <button id="openCommandRunnerBtn" class="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 active:from-blue-800 active:to-indigo-800 text-white px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 shadow-xs transition-all cursor-pointer" title="Run Biometric & Device CLI Commands via GUI">
                     <i class="fas fa-terminal text-blue-200"></i> Run Commands
