@@ -181,3 +181,32 @@ test('hrbliz candidates search endpoint returns matching biometric records', fun
     expect($candidates)->not->toBeEmpty();
     expect(collect($candidates)->firstWhere('biometric_id', 99501))->not->toBeNull();
 });
+
+test('hrbliz analyze excludes biometrics records where hrbliz_biometric_id is already assigned', function () {
+    Biometrics::updateOrCreate(
+        ['biometric_id' => 99601],
+        ['name' => 'Already Assigned Employee', 'hrbliz_biometric_id' => 8888]
+    );
+
+    Biometrics::updateOrCreate(
+        ['biometric_id' => 99602],
+        ['name' => 'Pending Assignment Employee', 'hrbliz_biometric_id' => null]
+    );
+
+    $csv = "AC No.,No.,Name\n8888,,\"ALREADY ASSIGNED EMPLOYEE\"\n9999,,\"PENDING ASSIGNMENT EMPLOYEE\"";
+
+    $response = $this->postJson('/biometrics/hrbliz/analyze', [
+        'raw_csv' => $csv,
+        'exclude_assigned' => true,
+    ]);
+
+    $response->assertStatus(200);
+    $data = $response->json();
+
+    expect($data['summary']['already_assigned_count'])->toBe(1);
+    expect($data['summary']['matched_count'])->toBe(1);
+
+    $results = $data['results'];
+    expect(collect($results)->firstWhere('excel_ac_no', 8888))->toBeNull();
+    expect(collect($results)->firstWhere('excel_ac_no', 9999))->not->toBeNull();
+});

@@ -250,9 +250,15 @@
 
                 <!-- Action Button for Analysis -->
                 <div class="mt-4 flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
-                    <div class="flex items-center gap-2 text-xs text-slate-400">
-                        <i class="fa-solid fa-shield-halved text-emerald-400"></i>
-                        <span>Zero data is committed until you review and click <strong>Merge</strong>.</span>
+                    <div class="flex flex-col sm:flex-row sm:items-center gap-3 text-xs text-slate-400">
+                        <div class="flex items-center gap-2">
+                            <i class="fa-solid fa-shield-halved text-emerald-400"></i>
+                            <span>Zero data is committed until you review and click <strong>Merge</strong>.</span>
+                        </div>
+                        <label class="flex items-center gap-2 cursor-pointer text-slate-300 hover:text-white select-none bg-slate-900/60 px-3 py-1.5 rounded-lg border border-slate-700/80">
+                            <input type="checkbox" id="chkExcludeAssigned" checked class="rounded border-slate-700 bg-slate-900 text-indigo-600 focus:ring-0 cursor-pointer">
+                            <span>Don't include records with HRBLIZ already assigned</span>
+                        </label>
                     </div>
 
                     <div class="flex items-center gap-3">
@@ -304,6 +310,11 @@
                             <button class="filter-pill text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition-all text-slate-400 border-slate-700 hover:bg-slate-800" data-filter="unmatched">
                                 <i class="fa-solid fa-question mr-1"></i> Unmatched (<span id="countPillUnmatched">0</span>)
                             </button>
+
+                            <div id="badgeAlreadyAssignedWrapper" class="hidden items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 text-xs font-medium" title="Records that already have an HRBLIZ ID in biometrics table were excluded from the queue">
+                                <i class="fa-solid fa-shield-check"></i>
+                                <span>Excluded (Already Assigned): <strong id="countAlreadyAssigned">0</strong></span>
+                            </div>
                         </div>
                     </div>
 
@@ -649,6 +660,10 @@
                 return;
             }
 
+            const chkExclude = document.getElementById('chkExcludeAssigned');
+            const excludeAssigned = chkExclude ? chkExclude.checked : true;
+            formData.append('exclude_assigned', excludeAssigned ? '1' : '0');
+
             analysisLoading.classList.remove('hidden');
             verificationSection.classList.add('hidden');
             btnRunAnalysis.disabled = true;
@@ -695,6 +710,13 @@
             }
         }
 
+        // Exclude already assigned checkbox toggle listener
+        document.getElementById('chkExcludeAssigned')?.addEventListener('change', () => {
+            verificationPage = 1;
+            updateVerificationSummaryStats();
+            filterAndRenderVerification();
+        });
+
         // Verification Filters
         document.querySelectorAll('.filter-pill').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -720,23 +742,45 @@
         });
 
         function updateVerificationSummaryStats(initialSummary = null) {
+            const excludeAssigned = document.getElementById('chkExcludeAssigned')?.checked ?? true;
+            const activeResults = verificationResults.filter(r => {
+                if (excludeAssigned && (r.already_assigned || (r.matched_biometric && r.matched_biometric.hrbliz_biometric_id !== null))) {
+                    return false;
+                }
+                return true;
+            });
+
             if (initialSummary) {
                 document.getElementById('statAnalyzed').textContent = initialSummary.matched_count;
                 document.getElementById('statAnalyzedLabel').textContent = `${initialSummary.total_rows} total rows (${Math.round((initialSummary.matched_count / initialSummary.total_rows) * 100)}% match)`;
+
+                const alreadyAssigned = initialSummary.already_assigned_count || 0;
+                const badgeAssigned = document.getElementById('badgeAlreadyAssignedWrapper');
+                const countAssigned = document.getElementById('countAlreadyAssigned');
+                if (badgeAssigned && countAssigned) {
+                    if (alreadyAssigned > 0) {
+                        countAssigned.textContent = alreadyAssigned;
+                        badgeAssigned.classList.remove('hidden');
+                        badgeAssigned.classList.add('inline-flex');
+                    } else {
+                        badgeAssigned.classList.add('hidden');
+                        badgeAssigned.classList.remove('inline-flex');
+                    }
+                }
             } else {
-                const total = verificationResults.length;
-                const matched = verificationResults.filter(r => r.status !== 'unmatched').length;
+                const total = activeResults.length;
+                const matched = activeResults.filter(r => r.status !== 'unmatched').length;
                 document.getElementById('statAnalyzed').textContent = matched;
                 document.getElementById('statAnalyzedLabel').textContent = `${total} remaining in queue`;
             }
 
-            const total = verificationResults.length;
+            const total = activeResults.length;
             let exact = 0;
             let high = 0;
             let possible = 0;
             let unmatched = 0;
 
-            verificationResults.forEach(r => {
+            activeResults.forEach(r => {
                 if (r.status === 'exact') exact++;
                 else if (r.status === 'high') high++;
                 else if (r.status === 'possible') possible++;
@@ -759,7 +803,14 @@
         }
 
         function filterAndRenderVerification() {
+            const excludeAssigned = document.getElementById('chkExcludeAssigned')?.checked ?? true;
+
             filteredVerification = verificationResults.filter(row => {
+                // If excludeAssigned is active, filter out any record where the matched biometric already has hrbliz_biometric_id
+                if (excludeAssigned && (row.already_assigned || (row.matched_biometric && row.matched_biometric.hrbliz_biometric_id !== null))) {
+                    return false;
+                }
+
                 // Filter by match type
                 if (verificationFilter !== 'all' && row.status !== verificationFilter) {
                     return false;

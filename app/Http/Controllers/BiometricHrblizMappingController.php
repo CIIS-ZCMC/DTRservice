@@ -160,11 +160,17 @@ class BiometricHrblizMappingController extends Controller
                 ], 422);
             }
 
-            $analysis = $this->matcherService->matchAll($parsedRows);
+            $excludeAssigned = $request->boolean('exclude_assigned', true);
+            $analysis = $this->matcherService->matchAll($parsedRows, $excludeAssigned);
+
+            $msg = "Successfully analyzed {$analysis['summary']['total_rows']} records. Found {$analysis['summary']['matched_count']} matches.";
+            if (!empty($analysis['summary']['already_assigned_count'])) {
+                $msg .= " ({$analysis['summary']['already_assigned_count']} records with HRBLIZ ID already assigned were excluded from the verification queue).";
+            }
 
             return response()->json([
                 'success' => true,
-                'message' => "Successfully analyzed {$analysis['summary']['total_rows']} records. Found {$analysis['summary']['matched_count']} matches.",
+                'message' => $msg,
                 'summary' => $analysis['summary'],
                 'results' => $analysis['results'],
                 'unmatched_system_biometrics' => $analysis['unmatched_system_biometrics'],

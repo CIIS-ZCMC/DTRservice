@@ -313,8 +313,12 @@ class BiometricHrblizMatcherService
 
     /**
      * Match parsed Excel/CSV rows against current biometrics database.
+     *
+     * @param array $parsedRows
+     * @param bool $excludeAlreadyAssigned If true, rows whose matched biometric already has an HRBLIZ ID assigned are omitted from the verification queue.
+     * @return array
      */
-    public function matchAll(array $parsedRows): array
+    public function matchAll(array $parsedRows, bool $excludeAlreadyAssigned = true): array
     {
         $this->loadIndex();
 
@@ -326,6 +330,7 @@ class BiometricHrblizMatcherService
             'high' => 0,
             'possible' => 0,
             'unmatched' => 0,
+            'already_assigned' => 0,
         ];
 
         foreach ($parsedRows as $row) {
@@ -334,10 +339,25 @@ class BiometricHrblizMatcherService
 
             $matchResult = $this->matchSingle($acNo, $excelName);
             $status = $matchResult['status'];
-            $stats[$status]++;
 
-            if (!empty($matchResult['matched_biometric'])) {
-                $matchedBiometricIds[$matchResult['matched_biometric']['biometric_id']] = true;
+            $isAlreadyAssigned = !empty($matchResult['matched_biometric']) 
+                && $matchResult['matched_biometric']['hrbliz_biometric_id'] !== null;
+
+            if ($isAlreadyAssigned) {
+                $stats['already_assigned']++;
+                if (!empty($matchResult['matched_biometric'])) {
+                    $matchedBiometricIds[$matchResult['matched_biometric']['biometric_id']] = true;
+                }
+
+                // If excluding already assigned, skip including in pending verification list!
+                if ($excludeAlreadyAssigned) {
+                    continue;
+                }
+            } else {
+                $stats[$status]++;
+                if (!empty($matchResult['matched_biometric'])) {
+                    $matchedBiometricIds[$matchResult['matched_biometric']['biometric_id']] = true;
+                }
             }
 
             $results[] = [
@@ -350,6 +370,7 @@ class BiometricHrblizMatcherService
                 'candidate_alternatives' => $matchResult['candidate_alternatives'],
                 'selected_biometric_id' => $matchResult['matched_biometric']['biometric_id'] ?? null,
                 'proposed_hrbliz_id' => $acNo,
+                'already_assigned' => $isAlreadyAssigned,
             ];
         }
 
@@ -373,6 +394,7 @@ class BiometricHrblizMatcherService
                 'high_count' => $stats['high'],
                 'possible_count' => $stats['possible'],
                 'unmatched_count' => $stats['unmatched'],
+                'already_assigned_count' => $stats['already_assigned'],
                 'total_system_biometrics' => count($this->biometrics),
                 'unmatched_system_biometrics_count' => count($unmatchedBiometrics),
             ],
