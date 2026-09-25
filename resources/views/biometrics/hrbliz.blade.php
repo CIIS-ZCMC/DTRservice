@@ -679,18 +679,7 @@
                 });
 
                 // Update summary badges
-                const sum = data.summary;
-                document.getElementById('statAnalyzed').textContent = sum.matched_count;
-                document.getElementById('statAnalyzedLabel').textContent = `${sum.total_rows} total rows (${Math.round((sum.matched_count / sum.total_rows) * 100)}% match)`;
-                
-                document.getElementById('countPillAll').textContent = sum.total_rows;
-                document.getElementById('countPillExact').textContent = sum.exact_count;
-                document.getElementById('countPillHigh').textContent = sum.high_count;
-                document.getElementById('countPillPossible').textContent = sum.possible_count;
-                document.getElementById('countPillUnmatched').textContent = sum.unmatched_count;
-
-                document.getElementById('badgeVerifiedCount').textContent = sum.matched_count;
-                document.getElementById('badgeVerifiedCount').classList.remove('hidden');
+                updateVerificationSummaryStats(data.summary);
 
                 verificationPage = 1;
                 filterAndRenderVerification();
@@ -730,6 +719,45 @@
             filterAndRenderVerification();
         });
 
+        function updateVerificationSummaryStats(initialSummary = null) {
+            if (initialSummary) {
+                document.getElementById('statAnalyzed').textContent = initialSummary.matched_count;
+                document.getElementById('statAnalyzedLabel').textContent = `${initialSummary.total_rows} total rows (${Math.round((initialSummary.matched_count / initialSummary.total_rows) * 100)}% match)`;
+            } else {
+                const total = verificationResults.length;
+                const matched = verificationResults.filter(r => r.status !== 'unmatched').length;
+                document.getElementById('statAnalyzed').textContent = matched;
+                document.getElementById('statAnalyzedLabel').textContent = `${total} remaining in queue`;
+            }
+
+            const total = verificationResults.length;
+            let exact = 0;
+            let high = 0;
+            let possible = 0;
+            let unmatched = 0;
+
+            verificationResults.forEach(r => {
+                if (r.status === 'exact') exact++;
+                else if (r.status === 'high') high++;
+                else if (r.status === 'possible') possible++;
+                else if (r.status === 'unmatched') unmatched++;
+            });
+
+            document.getElementById('countPillAll').textContent = total;
+            document.getElementById('countPillExact').textContent = exact;
+            document.getElementById('countPillHigh').textContent = high;
+            document.getElementById('countPillPossible').textContent = possible;
+            document.getElementById('countPillUnmatched').textContent = unmatched;
+
+            const matchedRemaining = exact + high + possible;
+            document.getElementById('badgeVerifiedCount').textContent = matchedRemaining;
+            if (matchedRemaining === 0) {
+                document.getElementById('badgeVerifiedCount').classList.add('hidden');
+            } else {
+                document.getElementById('badgeVerifiedCount').classList.remove('hidden');
+            }
+        }
+
         function filterAndRenderVerification() {
             filteredVerification = verificationResults.filter(row => {
                 // Filter by match type
@@ -762,6 +790,25 @@
             if (filteredVerification.length === 0) {
                 tbody.innerHTML = '';
                 emptyEl.classList.remove('hidden');
+                if (verificationResults.length === 0) {
+                    emptyEl.innerHTML = `
+                        <div class="text-center py-10 space-y-2">
+                            <div class="w-14 h-14 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto text-2xl mb-3">
+                                <i class="fa-solid fa-circle-check"></i>
+                            </div>
+                            <h4 class="text-base font-bold text-white">All Records Successfully Merged!</h4>
+                            <p class="text-xs text-slate-400 max-w-sm mx-auto">There are no remaining records in this verification list. All matched biometric IDs have been saved.</p>
+                        </div>
+                    `;
+                } else {
+                    emptyEl.innerHTML = `
+                        <div class="text-center py-8 space-y-2">
+                            <i class="fa-solid fa-filter text-2xl text-slate-600 mb-2"></i>
+                            <p class="text-sm font-semibold text-slate-300">No records match the current filter</p>
+                            <p class="text-xs text-slate-500">Try adjusting your search query or switching filter pills above.</p>
+                        </div>
+                    `;
+                }
                 document.getElementById('verificationPaginationInfo').textContent = 'Showing 0 records';
                 document.getElementById('verificationPaginationButtons').innerHTML = '';
                 return;
@@ -1044,20 +1091,24 @@
                     return;
                 }
 
-                // Update in-memory biometrics
-                toMerge.forEach(m => {
-                    verificationResults.forEach(r => {
-                        if (r.matched_biometric && r.matched_biometric.biometric_id === m.biometric_id) {
-                            r.matched_biometric.hrbliz_biometric_id = m.hrbliz_biometric_id;
-                            r.checked = false; // uncheck merged
-                        }
-                    });
+                // Remove successfully merged rows from verificationResults
+                const mergedPinSet = new Set(toMerge.map(m => m.biometric_id));
+                verificationResults = verificationResults.filter(r => {
+                    if (!r.matched_biometric) return true;
+                    return !mergedPinSet.has(r.matched_biometric.biometric_id);
                 });
 
-                renderVerificationTable();
+                // Adjust page if current page exceeds new total pages
+                const maxPage = Math.max(1, Math.ceil(verificationResults.length / VERIFICATION_PAGE_SIZE));
+                if (verificationPage > maxPage) {
+                    verificationPage = maxPage;
+                }
+
+                updateVerificationSummaryStats();
+                filterAndRenderVerification();
                 updateSelectionCounts();
                 refreshHeaderStats();
-                showToast(data.message, 'success');
+                showToast(`Successfully merged ${data.updated_count} records and removed from list.`, 'success');
             } catch (err) {
                 btn.disabled = false;
                 btn.innerHTML = originalText;
@@ -1093,12 +1144,22 @@
                     return;
                 }
 
-                row.matched_biometric.hrbliz_biometric_id = hrblizId;
-                row.checked = false;
-                renderVerificationTable();
+                // Remove successfully merged single row from verificationResults
+                const removeIdx = verificationResults.indexOf(row);
+                if (removeIdx !== -1) {
+                    verificationResults.splice(removeIdx, 1);
+                }
+
+                const maxPage = Math.max(1, Math.ceil(verificationResults.length / VERIFICATION_PAGE_SIZE));
+                if (verificationPage > maxPage) {
+                    verificationPage = maxPage;
+                }
+
+                updateVerificationSummaryStats();
+                filterAndRenderVerification();
                 updateSelectionCounts();
                 refreshHeaderStats();
-                showToast(data.message, 'success');
+                showToast(`Merged PIN #${pin} with HRBLIZ #${hrblizId} and removed from queue.`, 'success');
             } catch (err) {
                 showToast('Network error: ' + err.message, 'error');
             }
