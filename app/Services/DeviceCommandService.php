@@ -1227,6 +1227,137 @@ class DeviceCommandService
     }
 
     /**
+     * Check if stacked-up queue commands with status SENT are within $days days (default: 3)
+     * and change their status to SUCCESS. Automatically deletes any queue file where all commands reach SUCCESS.
+     *
+     * @param int $days Number of days (default: 3)
+     * @param string|null $deviceSn Optional device serial number filter
+     * @param int $graceMinutes Minimum age in minutes to avoid freshly dispatched commands (default: 0)
+     * @return int Number of commands changed to SUCCESS
+     */
+    public function markSentCommandsWithinDaysAsSuccess(int $days = 3, ?string $deviceSn = null, int $graceMinutes = 0): int
+    {
+        return $this->resolveSentCommandsAsSuccess($days, 'within', $deviceSn, $graceMinutes);
+    }
+
+    /**
+     * Check and update stacked-up/stale SENT commands to SUCCESS across device queue files.
+     * When all commands in a queue file become SUCCESS, the file is automatically deleted.
+     *
+     * @param int $days Number of days threshold (default: 3)
+     * @param string $mode 'within' (sent within the last X days, default), 'older_than' (older than or equal to X days), or 'all'
+     * @param string|null $deviceSn Optional device serial number filter
+     * @param int $graceMinutes Minimum age in minutes to avoid freshly dispatched commands (default: 0)
+     * @return int Number of commands changed to SUCCESS
+     */
+    public function resolveSentCommandsAsSuccess(
+        int $days = 3,
+        string $mode = 'within',
+        ?string $deviceSn = null,
+        int $graceMinutes = 0
+    ): int {
+        $files = $deviceSn !== null
+            ? $this->getAllCommandFilesForDevice($deviceSn)
+            : $this->getAllCommandFiles();
+
+        $updatedCount = 0;
+        $now = now();
+        $nowStr = $now->toDateTimeString();
+        $cutoffDays = $now->copy()->subDays($days);
+        $graceCutoff = $graceMinutes > 0 ? $now->copy()->subMinutes($graceMinutes) : $now;
+
+        foreach ($files as $file) {
+            if (!file_exists($file) || filesize($file) === 0) {
+                continue;
+            }
+
+            $this->normalizeFileIfNeeded($file);
+
+            $fp = $this->openWithLock($file, 'c+b', LOCK_EX);
+            if (!$fp) {
+                continue;
+            }
+
+            $tempStream = fopen('php://temp/maxmemory:1048576', 'w+b');
+            if (!$tempStream) {
+                @flock($fp, LOCK_UN);
+                fclose($fp);
+                continue;
+            }
+
+            $fileModified = false;
+
+            try {
+                while (($line = fgets($fp)) !== false) {
+                    $trimmed = trim($line);
+                    if ($trimmed === '') {
+                        continue;
+                    }
+
+                    $cmd = json_decode($trimmed, true);
+                    if ($cmd && isset($cmd['id']) && trim($cmd['status'] ?? '') === 'SENT') {
+                        $dateStr = $cmd['updated_at'] ?? $cmd['created_at'] ?? null;
+                        $matches = false;
+
+                        if (!$dateStr) {
+                            $matches = true;
+                        } else {
+                            try {
+                                $sentTime = \Carbon\Carbon::parse($dateStr);
+                                if ($mode === 'within') {
+                                    $matches = $sentTime->greaterThanOrEqualTo($cutoffDays) && $sentTime->lessThanOrEqualTo($graceCutoff);
+                                } elseif ($mode === 'older_than') {
+                                    $matches = $sentTime->lessThanOrEqualTo($cutoffDays);
+                                } elseif ($mode === 'all') {
+                                    $matches = true;
+                                }
+                            } catch (\Throwable $e) {
+                                $matches = true;
+                            }
+                        }
+
+                        if ($matches) {
+                            $cmd['status'] = 'SUCCESS';
+                            $cmd['return_code'] = 0;
+                            $cmd['updated_at'] = $nowStr;
+                            $fileModified = true;
+                            $updatedCount++;
+                            fwrite($tempStream, json_encode($cmd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+                            continue;
+                        }
+                    }
+
+                    fwrite($tempStream, $trimmed . "\n");
+                }
+
+                if ($fileModified) {
+                    rewind($fp);
+                    ftruncate($fp, 0);
+                    rewind($tempStream);
+                    stream_copy_to_stream($tempStream, $fp);
+                    fflush($fp);
+                }
+            } finally {
+                fclose($tempStream);
+                @flock($fp, LOCK_UN);
+                fclose($fp);
+            }
+
+            if ($fileModified && file_exists($file)) {
+                if ($this->isFileAllSuccess($file)) {
+                    $this->deleteFileSafely($file);
+                }
+            }
+        }
+
+        if ($updatedCount > 0) {
+            $this->pruneCompletedFiles();
+        }
+
+        return $updatedCount;
+    }
+
+    /**
      * Check if a pending command matching an exact string exists for this device.
      */
     public function hasPendingCommand(string $deviceSn, string $command): bool

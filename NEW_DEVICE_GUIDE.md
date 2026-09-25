@@ -199,6 +199,7 @@ The system enforces the **Central Database as the sole Masterlist authority**, n
 | **Purge Duplicate/Conflicting Slots from Device** | `php artisan biometrics:check-device-match <PIN> --clean` |
 | **Database Masterlist Duplicate Search** | `php artisan biometrics:find-duplicates <PIN>` |
 | **Check Live Command Queue & Sync Status** | `php artisan biometrics:command-status` |
+| **Resolve Stuck SENT Commands (< 3 Days)** | `php artisan biometrics:resolve-sent --days=3` |
 | **Instantly Stop & Clear Command Queue** | `php artisan biometrics:clear-queue` |
 | **Purge User Profile from All Devices** | `php artisan biometrics:delete-user <PIN> --all-devices` |
 | **Delete User from Devices AND Database** | `php artisan biometrics:delete-user <PIN> --all-devices --with-db` |
@@ -226,14 +227,31 @@ php artisan biometrics:command-status --pin=1
 php artisan biometrics:command-status --status=PENDING --limit=100
 ```
 
-#### 2. Stop and Clear the Queue Instantly
+#### 2. Resolve Stuck / Stacked-Up SENT Commands
+If commands were dispatched to devices but the physical device never returned an acknowledgment (e.g. device rebooted, lost network, or unacknowledged legacy commands), they can stack up in `SENT` status and prevent queue files from automatically deleting:
+```bash
+# Resolve all SENT commands within the last 3 days to SUCCESS (default):
+php artisan biometrics:resolve-sent --days=3
+
+# Resolve all SENT commands older than 3 days to SUCCESS:
+php artisan biometrics:resolve-sent --days=3 --mode=older_than
+
+# Resolve ALL stuck SENT commands regardless of age:
+php artisan biometrics:resolve-sent --mode=all
+
+# Target a specific device serial number:
+php artisan biometrics:resolve-sent --days=3 --device=UCR6254000009
+```
+*Changes matching `SENT` commands to `SUCCESS` and automatically deletes any completed queue files that have reached 100% `SUCCESS`.*
+
+#### 3. Stop and Clear the Queue Instantly
 If a large sync is running and you need to stop devices from executing commands immediately:
 ```bash
 php artisan biometrics:clear-queue
 ```
 *Deletes all numbered queue files across `storage/app/device_queues/`, clears in-memory caches, and resets all device queues to 0 commands. Connected devices immediately stop executing on their next poll.*
 
-#### 3. Delete a User Profile from Devices (Orphan Cleanup)
+#### 4. Delete a User Profile from Devices (Orphan Cleanup)
 ```bash
 # Delete user from ALL connected devices:
 php artisan biometrics:delete-user 99499 --all-devices
@@ -245,13 +263,13 @@ php artisan biometrics:delete-user 99499 CKFT230860012
 php artisan biometrics:delete-user 99499 --all-devices --with-db
 ```
 
-#### 4. Delete a Specific Fingerprint Template
+#### 5. Delete a Specific Fingerprint Template
 ```bash
 # Delete finger ID 2 (0-9) for PIN 493 across all devices and database:
 php artisan biometrics:delete-finger 493 2
 ```
 
-#### 5. Inspect Live Registered Fingerprints on Physical Device(s) & Auto-Fix
+#### 6. Inspect Live Registered Fingerprints on Physical Device(s) & Auto-Fix
 Connects directly to the terminal's hardware memory via TAD/SOAP and inspects slots 0–9, comparing them with the database:
 ```bash
 # Check a specific terminal for employee PIN 493:
@@ -276,7 +294,7 @@ php artisan biometrics:check-device 493 --all-devices --clean
 php artisan biometrics:check-device 493 --all-devices --clean --force
 ```
 
-#### 6. Inspect Device & Database for Identical Template Duplicates Across PINs
+#### 7. Inspect Device & Database for Identical Template Duplicates Across PINs
 Connects directly to physical terminals in real-time to extract raw enrolled fingerprint templates (slots 0–9) and checks if any template is **100% identical to another employee's PIN** (e.g. **PIN 1162 slot 9** matching **PIN 8084**):
 
 ```bash

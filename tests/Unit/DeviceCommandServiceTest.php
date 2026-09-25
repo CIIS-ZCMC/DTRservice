@@ -397,3 +397,86 @@ test('device polling finds command files by serial number pattern even if rename
     expect($pending[0]['id'])->toBe(999);
     expect($pending[0]['command'])->toBe('DATA USER PIN=999 Name=RenamedDeviceUser');
 });
+
+test('markSentCommandsWithinDaysAsSuccess changes SENT commands within 3 days to SUCCESS and auto-deletes completed file', function () {
+    $devFile = $this->service->getDeviceQueueFile('DEV_WITHIN_3DAYS');
+    
+    // Create 2 commands: 1 sent 2 days ago (within 3 days), 1 sent 1 day ago (within 3 days)
+    $rec1 = [
+        'id' => 101,
+        'device_sn' => 'DEV_WITHIN_3DAYS',
+        'command' => 'DATA USER PIN=101',
+        'status' => 'SENT',
+        'return_code' => null,
+        'created_at' => now()->subDays(2)->toDateTimeString(),
+        'updated_at' => now()->subDays(2)->toDateTimeString(),
+    ];
+    $rec2 = [
+        'id' => 102,
+        'device_sn' => 'DEV_WITHIN_3DAYS',
+        'command' => 'DATA USER PIN=102',
+        'status' => 'SENT',
+        'return_code' => null,
+        'created_at' => now()->subDays(1)->toDateTimeString(),
+        'updated_at' => now()->subDays(1)->toDateTimeString(),
+    ];
+
+    file_put_contents($devFile, json_encode($rec1) . "\n" . json_encode($rec2) . "\n");
+    expect(file_exists($devFile))->toBeTrue();
+
+    // Run within 3 days resolution
+    $updated = $this->service->markSentCommandsWithinDaysAsSuccess(3, 'DEV_WITHIN_3DAYS');
+    expect($updated)->toBe(2);
+
+    // Because all commands became SUCCESS, the file should be automatically deleted!
+    expect(file_exists($devFile))->toBeFalse();
+});
+
+test('resolveSentCommandsAsSuccess respects older_than mode and leaves newer commands intact', function () {
+    $devFile = $this->service->getDeviceQueueFile('DEV_OLDER_TEST');
+
+    // 1 command from 5 days ago, 1 command from 1 day ago, 1 pending command
+    $recOld = [
+        'id' => 201,
+        'device_sn' => 'DEV_OLDER_TEST',
+        'command' => 'DATA USER PIN=201',
+        'status' => 'SENT',
+        'return_code' => null,
+        'created_at' => now()->subDays(5)->toDateTimeString(),
+        'updated_at' => now()->subDays(5)->toDateTimeString(),
+    ];
+    $recRecent = [
+        'id' => 202,
+        'device_sn' => 'DEV_OLDER_TEST',
+        'command' => 'DATA USER PIN=202',
+        'status' => 'SENT',
+        'return_code' => null,
+        'created_at' => now()->subDays(1)->toDateTimeString(),
+        'updated_at' => now()->subDays(1)->toDateTimeString(),
+    ];
+    $recPending = [
+        'id' => 203,
+        'device_sn' => 'DEV_OLDER_TEST',
+        'command' => 'DATA USER PIN=203',
+        'status' => 'PENDING',
+        'return_code' => null,
+        'created_at' => now()->toDateTimeString(),
+        'updated_at' => now()->toDateTimeString(),
+    ];
+
+    file_put_contents($devFile, json_encode($recOld) . "\n" . json_encode($recRecent) . "\n" . json_encode($recPending) . "\n");
+
+    // Only resolve commands older than 3 days
+    $updated = $this->service->resolveSentCommandsAsSuccess(3, 'older_than', 'DEV_OLDER_TEST');
+    expect($updated)->toBe(1);
+
+    // File should NOT be deleted because recRecent is still SENT and recPending is PENDING
+    expect(file_exists($devFile))->toBeTrue();
+
+    $all = $this->service->getAllCommands('DEV_OLDER_TEST');
+    expect($all)->toHaveCount(3);
+    expect($all[0]['status'])->toBe('SUCCESS');
+    expect($all[1]['status'])->toBe('SENT');
+    expect($all[2]['status'])->toBe('PENDING');
+});
+
