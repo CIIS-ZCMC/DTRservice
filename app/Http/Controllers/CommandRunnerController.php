@@ -81,7 +81,17 @@ class CommandRunnerController extends Controller
             'title' => 'Delete User Profile from Devices',
             'category' => 'User & Template Deletion',
             'guide' => 'NEW_DEVICE_GUIDE.md',
-            'description' => 'Purge user profile and all fingerprint templates from target device(s), and optionally central database.',
+            'description' => 'Purge user profile and all fingerprint templates from target device(s) via direct TAD/SOAP, and optionally central database.',
+            'pin_requirement' => 'required',
+            'device_requirement' => 'device_or_all',
+            'danger_level' => 'danger',
+        ],
+        'app:biometric-delete' => [
+            'name' => 'app:biometric-delete',
+            'title' => 'Bulk Biometric Delete (UMIS Direct TAD)',
+            'category' => 'User & Template Deletion',
+            'guide' => 'NEW_DEVICE_GUIDE.md',
+            'description' => 'Directly connect to device(s) via TAD/SOAP to delete user biometrics in bulk.',
             'pin_requirement' => 'required',
             'device_requirement' => 'device_or_all',
             'danger_level' => 'danger',
@@ -355,6 +365,27 @@ class CommandRunnerController extends Controller
                     }
                     break;
 
+                case 'app:biometric-delete':
+                    if ($pin) {
+                        $artisanParams['pins'] = [(string)$pin];
+                    }
+                    if ($deviceTarget === 'all') {
+                        $artisanParams['--all-devices'] = true;
+                    } elseif ($device) {
+                        if (!empty($device->ip_address)) {
+                            $artisanParams['--ip'] = [$device->ip_address];
+                        } else {
+                            $artisanParams['--device_sn'] = $device->serial_number;
+                        }
+                    }
+                    if (!empty($params['with_db'])) {
+                        $artisanParams['--with-db'] = true;
+                    }
+                    if (!empty($params['test'])) {
+                        $artisanParams['--test'] = true;
+                    }
+                    break;
+
                 case 'biometrics:delete-finger':
                     $artisanParams['pin'] = (string)$pin;
                     if (!isset($params['fid']) || $params['fid'] === '') {
@@ -503,11 +534,21 @@ class CommandRunnerController extends Controller
             if (str_starts_with($key, '--')) {
                 if ($val === true) {
                     $parts[] = $key;
+                } elseif (is_array($val)) {
+                    foreach ($val as $subVal) {
+                        $parts[] = "{$key}={$subVal}";
+                    }
                 } elseif ($val !== false && $val !== null && $val !== '') {
                     $parts[] = "{$key}={$val}";
                 }
             } else {
-                $parts[] = (string)$val;
+                if (is_array($val)) {
+                    foreach ($val as $subVal) {
+                        $parts[] = (string)$subVal;
+                    }
+                } else {
+                    $parts[] = (string)$val;
+                }
             }
         }
 

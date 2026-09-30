@@ -1253,7 +1253,8 @@
                                 <option value="device-logs:prune">device-logs:prune - Prune Historical Database Records</option>
                             </optgroup>
                             <optgroup label="User & Finger Slot Deletion">
-                                <option value="biometrics:delete-user">biometrics:delete-user - Purge User Profile from Device(s) & DB</option>
+                                <option value="biometrics:delete-user">biometrics:delete-user - Purge User Profile from Device(s) (Direct TAD & DB)</option>
+                                <option value="app:biometric-delete">app:biometric-delete - Bulk Biometric Delete (UMIS Direct TAD)</option>
                                 <option value="biometrics:delete-finger">biometrics:delete-finger - Delete Specific Enrolled Finger Slot (0-9)</option>
                             </optgroup>
                             <optgroup label="Queue & Command Status">
@@ -2939,8 +2940,8 @@
                         cmdDangerText.textContent = 'Clearing terminal logs permanently purges the local hardware attendance buffer (pre-synced to DB first).';
                     } else if (cmd === 'biometrics:clear-queue') {
                         cmdDangerText.textContent = 'Clearing the queue immediately deletes all pending command files. Devices stop receiving sync tasks.';
-                    } else if (cmd === 'biometrics:delete-user') {
-                        cmdDangerText.textContent = 'Deleting an enrolled user purges biometric templates from terminal(s) and optionally database.';
+                    } else if (cmd === 'biometrics:delete-user' || cmd === 'app:biometric-delete') {
+                        cmdDangerText.textContent = 'Deleting an enrolled user directly connects via TAD/SOAP to permanently purge templates and user records from terminal hardware memory.';
                     } else if (cmd === 'device-logs:prune') {
                         cmdDangerText.textContent = 'Pruning deletes historical attendance logs from MySQL database. Run Dry Run first to verify count.';
                     } else {
@@ -3083,11 +3084,12 @@
                     break;
 
                 case 'biometrics:delete-user':
+                case 'app:biometric-delete':
                     html = `
                         <div class="space-y-2">
-                            <div class="text-xs font-bold themed-text-primary">User Deletion Options</div>
+                            <div class="text-xs font-bold themed-text-primary">Direct Hardware Deletion Options (TAD/SOAP)</div>
                             <p class="text-[11px] themed-text-muted">
-                                Dispatches <code>DATA DELETE USER PIN={pin}</code> command to target terminal(s).
+                                Directly connects to terminal(s) via <strong>TAD/SOAP</strong> (ports 80 & 4370) to permanently erase user templates and credentials from hardware memory.
                             </p>
                             <label class="flex items-center gap-2 text-xs text-rose-600 dark:text-rose-400 font-semibold cursor-pointer">
                                 <input type="checkbox" id="opt_with_db" class="rounded border-rose-500 text-rose-600 focus:ring-0">
@@ -3316,11 +3318,16 @@
                     break;
 
                 case 'biometrics:delete-user':
+                case 'app:biometric-delete':
                     parts.push(pin ? pin : '<PIN>');
                     if (target === 'all') {
                         parts.push('--all-devices');
                     } else if (targetDeviceObj) {
-                        parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
+                        if (cmd === 'app:biometric-delete' && targetDeviceObj.ip_address) {
+                            parts.push(`--ip=${targetDeviceObj.ip_address}`);
+                        } else {
+                            parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
+                        }
                     }
                     if (document.getElementById('opt_with_db')?.checked) parts.push('--with-db');
                     break;
@@ -3570,6 +3577,7 @@
                     if (limitVal) params.limit = limitVal;
                     break;
                 case 'biometrics:delete-user':
+                case 'app:biometric-delete':
                     params.with_db = document.getElementById('opt_with_db')?.checked;
                     break;
                 case 'biometrics:delete-finger':

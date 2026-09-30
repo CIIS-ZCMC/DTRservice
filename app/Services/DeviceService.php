@@ -31,16 +31,18 @@ class DeviceService
         $this->commandService = $commandService ?? app(DeviceCommandService::class);
     }
 
-    private function checkDeviceConnection(array $device)
+    public function checkDeviceConnection(array|Devices $device)
     {
-     try {
+        try {
+            $deviceArr = $device instanceof Devices ? $device->toArray() : $device;
             $options = [
-                'ip' => (string)$device['ip_address'],
-                'com_key' => (int)$device['com_key'],
-                'description' => 'TAD1',
-                'soap_port' => (int)$device['soap_port'],
-                'udp_port' => (int)$device['udp_port'],
-                'encoding' => 'utf-8'
+                'ip' => (string)($deviceArr['ip_address'] ?? ''),
+                'com_key' => (int)($deviceArr['com_key'] ?? 0),
+                'description' => (string)($deviceArr['device_name'] ?? 'TAD1'),
+                'soap_port' => (int)($deviceArr['soap_port'] ?: 80),
+                'udp_port' => (int)($deviceArr['udp_port'] ?: 4370),
+                'encoding' => 'utf-8',
+                'connection_timeout' => 3,
             ];
             $tad_factory = new TADFactory($options);
             $tad = $tad_factory->get_instance();
@@ -48,8 +50,9 @@ class DeviceService
                 return $tad;
             }
         } catch (\Throwable $th) {
-          return null;
+            return null;
         }
+        return null;
     }
 
     /**
@@ -360,6 +363,152 @@ class DeviceService
             'channel' => $channel,
             'message' => "Device restart command executed via {$channel}",
         ];
+    }
+
+    /**
+     * Delete user profile and templates from physical biometric terminal via direct TAD/SOAP,
+     * with secondary ADMS push queue fallback.
+     *
+     * @param Devices|array $device
+     * @param array $pins Array of employee biometric PINs to delete
+     * @param bool $queuePush Whether to also queue DATA DELETE USER commands to ADMS queue
+     * @return array
+     */
+    public function deleteUsersFromDevice(Devices|array $device, array $pins, bool $queuePush = true): array
+    {
+        $deviceModel = $device instanceof Devices ? $device : Devices::find($device['id'] ?? null);
+        $deviceArr = $device instanceof Devices ? $device->toArray() : $device;
+        $ip = trim((string)($deviceArr['ip_address'] ?? ''));
+        $sn = trim((string)($deviceArr['serial_number'] ?? ''));
+        $deviceName = (string)($deviceArr['device_name'] ?? $ip);
+        $isHrbliz = !empty($deviceArr['is_hrbliz']);
+
+        $tadSuccess = false;
+        $deletedPins = [];
+        $failedPins = [];
+        $errors = [];
+
+        // Clean & deduplicate PINs
+        $cleanPins = array_values(array_unique(array_filter(array_map('trim', $pins))));
+        if (empty($cleanPins)) {
+            return [
+                'success' => false,
+                'device' => $deviceName,
+                'ip' => $ip,
+                'message' => 'No PINs provided for deletion',
+            ];
+        }
+
+        // 1. Direct TAD SOAP deletion
+        try {
+            $tad = $this->checkDeviceConnection($deviceArr);
+            if ($tad && $tad->is_alive()) {
+                foreach ($cleanPins as $pin) {
+                    $candidatePins = [(int)$pin];
+                    if ($deviceModel && class_exists(Biometrics::class)) {
+                        $bioUser = Biometrics::where('biometric_id', $pin)
+                            ->orWhere('hrbliz_biometric_id', $pin)
+                            ->first();
+                        if ($bioUser) {
+                            if ($isHrbliz && !empty($bioUser->hrbliz_biometric_id)) {
+                                $candidatePins[] = (int)$bioUser->hrbliz_biometric_id;
+                            }
+                            if (!empty($bioUser->biometric_id)) {
+                                $candidatePins[] = (int)$bioUser->biometric_id;
+                            }
+                        }
+                    }
+                    $candidatePins = array_values(array_unique(array_filter($candidatePins)));
+
+                    try {
+                        foreach ($candidatePins as $cPin) {
+                            $tad->delete_template(['pin' => $cPin]);
+                            $tad->delete_user(['pin' => $cPin]);
+                        }
+                        $deletedPins[] = $pin;
+                    } catch (\Throwable $ex) {
+                        $failedPins[] = $pin;
+                        $errors[] = "PIN {$pin}: " . $ex->getMessage();
+                    }
+                }
+                $tadSuccess = true;
+                if ($deviceModel) {
+                    $deviceModel->update(['last_seen_at' => now()]);
+                }
+            } else {
+                // Direct SOAP fallback if TAD is_alive check failed
+                if (!empty($ip) && $ip !== '0.0.0.0' && $ip !== '127.0.0.1') {
+                    $soapPort = (int)($deviceArr['soap_port'] ?? 80);
+                    $comKey = (int)($deviceArr['com_key'] ?? 0);
+                    try {
+                        $soapClient = new \SoapClient(null, [
+                            'location' => "http://{$ip}:{$soapPort}/iWsService",
+                            'uri' => 'http://www.zksoftware/Service/message/',
+                            'connection_timeout' => 2,
+                            'exceptions' => true,
+                        ]);
+
+                        foreach ($cleanPins as $pin) {
+                            $xmlDelTmpl = "<DeleteTemplate><ArgComKey>{$comKey}</ArgComKey><Arg><PIN>{$pin}</PIN></Arg></DeleteTemplate>";
+                            $xmlDelUser = "<DeleteUser><ArgComKey>{$comKey}</ArgComKey><Arg><PIN>{$pin}</PIN></Arg></DeleteUser>";
+                            $soapClient->__doRequest($xmlDelTmpl, "http://{$ip}:{$soapPort}/iWsService", '', SOAP_1_1);
+                            $soapClient->__doRequest($xmlDelUser, "http://{$ip}:{$soapPort}/iWsService", '', SOAP_1_1);
+                            $deletedPins[] = $pin;
+                        }
+                        $tadSuccess = true;
+                    } catch (\Throwable $soapErr) {
+                        $errors[] = "SOAP: " . $soapErr->getMessage();
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $errors[] = "TAD: " . $e->getMessage();
+        }
+
+        // 2. Queue ADMS Push commands (secondary fallback / audit)
+        $pushQueuedCount = 0;
+        if ($queuePush && !empty($sn) && $sn !== 'Fail!') {
+            foreach ($cleanPins as $pin) {
+                try {
+                    $this->commandService->queueCommand($sn, "DATA DELETE USER PIN={$pin}");
+                    $pushQueuedCount++;
+                } catch (\Throwable $e) {
+                    $errors[] = "Push queue PIN {$pin}: " . $e->getMessage();
+                }
+            }
+        }
+
+        $isOk = $tadSuccess || $pushQueuedCount > 0;
+        $channel = $tadSuccess && $pushQueuedCount > 0 
+            ? 'Direct TAD/SOAP & ADMS Push Queued' 
+            : ($tadSuccess ? 'Direct TAD/SOAP' : 'ADMS Push Queued');
+
+        return [
+            'success' => $isOk,
+            'device_id' => $deviceArr['id'] ?? null,
+            'device_name' => $deviceName,
+            'ip' => $ip,
+            'serial_number' => $sn,
+            'channel' => $channel,
+            'tad_success' => $tadSuccess,
+            'deleted_pins' => $deletedPins,
+            'failed_pins' => $failedPins,
+            'push_queued_count' => $pushQueuedCount,
+            'errors' => $errors,
+        ];
+    }
+
+    /**
+     * Delete a single user profile and templates from physical biometric terminal via direct TAD/SOAP.
+     *
+     * @param Devices|array $device
+     * @param int|string $pin
+     * @param bool $queuePush
+     * @return array
+     */
+    public function deleteUserFromDevice(Devices|array $device, int|string $pin, bool $queuePush = true): array
+    {
+        return $this->deleteUsersFromDevice($device, [(string)$pin], $queuePush);
     }
 
    
