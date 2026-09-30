@@ -175,7 +175,17 @@ class Biometrics extends Model
 
         $intPin = (int)$pin;
         if ($isHrbliz) {
-            return self::where('hrbliz_biometric_id', $intPin)->first();
+            $byHrbliz = self::where('hrbliz_biometric_id', $intPin)->first();
+            if ($byHrbliz) {
+                return $byHrbliz;
+            }
+
+            // Fallback: If no hrbliz_biometric_id registered, biometric_id is used by default
+            return self::where('biometric_id', $intPin)
+                ->where(function ($q) {
+                    $q->whereNull('hrbliz_biometric_id')->orWhere('hrbliz_biometric_id', 0);
+                })
+                ->first();
         }
 
         return self::where('biometric_id', $intPin)->first();
@@ -183,7 +193,8 @@ class Biometrics extends Model
 
     /**
      * Get the device-appropriate PIN for this biometric record.
-     * Returns hrbliz_biometric_id for HRBLIZ devices, or biometric_id for standard devices.
+     * Returns hrbliz_biometric_id for HRBLIZ devices (or biometric_id if no hrbliz_biometric_id is registered),
+     * or biometric_id for standard devices.
      *
      * @param \App\Models\Devices|bool $deviceOrIsHrbliz
      * @return int|null
@@ -195,7 +206,9 @@ class Biometrics extends Model
             : (bool)$deviceOrIsHrbliz;
 
         if ($isHrbliz) {
-            return $this->hrbliz_biometric_id ? (int)$this->hrbliz_biometric_id : null;
+            return $this->hrbliz_biometric_id 
+                ? (int)$this->hrbliz_biometric_id 
+                : ($this->biometric_id ? (int)$this->biometric_id : null);
         }
 
         return $this->biometric_id ? (int)$this->biometric_id : null;

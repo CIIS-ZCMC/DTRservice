@@ -651,3 +651,88 @@ test('DeviceController allows setting and updating receiver_by_default on HRBLIZ
     expect($devBlocked->fresh()->receiver_by_default)->toBeTrue()
         ->and($devBlocked->fresh()->canReceiveSync())->toBeTrue();
 });
+
+test('attendance saving correctly checks biometric_id on standard devices and hrbliz_biometric_id (with fallback) on HRBLIZ devices', function () {
+    $hrblizDevice = Devices::create([
+        'device_name' => 'HRBLIZ Attendance Terminal',
+        'serial_number' => 'SN-HRBLIZ-ATT-99',
+        'ip_address' => '192.168.10.99',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'for_attendance' => 0,
+    ]);
+
+    $stdDevice = Devices::create([
+        'device_name' => 'Standard Attendance Terminal',
+        'serial_number' => 'SN-STD-ATT-88',
+        'ip_address' => '192.168.10.88',
+        'is_active' => true,
+        'is_hrbliz' => false,
+        'for_attendance' => 0,
+    ]);
+
+    // Employee 1: has both biometric_id (1111) and hrbliz_biometric_id (9999)
+    $empWithHrbliz = Biometrics::create([
+        'biometric_id' => 1111,
+        'hrbliz_biometric_id' => 9999,
+        'name' => 'Dr. Jose Rizal',
+        'name_with_biometric' => 'Dr. Jose Rizal [1111]',
+    ]);
+
+    // Employee 2: has only biometric_id (2222), no hrbliz_biometric_id registered
+    $empWithoutHrbliz = Biometrics::create([
+        'biometric_id' => 2222,
+        'hrbliz_biometric_id' => null,
+        'name' => 'Andres Bonifacio',
+        'name_with_biometric' => 'Andres Bonifacio [2222]',
+    ]);
+
+    $repo = app(LogsRepository::class);
+
+    // Case 1: Standard device (is_hrbliz = 0) checks biometric_id
+    $logStd1 = $repo->createLog([
+        'biometric_id' => 1111,
+        'ip_address' => '192.168.10.88',
+        'dtr_date' => '2026-09-30',
+        'dtr_time' => '07:55:00',
+        'dtr_type' => '0',
+    ]);
+    expect((int)$logStd1->biometric_id)->toBe(1111)
+        ->and($logStd1->name)->toBe('Dr. Jose Rizal')
+        ->and($logStd1->device_name)->toBe('Standard Attendance Terminal');
+
+    $logStd2 = $repo->createLog([
+        'biometric_id' => 2222,
+        'ip_address' => '192.168.10.88',
+        'dtr_date' => '2026-09-30',
+        'dtr_time' => '07:58:00',
+        'dtr_type' => '0',
+    ]);
+    expect((int)$logStd2->biometric_id)->toBe(2222)
+        ->and($logStd2->name)->toBe('Andres Bonifacio')
+        ->and($logStd2->device_name)->toBe('Standard Attendance Terminal');
+
+    // Case 2: HRBLIZ device (is_hrbliz = 1) checks hrbliz_biometric_id (9999) -> resolves to canonical 1111
+    $logHrb1 = $repo->createLog([
+        'biometric_id' => 9999,
+        'ip_address' => '192.168.10.99',
+        'dtr_date' => '2026-09-30',
+        'dtr_time' => '17:05:00',
+        'dtr_type' => '1',
+    ]);
+    expect((int)$logHrb1->biometric_id)->toBe(1111)
+        ->and($logHrb1->name)->toBe('Dr. Jose Rizal')
+        ->and($logHrb1->device_name)->toBe('HRBLIZ Attendance Terminal');
+
+    // Case 3: HRBLIZ device (is_hrbliz = 1) for employee with NO hrbliz_biometric_id falls back to checking biometric_id (2222)
+    $logHrb2 = $repo->createLog([
+        'biometric_id' => 2222,
+        'ip_address' => '192.168.10.99',
+        'dtr_date' => '2026-09-30',
+        'dtr_time' => '17:10:00',
+        'dtr_type' => '1',
+    ]);
+    expect((int)$logHrb2->biometric_id)->toBe(2222)
+        ->and($logHrb2->name)->toBe('Andres Bonifacio')
+        ->and($logHrb2->device_name)->toBe('HRBLIZ Attendance Terminal');
+});
