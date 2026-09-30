@@ -117,6 +117,10 @@ class DeviceService
             if (!$device) {
                 throw new Exception('Device not found');
             }
+
+            if (!empty($device->is_hrbliz)) {
+                throw new Exception('Cannot power off HRBLIZ device: terminal is strictly send-only for attendance capture.');
+            }
       
             try {
                $this->sendDeviceCommand($device->id, 'power_off');
@@ -232,6 +236,17 @@ class DeviceService
             throw new Exception('Device not found');
         }
 
+        if (!empty($device->is_hrbliz)) {
+            return [
+                'success' => false,
+                'device_id' => $device->id,
+                'device_name' => $device->device_name,
+                'synced_at' => now()->format('Y-m-d H:i:s'),
+                'channel' => 'Skipped',
+                'message' => 'Cannot sync time to HRBLIZ device: terminal is strictly send-only for attendance capture.',
+            ];
+        }
+
         $now = now();
         $dateStr = $now->format('Y-m-d');
         $timeStr = $now->format('H:i:s');
@@ -323,6 +338,16 @@ class DeviceService
             throw new Exception('Device not found');
         }
 
+        if (!empty($device->is_hrbliz)) {
+            return [
+                'success' => false,
+                'device_id' => $device->id,
+                'device_name' => $device->device_name,
+                'channel' => 'Skipped',
+                'message' => 'Cannot restart HRBLIZ device: terminal is strictly send-only for attendance capture.',
+            ];
+        }
+
         $soapSuccess = false;
         $pushQueued = false;
         $errors = [];
@@ -382,6 +407,16 @@ class DeviceService
         $sn = trim((string)($deviceArr['serial_number'] ?? ''));
         $deviceName = (string)($deviceArr['device_name'] ?? $ip);
         $isHrbliz = !empty($deviceArr['is_hrbliz']);
+
+        // HRBLIZ devices only send attendance or DTR: never delete or modify data in the device
+        if ($isHrbliz) {
+            return [
+                'success' => false,
+                'device' => $deviceName,
+                'ip' => $ip,
+                'message' => 'Cannot modify or delete users on HRBLIZ device: terminal is strictly send-only for attendance capture.',
+            ];
+        }
 
         $tadSuccess = false;
         $deletedPins = [];
@@ -856,6 +891,17 @@ class DeviceService
         }
 
         $sn = trim((string)$device->serial_number);
+        if (!empty($device->is_hrbliz)) {
+            return [
+                'device_id' => $device->id,
+                'device_name' => $device->device_name,
+                'serial_number' => $sn,
+                'status' => 'skipped_hrbliz',
+                'message' => 'HRBLIZ devices are strictly send-only attendance terminals. ADMS commands are not dispatched to this device.',
+                'commands_queued' => [],
+            ];
+        }
+
         if (empty($sn) || $sn === 'Fail!') {
             return [
                 'device_id' => $device->id,
@@ -927,7 +973,9 @@ class DeviceService
      */
     public function requestLogResendFromActiveDevices(array $options = []): array
     {
-        $devices = Devices::active()->get();
+        $devices = Devices::active()->where(function ($q) {
+            $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
+        })->get();
         $results = [];
         $queuedCount = 0;
         $skippedCount = 0;
@@ -977,6 +1025,22 @@ class DeviceService
         $force = (bool)($options['force'] ?? false);
         $dryRun = (bool)($options['dry_run'] ?? false);
         $skipSync = (bool)($options['skip_sync'] ?? false);
+
+        // 0. HRBLIZ Terminal Protection: HRBLIZ terminals are send-only and must never have logs or data cleared.
+        if (!empty($device->is_hrbliz)) {
+            Log::channel('device_logs')->info("Device attendance logs clear skipped: Device [{$device->id}] {$device->device_name} is an HRBLIZ device (read-only attendance sender).");
+            return [
+                'device_id' => $device->id,
+                'device_name' => $device->device_name,
+                'serial_number' => $device->serial_number,
+                'ip_address' => $device->ip_address,
+                'status' => 'skipped_hrbliz',
+                'method' => $method,
+                'is_online' => $device->isOnline(),
+                'pre_sync' => null,
+                'message' => "HRBLIZ terminal [{$device->device_name}] is strictly send-only for attendance/DTR capture. Clearing data on this device is prohibited.",
+            ];
+        }
 
         // 1. Connectivity Check
         $isOnline = $device->isOnline() || ($method !== 'adms' && !app()->runningUnitTests() && TAD::is_device_online($device->ip_address, 2));
@@ -1134,10 +1198,14 @@ class DeviceService
      */
     public function clearAttendanceLogsFromActiveDevices(array $options = []): array
     {
-        $query = Devices::active();
+        $query = Devices::active()->where(function ($q) {
+            $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
+        });
         if (!empty($options['catch_up'])) {
             $days = (int)($options['older_than'] ?? 7);
-            $query = Devices::needingLogClear($days);
+            $query = Devices::needingLogClear($days)->where(function ($q) {
+                $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
+            });
         }
 
         $devices = $query->get();

@@ -404,7 +404,12 @@ class DeviceController extends Controller
                 $isHrbliz = (bool)$request->input('is_hrbliz');
                 if ($isHrbliz !== (bool)$device->is_hrbliz) {
                     $updates['is_hrbliz'] = $isHrbliz;
-                    $changesDesc[] = $isHrbliz ? 'marked as HRBLIZ terminal' : 'marked as Standard terminal';
+                    if ($isHrbliz) {
+                        $updates['receiver_by_default'] = false;
+                        $updates['is_registration'] = false;
+                        $updates['for_attendance'] = true;
+                    }
+                    $changesDesc[] = $isHrbliz ? 'marked as HRBLIZ terminal (send-only attendance)' : 'marked as Standard terminal';
                 }
             }
 
@@ -473,6 +478,7 @@ class DeviceController extends Controller
                 'receiver_by_default'=> 'nullable|boolean',
             ]);
 
+            $isHrbliz = (bool)($validated['is_hrbliz'] ?? false);
             $device = Devices::create([
                 'device_name'        => trim($validated['device_name']),
                 'ip_address'         => trim($validated['ip_address']),
@@ -482,12 +488,10 @@ class DeviceController extends Controller
                 'com_key'            => $validated['com_key'] ?? '0',
                 'fp_version'         => $validated['fp_version'] ?? null,
                 'is_active'          => (bool)($validated['is_active'] ?? true),
-                'is_registration'    => (bool)($validated['is_registration'] ?? false),
-                'for_attendance'     => (bool)($validated['for_attendance'] ?? false),
-                'is_hrbliz'          => (bool)($validated['is_hrbliz'] ?? false),
-                'receiver_by_default'=> isset($validated['receiver_by_default'])
-                    ? (bool)$validated['receiver_by_default']
-                    : (!($validated['is_hrbliz'] ?? false)),
+                'is_registration'    => $isHrbliz ? false : (bool)($validated['is_registration'] ?? false),
+                'for_attendance'     => $isHrbliz ? true : (bool)($validated['for_attendance'] ?? false),
+                'is_hrbliz'          => $isHrbliz,
+                'receiver_by_default'=> isset($validated['receiver_by_default']) ? (bool)$validated['receiver_by_default'] : ($isHrbliz ? false : true),
             ]);
 
             Log::channel('device_logs')->info("Device manually created: [{$device->id}] {$device->device_name} @ {$device->ip_address}");
@@ -532,7 +536,14 @@ class DeviceController extends Controller
                 return response()->json(['message' => "Device not found"], 404);
             }
 
-            $device->update([$field => (bool)$value]);
+            $updates = [$field => (bool)$value];
+            if ($field === 'is_hrbliz' && (bool)$value === true) {
+                $updates['receiver_by_default'] = false;
+                $updates['is_registration'] = false;
+                $updates['for_attendance'] = true;
+            }
+
+            $device->update($updates);
             return response()->json([
                 'success' => true,
                 'message' => 'Device status updated successfully',
@@ -593,7 +604,9 @@ class DeviceController extends Controller
     {
         try {
             @set_time_limit(180);
-            $devices = Devices::active()->get();
+            $devices = Devices::active()->where(function ($q) {
+                $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
+            })->get();
             $results = [];
             $successCount = 0;
             $failCount = 0;
@@ -1065,6 +1078,12 @@ class DeviceController extends Controller
 
         // User registration push (firmwares send USER, USERINFO, or USERS)
         if (in_array($table, ['USER', 'USERINFO', 'USERS'])) {
+            if ($isHrbliz) {
+                // HRBLIZ devices only send attendance or DTR.
+                // Do not update data or trigger sync broadcasts.
+                return response("OK\n", 200)->header('Content-Type', 'text/plain');
+            }
+
             $records = ZkPushParser::parseKeyValues($raw);
             foreach ($records as $record) {
                 $pin = ZkPushParser::resolveEmployeePin($record);
@@ -1110,6 +1129,11 @@ class DeviceController extends Controller
 
         // Biometric template registration push
         if (in_array($table, ['TEMPLATEV10', 'FINGERTMP', 'BIOPHOTO', 'BIODATA', 'FACE', 'USERPIC', 'BIOPIC', 'FINGERTMPV10', 'FP', 'FPDATA', 'TEMPLATE', 'TEMPLATEV9'])) {
+            if ($isHrbliz) {
+                // HRBLIZ devices only send attendance or DTR.
+                return response("OK\n", 200)->header('Content-Type', 'text/plain');
+            }
+
             $records = ZkPushParser::parseKeyValues($raw);
             foreach ($records as $record) {
                 $pin = ZkPushParser::resolveEmployeePin($record);
@@ -1176,10 +1200,16 @@ class DeviceController extends Controller
             return response("OK\n", 200)->header('Content-Type', 'text/plain');
         }
 
-        $raw = $request->getContent();
-        $records = ZkPushParser::parseKeyValues($raw);
         $device = !empty($sn) ? Devices::where('serial_number', $sn)->first() : null;
         $isHrbliz = $device && (bool)$device->is_hrbliz;
+
+        if ($isHrbliz) {
+            // HRBLIZ devices only send attendance or DTR.
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        $raw = $request->getContent();
+        $records = ZkPushParser::parseKeyValues($raw);
 
         foreach ($records as $record) {
             $pin = ZkPushParser::resolveEmployeePin($record);
@@ -1217,6 +1247,13 @@ class DeviceController extends Controller
     protected function handleGetRequest(Request $request, ?string $sn)
     {
         if (empty($sn)) {
+            return response("OK\n", 200)->header('Content-Type', 'text/plain');
+        }
+
+        $device = Devices::where('serial_number', $sn)->first();
+        if ($device && (bool)$device->is_hrbliz && !$device->canReceiveSync()) {
+            // HRBLIZ devices with receiver_by_default = 0 strictly only send attendance or DTR.
+            // Never dispatch any commands to update data in the device.
             return response("OK\n", 200)->header('Content-Type', 'text/plain');
         }
 

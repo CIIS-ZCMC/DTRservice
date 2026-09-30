@@ -367,6 +367,11 @@ class CheckDeviceTemplateMatches extends Command
 
             foreach ($ghostSlotsToClean as $cleanTarget) {
                 $sn = $cleanTarget['device_sn'];
+                $dev = Devices::where('serial_number', $sn)->first();
+                if ($dev && $dev->is_hrbliz) {
+                    $this->line(" • Skipping HRBLIZ device {$cleanTarget['device_name']} ({$sn}): device is send-only attendance terminal.");
+                    continue;
+                }
                 $fid = $cleanTarget['finger_id'];
 
                 // 1. Queue ADMS deletion

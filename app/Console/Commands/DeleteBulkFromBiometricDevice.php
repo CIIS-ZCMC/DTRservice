@@ -110,6 +110,11 @@ class DeleteBulkFromBiometricDevice extends Command
         $this->info("Targeting " . count($pins) . " PIN(s) across " . $devices->count() . " device(s)...");
 
         foreach ($devices as $device) {
+            if ($device->is_hrbliz) {
+                $this->info("Skipping HRBLIZ device [{$device->device_name} / {$device->ip_address}]: HRBLIZ devices only send attendance and must not have data modified.");
+                continue;
+            }
+
             $this->warn("Connecting to  $device->ip_address");
 
             if ($tad = $deviceService->checkDeviceConnection($device)) {

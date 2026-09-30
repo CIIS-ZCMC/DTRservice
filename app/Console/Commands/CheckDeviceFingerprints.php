@@ -198,6 +198,10 @@ class CheckDeviceFingerprints extends Command
 
             foreach ($devicesToFix as $fixTarget) {
                 $targetDev = $fixTarget['device'];
+                if ($targetDev->is_hrbliz) {
+                    $this->line(" • Skipping HRBLIZ device {$targetDev->device_name} ({$targetDev->serial_number}): device is send-only attendance terminal.");
+                    continue;
+                }
                 $candPins = $fixTarget['candidate_pins'] ?? [$pin];
                 $ghostFids = $fixTarget['ghost_fids'] ?? [];
                 $missingFids = $fixTarget['missing_fids'] ?? [];
@@ -305,6 +309,9 @@ class CheckDeviceFingerprints extends Command
 
             foreach ($ghostsToClean as $target) {
                 $targetDev = $target['device'];
+                if ($targetDev->is_hrbliz) {
+                    continue;
+                }
                 $ghostFids = $target['ghost_fids'];
                 $candPins = $target['candidate_pins'] ?? [$pin];
                 $tad = $target['tad'];

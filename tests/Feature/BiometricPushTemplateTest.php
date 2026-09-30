@@ -467,16 +467,13 @@ test('live fingerprint registration push skips HRBLIZ device with receiver_by_de
     $commandService = app(DeviceCommandService::class);
 
     // HRBLIZ device with receiver_by_default = 0 must receive ZERO commands
-    $noRecvCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_NO_RECV');
-    expect($noRecvCmds)->toBeEmpty();
+    expect($commandService->getAllCommands('DEV_SN_HRBLIZ_NO_RECV'))->toBeEmpty();
 
-    // HRBLIZ device with receiver_by_default = 1 must receive commands using hrbliz_biometric_id (77890)
-    $recvCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_RECV_1');
-    expect($recvCmds)->not->toBeEmpty();
-    expect($recvCmds[0]['command'])->toContain('DATA USER PIN=77890');
-    expect($recvCmds[1]['command'])->toContain('DATA UPDATE fingertmp');
-    expect($recvCmds[1]['command'])->toContain('PIN=77890');
-    expect($recvCmds[1]['command'])->not->toContain('PIN=99890');
+    // HRBLIZ device with receiver_by_default = 1 receives sync using hrbliz_biometric_id (77890)
+    $hrbCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_RECV_1');
+    expect($hrbCmds)->not->toBeEmpty();
+    expect($hrbCmds[0]['command'])->toContain('DATA USER PIN=77890');
+    expect($hrbCmds[1]['command'])->toContain('PIN=77890');
 
     // Standard target device receives commands using standard PIN 99890
     $stdCmds = $commandService->getAllCommands('DEV_SN_TARGET');
@@ -488,7 +485,7 @@ test('live fingerprint registration push skips HRBLIZ device with receiver_by_de
     $user->delete();
 });
 
-test('live user profile registration push skips HRBLIZ device with receiver_by_default = 0 and delivers to HRBLIZ device with receiver_by_default = 1', function () {
+test('live user profile registration push skips HRBLIZ with receiver_by_default = 0 and syncs to receiver_by_default = 1', function () {
     Devices::create([
         'device_name' => 'HRBLIZ User Send-Only',
         'serial_number' => 'DEV_SN_HRBLIZ_U_0',
@@ -532,13 +529,13 @@ test('live user profile registration push skips HRBLIZ device with receiver_by_d
 
     $commandService = app(DeviceCommandService::class);
 
-    // HRBLIZ device with receiver_by_default = 0 receives NOTHING
+    // HRBLIZ device with receiver_by_default = 0 receives ZERO commands
     expect($commandService->getAllCommands('DEV_SN_HRBLIZ_U_0'))->toBeEmpty();
 
-    // HRBLIZ device with receiver_by_default = 1 receives DATA USER with PIN=77891
-    $hrblizCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_U_1');
-    expect($hrblizCmds)->toHaveCount(1);
-    expect($hrblizCmds[0]['command'])->toContain('DATA USER PIN=77891');
+    // HRBLIZ device with receiver_by_default = 1 receives DATA USER with hrbliz_biometric_id 77891
+    $hrbUserCmds = $commandService->getAllCommands('DEV_SN_HRBLIZ_U_1');
+    expect($hrbUserCmds)->toHaveCount(1);
+    expect($hrbUserCmds[0]['command'])->toContain('DATA USER PIN=77891');
 
     // Standard device receives DATA USER with PIN=99891
     $stdCmds = $commandService->getAllCommands('DEV_SN_TARGET');

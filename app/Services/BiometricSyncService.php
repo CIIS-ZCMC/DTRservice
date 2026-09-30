@@ -80,8 +80,8 @@ class BiometricSyncService
             }
 
             $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
-                : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
+                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
+                : ($bioModel?->biometric_id ?: $pin);
 
             if (!$targetPin) {
                 continue;
@@ -100,8 +100,8 @@ class BiometricSyncService
 
         if ($sourceNeedsTimezoneFix && (!$sourceDevice || !method_exists($sourceDevice, 'canReceiveSync') || $sourceDevice->canReceiveSync())) {
             $sourcePin = $isSourceHrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?? $pin)
-                : ($bioModel?->biometric_id ?? $pin);
+                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
+                : ($bioModel?->biometric_id ?: $pin);
             $fixCommand = "DATA USER PIN={$sourcePin}\tPIN2={$sourcePin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
             $entries[] = ['device_sn' => $sourceSn, 'command' => $fixCommand];
         }
@@ -166,8 +166,8 @@ class BiometricSyncService
                 }
 
                 $targetPin = $device->is_hrbliz
-                    ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
-                    : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
+                    ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
+                    : ($bioModel?->biometric_id ?: $pin);
 
                 if (!$targetPin) {
                     continue;
@@ -205,8 +205,8 @@ class BiometricSyncService
             }
 
             $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?? ($isSourceHrbliz ? $pin : null))
-                : ($bioModel?->biometric_id ?? (!$isSourceHrbliz ? $pin : null));
+                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
+                : ($bioModel?->biometric_id ?: $pin);
 
             if (!$targetPin) {
                 continue;
@@ -271,17 +271,19 @@ class BiometricSyncService
         bool $cleanUnusedFingers = true,
         ?\App\Models\Devices $targetDevice = null
     ): array {
+        // Skip if target device cannot receive sync (e.g. receiver_by_default is false / 0)
         if ($targetDevice && method_exists($targetDevice, 'canReceiveSync') && !$targetDevice->canReceiveSync()) {
             return [];
         }
 
         $isHrbliz = $targetDevice && (bool)$targetDevice->is_hrbliz;
-        $pin = $isHrbliz 
-            ? ($bioModel->hrbliz_biometric_id ? (int)$bioModel->hrbliz_biometric_id : null)
-            : (int)$bioModel->biometric_id;
+        $pin = $isHrbliz
+            ? ($bioModel->hrbliz_biometric_id ?: $bioModel->biometric_id)
+            : $bioModel->biometric_id;
 
-        if ($pin === null || $pin <= 0) {
-            // Cannot provision user to this terminal without a valid assigned PIN for device fleet mode
+        $pin = (int)$pin;
+
+        if ($pin <= 0) {
             return [];
         }
 
@@ -495,8 +497,8 @@ class BiometricSyncService
             }
 
             $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?? null)
-                : ($bioModel?->biometric_id ?? $pin);
+                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
+                : ($bioModel?->biometric_id ?: $pin);
 
             if (!$targetPin) {
                 continue;
@@ -546,8 +548,8 @@ class BiometricSyncService
             }
 
             $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?? null)
-                : ($bioModel?->biometric_id ?? $pin);
+                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
+                : ($bioModel?->biometric_id ?: $pin);
 
             if (!$targetPin) {
                 continue;

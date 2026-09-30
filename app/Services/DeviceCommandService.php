@@ -659,6 +659,55 @@ class DeviceCommandService
     }
 
     /**
+     * Check if a device serial number belongs to an HRBLIZ device.
+     */
+    public function isHrblizDevice(string $deviceSn): bool
+    {
+        $cleanSn = trim($deviceSn);
+        if (empty($cleanSn) || $cleanSn === 'Fail!') {
+            return false;
+        }
+
+        if (\Illuminate\Support\Facades\Schema::hasTable('devices')) {
+            try {
+                $dev = Devices::where('serial_number', $cleanSn)
+                    ->orWhere('ip_address', $cleanSn)
+                    ->first();
+                if ($dev && (bool)$dev->is_hrbliz) {
+                    return true;
+                }
+            } catch (\Throwable) {}
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if a device is an HRBLIZ device configured as send-only (receiver_by_default = 0).
+     * HRBLIZ devices can receive sync ONLY if receiver_by_default is explicitly 1.
+     */
+    public function isHrblizSendOnlyDevice(string $deviceSn): bool
+    {
+        $cleanSn = trim($deviceSn);
+        if (empty($cleanSn) || $cleanSn === 'Fail!') {
+            return false;
+        }
+
+        if (\Illuminate\Support\Facades\Schema::hasTable('devices')) {
+            try {
+                $dev = Devices::where('serial_number', $cleanSn)
+                    ->orWhere('ip_address', $cleanSn)
+                    ->first();
+                if ($dev && (bool)$dev->is_hrbliz && (method_exists($dev, 'canReceiveSync') ? !$dev->canReceiveSync() : !(bool)$dev->receiver_by_default)) {
+                    return true;
+                }
+            } catch (\Throwable) {}
+        }
+
+        return false;
+    }
+
+    /**
      * Queue a new command into the target device's dedicated queue file.
      *
      * @param string $deviceSn Target device serial number
@@ -667,6 +716,12 @@ class DeviceCommandService
      */
     public function queueCommand(string $deviceSn, string $command): array
     {
+        // HRBLIZ devices with receiver_by_default = 0 are send-only attendance terminals. Never queue commands for them.
+        if ($this->isHrblizSendOnlyDevice($deviceSn)) {
+            Log::channel('device_logs')->info("DeviceCommandService :: Refused command for HRBLIZ device [{$deviceSn}]: device has receiver_by_default = 0 (send-only attendance mode).", ['command' => $command]);
+            return [];
+        }
+
         // 1. Check if command is already pending in this device's queue files
         $existing = $this->findPendingCommandRecord($deviceSn, $command);
         if ($existing !== null) {
@@ -760,13 +815,13 @@ class DeviceCommandService
             return 0;
         }
 
-        // Group entries by device_sn and deduplicate within batch
+        // Group entries by device_sn and deduplicate within batch (excluding send-only HRBLIZ devices)
         $byDevice = [];
         $seen = [];
         foreach ($entries as $entry) {
             $deviceSn = $entry['device_sn'] ?? null;
             $command = $entry['command'] ?? null;
-            if (!$deviceSn || !$command) {
+            if (!$deviceSn || !$command || $this->isHrblizSendOnlyDevice($deviceSn)) {
                 continue;
             }
             $key = $deviceSn . "\0" . $command;
@@ -907,6 +962,11 @@ class DeviceCommandService
      */
     public function getPendingCommands(string $deviceSn, int $limit = 10): array
     {
+        // HRBLIZ devices with receiver_by_default = 0 are send-only attendance terminals: never dispatch commands.
+        if ($this->isHrblizSendOnlyDevice($deviceSn)) {
+            return [];
+        }
+
         $pending = [];
         $snNeedle = '"device_sn":"' . $deviceSn . '"';
 

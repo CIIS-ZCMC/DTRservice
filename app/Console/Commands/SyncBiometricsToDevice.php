@@ -79,14 +79,14 @@ class SyncBiometricsToDevice extends Command
                 return 1;
             }
 
-            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz') &&
-                \Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
+            if ($device->is_hrbliz && !$device->canReceiveSync()) {
+                $this->error("Cannot sync to device [{$deviceSn}]: Device is configured as HRBLIZ with receiver_by_default = 0 (send-only mode). Provisioning cannot run unless receiver_by_default is set to 1.");
+                return 1;
+            }
+
+            if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'receiver_by_default')) {
                 if (!$device->canReceiveSync()) {
-                    if ($device->is_hrbliz) {
-                        $this->error("Cannot sync to device [{$deviceSn}]: Device is configured as HRBLIZ (is_hrbliz = 1) with receiver_by_default disabled (receiver_by_default = " . ($device->receiver_by_default ? '1' : '0') . "). Provisioning only runs on HRBLIZ terminals if receiver_by_default is set to 1.");
-                    } else {
-                        $this->error("Cannot sync to device [{$deviceSn}]: Device has receiver_by_default set to 0 (attend-only mode). Provisioning cannot run unless receiver_by_default is set to 1.");
-                    }
+                    $this->error("Cannot sync to device [{$deviceSn}]: Device has receiver_by_default set to 0 (attend-only mode). Provisioning cannot run unless receiver_by_default is set to 1.");
                     return 1;
                 }
             }

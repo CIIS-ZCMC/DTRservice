@@ -6,6 +6,7 @@ use App\Contracts\LogsRepositoryInterface;
 use App\Contracts\ScheduleRepositoryInterface;
 use App\Contracts\DeviceRepositoryInterface;
 use App\Models\Biometrics;
+use App\Models\Devices;
 use App\Services\RegistrationLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -65,10 +66,17 @@ class LogsService
     {
         // Check if line is a biometric template push (e.g. FP PIN=493\tFID=3\tSize=612\tValid=1\tTMP=...)
         if (ZkPushParser::isBiometricTemplateLine($line)) {
-            $parsedRecords = ZkPushParser::parseKeyValues($line);
-            $device = $this->deviceRepository->findByIP($clientIp);
-            $sourceSn = $requestSn ?? $device?->serial_number;
+            $device = (!empty($requestSn) ? Devices::where('serial_number', $requestSn)->first() : null)
+                ?? $this->deviceRepository->findByIP($clientIp);
             $isHrbliz = $device && (bool)$device->is_hrbliz;
+
+            if ($isHrbliz) {
+                // HRBLIZ devices only send attendance or DTR.
+                return "OK";
+            }
+
+            $parsedRecords = ZkPushParser::parseKeyValues($line);
+            $sourceSn = $requestSn ?? $device?->serial_number;
 
             foreach ($parsedRecords as $record) {
                 $pin = ZkPushParser::resolveEmployeePin($record);
@@ -101,10 +109,17 @@ class LogsService
 
         // Check if line is a user profile push (e.g. USER PIN=493\tName=...)
         if (ZkPushParser::isUserPushLine($line)) {
-            $parsedRecords = ZkPushParser::parseKeyValues($line);
-            $device = $this->deviceRepository->findByIP($clientIp);
-            $sourceSn = $requestSn ?? $device?->serial_number;
+            $device = (!empty($requestSn) ? Devices::where('serial_number', $requestSn)->first() : null)
+                ?? $this->deviceRepository->findByIP($clientIp);
             $isHrbliz = $device && (bool)$device->is_hrbliz;
+
+            if ($isHrbliz) {
+                // HRBLIZ devices only send attendance or DTR.
+                return "OK";
+            }
+
+            $parsedRecords = ZkPushParser::parseKeyValues($line);
+            $sourceSn = $requestSn ?? $device?->serial_number;
 
             foreach ($parsedRecords as $record) {
                 $pin = ZkPushParser::resolveEmployeePin($record);
@@ -301,7 +316,8 @@ class LogsService
             ]);
         }
 
-        $device = $this->deviceRepository->findByIP($clientIp);
+        $device = (!empty($requestSn) ? Devices::where('serial_number', $requestSn)->first() : null)
+            ?? $this->deviceRepository->findByIP($clientIp);
         $isHrbliz = $device && (bool)$device->is_hrbliz;
         $rawPin = (int)$biometric_id;
         $targetPin = $rawPin;

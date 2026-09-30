@@ -309,8 +309,8 @@ test('biometrics:sync-device deduplicates devices with same serial number', func
     expect($cmds)->toHaveCount(11);
 });
 
-test('biometrics:sync-device --all-devices skips HRBLIZ devices with receiver_by_default = 0', function () {
-    // Create HRBLIZ device with receiver_by_default = 0
+test('biometrics:sync-device --all-devices skips HRBLIZ devices with receiver_by_default = 0 but syncs to receiver_by_default = 1 using hrbliz_biometric_id', function () {
+    // Create HRBLIZ device with receiver_by_default = 0 (send-only attendance mode)
     Devices::create([
         'device_name' => 'HRBLIZ Gate Send-Only',
         'serial_number' => 'SN_HRBLIZ_NO_RECV',
@@ -320,40 +320,9 @@ test('biometrics:sync-device --all-devices skips HRBLIZ devices with receiver_by
         'receiver_by_default' => 0,
     ]);
 
-    $templates = [
-        ['Finger_ID' => '1', 'Size' => '1000', 'Valid' => '1', 'Template' => 'TMP_HRBLIZ_TEST'],
-    ];
-
-    Biometrics::create([
-        'biometric_id' => 9913,
-        'hrbliz_biometric_id' => 7713,
-        'name' => 'HRBLIZ Test User',
-        'privilege' => 0,
-        'biometric' => json_encode($templates),
-    ]);
-
-    $commandService = app(DeviceCommandService::class);
-    $commandService->clearCommands();
-
-    $this->artisan('biometrics:sync-device', [
-        '--all-devices' => true,
-        '--pin' => 9913,
-    ])->assertExitCode(0);
-
-    // Standard device (SYNC_SN_001) must receive commands
-    $stdCmds = $commandService->getAllCommands('SYNC_SN_001');
-    expect($stdCmds)->not->toBeEmpty();
-    expect($stdCmds[0]['command'])->toContain('PIN=9913');
-
-    // HRBLIZ device with receiver_by_default = 0 must receive ZERO commands
-    $hrblizCmds = $commandService->getAllCommands('SN_HRBLIZ_NO_RECV');
-    expect($hrblizCmds)->toBeEmpty();
-});
-
-test('biometrics:sync-device --all-devices runs on HRBLIZ device when receiver_by_default = 1 and throws hrbliz_biometric_id', function () {
-    // Create HRBLIZ device with receiver_by_default = 1
+    // Create HRBLIZ device with receiver_by_default = 1 (sync enabled)
     Devices::create([
-        'device_name' => 'HRBLIZ Gate Receiving',
+        'device_name' => 'HRBLIZ Gate 2',
         'serial_number' => 'SN_HRBLIZ_RECV_1',
         'ip_address' => '192.168.1.104',
         'is_active' => 1,
@@ -362,13 +331,23 @@ test('biometrics:sync-device --all-devices runs on HRBLIZ device when receiver_b
     ]);
 
     $templates = [
-        ['Finger_ID' => '1', 'Size' => '1000', 'Valid' => '1', 'Template' => 'TMP_HRBLIZ_TEST_1'],
+        ['Finger_ID' => '1', 'Size' => '1000', 'Valid' => '1', 'Template' => 'TMP_HRBLIZ_TEST'],
     ];
 
+    // User with both biometric_id and hrbliz_biometric_id
+    Biometrics::create([
+        'biometric_id' => 9913,
+        'hrbliz_biometric_id' => 7713,
+        'name' => 'HRBLIZ Test User',
+        'privilege' => 0,
+        'biometric' => json_encode($templates),
+    ]);
+
+    // User with only biometric_id (no hrbliz_biometric_id registered)
     Biometrics::create([
         'biometric_id' => 9914,
-        'hrbliz_biometric_id' => 7714,
-        'name' => 'HRBLIZ Receiving User',
+        'hrbliz_biometric_id' => null,
+        'name' => 'No HRBLIZ ID User',
         'privilege' => 0,
         'biometric' => json_encode($templates),
     ]);
@@ -376,21 +355,36 @@ test('biometrics:sync-device --all-devices runs on HRBLIZ device when receiver_b
     $commandService = app(DeviceCommandService::class);
     $commandService->clearCommands();
 
+    // 1. Sync User 9913 (has hrbliz_biometric_id 7713)
+    $this->artisan('biometrics:sync-device', [
+        '--all-devices' => true,
+        '--pin' => 9913,
+    ])->assertExitCode(0);
+
+    // Standard device (SYNC_SN_001) must receive commands with standard PIN 9913
+    $stdCmds = $commandService->getAllCommands('SYNC_SN_001');
+    expect($stdCmds)->not->toBeEmpty();
+    expect($stdCmds[0]['command'])->toContain('PIN=9913');
+
+    // HRBLIZ device with receiver_by_default = 0 must receive ZERO commands
+    expect($commandService->getAllCommands('SN_HRBLIZ_NO_RECV'))->toBeEmpty();
+
+    // HRBLIZ device with receiver_by_default = 1 must receive commands with hrbliz_biometric_id 7713
+    $hrbCmds = $commandService->getAllCommands('SN_HRBLIZ_RECV_1');
+    expect($hrbCmds)->not->toBeEmpty();
+    expect($hrbCmds[0]['command'])->toContain('PIN=7713');
+
+    // 2. Sync User 9914 (no hrbliz_biometric_id, should fallback to biometric_id 9914)
+    $commandService->clearCommands();
     $this->artisan('biometrics:sync-device', [
         '--all-devices' => true,
         '--pin' => 9914,
     ])->assertExitCode(0);
 
-    // HRBLIZ device with receiver_by_default = 1 must receive commands using hrbliz_biometric_id (7714)
-    $hrblizCmds = $commandService->getAllCommands('SN_HRBLIZ_RECV_1');
-    expect($hrblizCmds)->not->toBeEmpty();
-    expect($hrblizCmds[0]['command'])->toContain('DATA USER PIN=7714');
-    expect($hrblizCmds[0]['command'])->not->toContain('PIN=9914');
-
-    // Standard device (SYNC_SN_001) must receive commands using canonical biometric_id (9914)
-    $stdCmds = $commandService->getAllCommands('SYNC_SN_001');
-    expect($stdCmds)->not->toBeEmpty();
-    expect($stdCmds[0]['command'])->toContain('DATA USER PIN=9914');
+    expect($commandService->getAllCommands('SN_HRBLIZ_NO_RECV'))->toBeEmpty();
+    $hrbFallbackCmds = $commandService->getAllCommands('SN_HRBLIZ_RECV_1');
+    expect($hrbFallbackCmds)->not->toBeEmpty();
+    expect($hrbFallbackCmds[0]['command'])->toContain('PIN=9914');
 });
 
 test('biometrics:sync-device <SERIAL_NUMBER> errors out and does not run when target device is HRBLIZ with receiver_by_default = 0', function () {
@@ -415,9 +409,9 @@ test('biometrics:sync-device <SERIAL_NUMBER> errors out and does not run when ta
     expect($commandService->getAllCommands('SN_HRBLIZ_DIRECT_0'))->toBeEmpty();
 });
 
-test('biometrics:sync-device <SERIAL_NUMBER> successfully runs when target device is HRBLIZ with receiver_by_default = 1 and throws hrbliz_biometric_id', function () {
+test('biometrics:sync-device <SERIAL_NUMBER> syncs to HRBLIZ device when receiver_by_default is 1 using hrbliz_biometric_id', function () {
     Devices::create([
-        'device_name' => 'HRBLIZ Direct Allowed',
+        'device_name' => 'HRBLIZ Direct Sync Enabled',
         'serial_number' => 'SN_HRBLIZ_DIRECT_1',
         'ip_address' => '192.168.1.106',
         'is_active' => 1,

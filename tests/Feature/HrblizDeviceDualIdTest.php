@@ -312,16 +312,16 @@ test('DeviceController updates is_hrbliz and filters paginated devices', functio
     expect(count($resStdFilter->json('data')))->toBe(0);
 });
 
-test('BiometricSyncService uses device-specific PIN during user provisioning', function () {
+test('BiometricSyncService does not generate provision commands for HRBLIZ device to prevent updating device data', function () {
     $hrblizDev = Devices::create([
         'device_name' => 'HRBLIZ Terminal',
         'serial_number' => 'SN-HRBLIZ-SYNC',
         'ip_address' => '192.168.1.80',
         'is_active' => true,
         'is_hrbliz' => true,
-        'receiver_by_default' => 1,
+        'receiver_by_default' => 0,
         'fp_version' => 'v10',
-        'for_attendance' => 0,
+        'for_attendance' => 1,
     ]);
 
     $stdDev = Devices::create([
@@ -331,7 +331,7 @@ test('BiometricSyncService uses device-specific PIN during user provisioning', f
         'is_active' => true,
         'is_hrbliz' => false,
         'fp_version' => 'v10',
-        'for_attendance' => 0,
+        'for_attendance' => 1,
     ]);
 
     $emp = Biometrics::create([
@@ -343,15 +343,62 @@ test('BiometricSyncService uses device-specific PIN during user provisioning', f
 
     $syncService = app(BiometricSyncService::class);
 
-    // HRBLIZ device provisioning command must use PIN 7777
+    // HRBLIZ device must NEVER receive user provisioning commands (read-only attendance sender)
     $hrblizCmds = $syncService->generateUserProvisionCommands($emp, true, $hrblizDev);
-    expect($hrblizCmds)->not->toBeEmpty();
-    expect($hrblizCmds[0])->toContain('PIN=7777');
+    expect($hrblizCmds)->toBeEmpty();
 
     // Standard device provisioning command must use PIN 3003
     $stdCmds = $syncService->generateUserProvisionCommands($emp, true, $stdDev);
     expect($stdCmds)->not->toBeEmpty();
     expect($stdCmds[0])->toContain('PIN=3003');
+});
+
+test('connected HRBLIZ device never receives commands via /iclock/getrequest and only sends attendance/dtr', function () {
+    $mockLogsRepo = Mockery::mock(LogsRepository::class, [app(\App\Contracts\DeviceRepositoryInterface::class)])->makePartial();
+    $mockLogsRepo->shouldReceive('logExists')->andReturn(false);
+    app()->instance(\App\Contracts\LogsRepositoryInterface::class, $mockLogsRepo);
+
+    $hrblizDev = Devices::create([
+        'device_name' => 'HRBLIZ Terminal Polling',
+        'serial_number' => 'SN-HRBLIZ-POLL-01',
+        'ip_address' => '192.168.1.200',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'for_attendance' => 0,
+    ]);
+
+    // Attempt to queue a command for the HRBLIZ device
+    $cmdService = app(DeviceCommandService::class);
+    $cmdService->queueCommand('SN-HRBLIZ-POLL-01', 'DATA USER PIN=7777\tName=Test');
+
+    // 1. Device connects via /iclock/getrequest -> must receive OK with NO commands
+    $resGet = $this->call('GET', '/iclock/getrequest?SN=SN-HRBLIZ-POLL-01');
+    $resGet->assertStatus(200);
+    expect(trim($resGet->getContent()))->toBe('OK');
+
+    // 2. Device connects via /iclock/cdata sending USER registration -> ignored, returns OK
+    $resUser = $this->call('POST', '/iclock/cdata?SN=SN-HRBLIZ-POLL-01&table=USER', [], [], [], ['CONTENT_TYPE' => 'text/plain'], "PIN=7777\tName=Test");
+    $resUser->assertStatus(200);
+    expect(trim($resUser->getContent()))->toBe('OK');
+
+    // 3. Device connects via /iclock/cdata sending ATTLOG (attendance) -> accepted and processed!
+    Biometrics::create([
+        'biometric_id' => 5005,
+        'hrbliz_biometric_id' => 8765,
+        'name' => 'Basilio',
+        'privilege' => 0,
+    ]);
+
+    $punchPayload = "8765\t2026-09-30 08:30:00\t0";
+    $resPunch = $this->call('POST', '/iclock/cdata?SN=SN-HRBLIZ-POLL-01', [], [], [], [
+        'REMOTE_ADDR' => '192.168.1.200',
+        'CONTENT_TYPE' => 'text/plain',
+    ], $punchPayload);
+
+    $resPunch->assertStatus(200);
+    $savedLog = DeviceLogs::where('biometric_id', 5005)->first();
+    expect($savedLog)->not->toBeNull()
+        ->and($savedLog->status)->toBe('0');
 });
 
 test('punch ingestion accepts status 0 (In), 1 (Out), and 255 (Global) normally', function () {
@@ -395,4 +442,212 @@ test('punch ingestion accepts status 0 (In), 1 (Out), and 255 (Global) normally'
     expect($logs[0]->status)->toBe('0');
     expect($logs[1]->status)->toBe('1');
     expect($logs[2]->status)->toBe('255');
+});
+
+test('DeviceService refuses modifying operations (syncDeviceTime, restartDevice, turnOffDevice, deleteUsersFromDevice) on HRBLIZ device', function () {
+    $dev = Devices::create([
+        'device_name' => 'HRBLIZ Safe Gate',
+        'serial_number' => 'SN-HRBLIZ-SAFE',
+        'ip_address' => '192.168.1.99',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'for_attendance' => 1,
+    ]);
+
+    $devService = app(\App\Services\DeviceService::class);
+    $cmdService = app(\App\Services\DeviceCommandService::class);
+
+    // 1. syncDeviceTime -> skipped, 0 queued
+    $timeRes = $devService->syncDeviceTime($dev->id);
+    expect($timeRes['success'])->toBeFalse();
+    expect($timeRes['channel'])->toBe('Skipped');
+    expect($cmdService->getAllCommands('SN-HRBLIZ-SAFE'))->toBeEmpty();
+
+    // 2. restartDevice -> skipped, 0 queued
+    $restartRes = $devService->restartDevice($dev->id);
+    expect($restartRes['success'])->toBeFalse();
+    expect($restartRes['channel'])->toBe('Skipped');
+    expect($cmdService->getAllCommands('SN-HRBLIZ-SAFE'))->toBeEmpty();
+
+    // 3. turnOffDevice -> throws exception
+    expect(fn() => $devService->turnOffDevice($dev->id))->toThrow(Exception::class);
+
+    // 4. deleteUsersFromDevice -> blocked
+    $delRes = $devService->deleteUsersFromDevice($dev, ['1234']);
+    expect($delRes['success'])->toBeFalse();
+    expect($delRes['message'])->toContain('Cannot modify or delete users on HRBLIZ device');
+    expect($cmdService->getAllCommands('SN-HRBLIZ-SAFE'))->toBeEmpty();
+
+    // 5. requestLogResend -> skipped_hrbliz, 0 queued
+    $resendRes = $devService->requestLogResend($dev);
+    expect($resendRes['status'])->toBe('skipped_hrbliz');
+    expect($cmdService->getAllCommands('SN-HRBLIZ-SAFE'))->toBeEmpty();
+});
+
+test('CommandRunnerController blocks modifying commands when targeting HRBLIZ device', function () {
+    $dev = Devices::create([
+        'device_name' => 'HRBLIZ Command Blocked',
+        'serial_number' => 'SN-HRBLIZ-CMD-BLOCK',
+        'ip_address' => '192.168.1.98',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'for_attendance' => 1,
+    ]);
+
+    $modifyingCommands = [
+        'biometrics:sync-device',
+        'biometrics:check-device',
+        'biometrics:check-device-match',
+        'biometrics:delete-user',
+        'app:biometric-delete',
+    ];
+
+    foreach ($modifyingCommands as $cmd) {
+        $res = $this->postJson('/command-runner/run', [
+            'command' => $cmd,
+            'device_target' => (string)$dev->id,
+            'pin' => '1001',
+        ]);
+
+        $res->assertStatus(422);
+        expect($res->json('success'))->toBeFalse();
+        expect($res->json('message'))->toContain('Prohibited operation');
+        expect($res->json('message'))->toContain('HRBLIZ device');
+    }
+});
+
+test('DeleteBiometricUser command excludes HRBLIZ devices and refuses direct target on HRBLIZ device', function () {
+    $hrblizDev = Devices::create([
+        'device_name' => 'HRBLIZ Delete Target',
+        'serial_number' => 'SN-HRBLIZ-DEL-01',
+        'ip_address' => '192.168.1.97',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'for_attendance' => 1,
+    ]);
+
+    $stdDev = Devices::create([
+        'device_name' => 'Standard Gate 1',
+        'serial_number' => 'SN-STD-DEL-01',
+        'ip_address' => '192.168.1.96',
+        'is_active' => true,
+        'is_hrbliz' => false,
+        'for_attendance' => 1,
+    ]);
+
+    $cmdService = app(\App\Services\DeviceCommandService::class);
+
+    // Direct target on HRBLIZ device must error and exit 1
+    $this->artisan('biometrics:delete-user', [
+        'device_sn' => 'SN-HRBLIZ-DEL-01',
+        'pin' => '2002',
+    ])
+    ->expectsOutputToContain('Cannot delete user from device [SN-HRBLIZ-DEL-01]')
+    ->assertExitCode(1);
+
+    expect($cmdService->getAllCommands('SN-HRBLIZ-DEL-01'))->toBeEmpty();
+
+    // Running with --all-devices must exclude HRBLIZ device and only queue to standard device
+    $this->artisan('biometrics:delete-user', [
+        '--all-devices' => true,
+        'pin' => '2002',
+    ])->assertExitCode(0);
+
+    expect($cmdService->getAllCommands('SN-HRBLIZ-DEL-01'))->toBeEmpty();
+    $stdCmds = $cmdService->getAllCommands('SN-STD-DEL-01');
+    expect($stdCmds)->not->toBeEmpty();
+    expect($stdCmds[0]['command'])->toContain('DATA DELETE USER PIN=2002');
+});
+
+test('BiometricSyncService generates provision commands for HRBLIZ device when receiver_by_default is 1 using hrbliz_biometric_id or fallback to biometric_id', function () {
+    $hrblizDevSync = Devices::create([
+        'device_name' => 'HRBLIZ Terminal Sync Enabled',
+        'serial_number' => 'SN-HRBLIZ-SYNC-1',
+        'ip_address' => '192.168.1.88',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'receiver_by_default' => 1,
+        'fp_version' => 'v10',
+        'for_attendance' => 1,
+    ]);
+
+    $hrblizDevBlocked = Devices::create([
+        'device_name' => 'HRBLIZ Terminal Sync Disabled',
+        'serial_number' => 'SN-HRBLIZ-SYNC-0',
+        'ip_address' => '192.168.1.89',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'receiver_by_default' => 0,
+        'fp_version' => 'v10',
+        'for_attendance' => 1,
+    ]);
+
+    $userWithDualId = Biometrics::create([
+        'biometric_id' => 3001,
+        'hrbliz_biometric_id' => 7001,
+        'name' => 'Crisostomo Ibarra',
+        'privilege' => 0,
+    ]);
+
+    $userWithOnlyBioId = Biometrics::create([
+        'biometric_id' => 3002,
+        'hrbliz_biometric_id' => null,
+        'name' => 'Elias',
+        'privilege' => 0,
+    ]);
+
+    $syncService = app(BiometricSyncService::class);
+
+    // 1. HRBLIZ device with receiver_by_default = 0 is strictly skipped (returns empty commands)
+    expect($syncService->generateUserProvisionCommands($userWithDualId, true, $hrblizDevBlocked))->toBeEmpty();
+    expect($syncService->generateUserProvisionCommands($userWithOnlyBioId, true, $hrblizDevBlocked))->toBeEmpty();
+
+    // 2. HRBLIZ device with receiver_by_default = 1 uses hrbliz_biometric_id (7001)
+    $cmdsDual = $syncService->generateUserProvisionCommands($userWithDualId, true, $hrblizDevSync);
+    expect($cmdsDual)->not->toBeEmpty();
+    expect($cmdsDual[0])->toContain('PIN=7001');
+
+    // 3. HRBLIZ device with receiver_by_default = 1 falls back to biometric_id (3002) when hrbliz_biometric_id is null
+    $cmdsBioOnly = $syncService->generateUserProvisionCommands($userWithOnlyBioId, true, $hrblizDevSync);
+    expect($cmdsBioOnly)->not->toBeEmpty();
+    expect($cmdsBioOnly[0])->toContain('PIN=3002');
+});
+
+test('DeviceController allows setting and updating receiver_by_default on HRBLIZ devices', function () {
+    // 1. Store endpoint allows receiver_by_default = true on HRBLIZ device
+    $resStore = $this->postJson('/api/devices', [
+        'device_name' => 'HRBLIZ Gate Manual',
+        'ip_address' => '192.168.1.155',
+        'serial_number' => 'SN-HRBLIZ-STORE-1',
+        'is_hrbliz' => true,
+        'receiver_by_default' => true,
+    ]);
+
+    $resStore->assertStatus(201);
+    $createdId = $resStore->json('data.id');
+    $dev = Devices::find($createdId);
+    expect($dev->is_hrbliz)->toBeTrue()
+        ->and($dev->receiver_by_default)->toBeTrue()
+        ->and($dev->canReceiveSync())->toBeTrue();
+
+    // 2. Legacy endpoint allows toggling receiver_by_default to true on HRBLIZ device
+    $devBlocked = Devices::create([
+        'device_name' => 'HRBLIZ Gate Blocked',
+        'ip_address' => '192.168.1.156',
+        'serial_number' => 'SN-HRBLIZ-LEGACY-0',
+        'is_hrbliz' => true,
+        'receiver_by_default' => false,
+    ]);
+
+    expect($devBlocked->canReceiveSync())->toBeFalse();
+
+    $resLegacy = $this->postJson('/api/dtr-device-updatedevicestatus', [
+        'id' => $devBlocked->id,
+        'field' => 'receiver_by_default',
+        'value' => 1,
+    ]);
+
+    $resLegacy->assertOk();
+    expect($devBlocked->fresh()->receiver_by_default)->toBeTrue()
+        ->and($devBlocked->fresh()->canReceiveSync())->toBeTrue();
 });

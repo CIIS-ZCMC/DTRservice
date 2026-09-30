@@ -153,7 +153,7 @@ class CommandRunnerController extends Controller
      */
     public function getManifest(): JsonResponse
     {
-        $devices = Devices::select('id', 'device_name', 'serial_number', 'ip_address', 'is_active', 'is_registration', 'for_attendance')
+        $devices = Devices::select('id', 'device_name', 'serial_number', 'ip_address', 'is_active', 'is_registration', 'for_attendance', 'is_hrbliz')
             ->orderBy('is_active', 'desc')
             ->orderBy('device_name', 'asc')
             ->get();
@@ -229,6 +229,19 @@ class CommandRunnerController extends Controller
                     'success' => false,
                     'message' => "Device with ID {$deviceTarget} not found in database.",
                 ], 404);
+            }
+
+            if ((bool)$device->is_hrbliz && in_array($commandKey, [
+                'biometrics:sync-device',
+                'biometrics:check-device',
+                'biometrics:check-device-match',
+                'biometrics:delete-user',
+                'app:biometric-delete',
+            ])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Prohibited operation: Device [{$device->device_name}] is an HRBLIZ device (read-only attendance sender). Updating, modifying, syncing, or deleting data on this device is not permitted.",
+                ], 422);
             }
         }
 
