@@ -127,15 +127,29 @@ class DeviceCommandService
         $primary = $this->baseDir . DIRECTORY_SEPARATOR . "{$prefix}.json";
 
         $files = [];
+        $normalizedFiles = [];
+
+        $addFile = function (string $filePath, ?int $idx = null) use (&$files, &$normalizedFiles) {
+            $norm = strtolower(str_replace('\\', '/', $filePath));
+            if (isset($normalizedFiles[$norm])) {
+                return;
+            }
+            $normalizedFiles[$norm] = true;
+            if ($idx !== null) {
+                $files[$idx] = $filePath;
+            } else {
+                $files[] = $filePath;
+            }
+        };
 
         // 1. Check for files matching current prefix: {prefix}.json and {prefix}_{number}.json
         $currentMatches = glob($this->baseDir . DIRECTORY_SEPARATOR . $prefix . '*.json') ?: [];
         foreach ($currentMatches as $match) {
             $filename = basename($match);
             if ($filename === "{$prefix}.json") {
-                $files[0] = $match;
+                $addFile($match, 0);
             } elseif (preg_match('/^' . preg_quote($prefix, '/') . '_(\d+)\.json$/', $filename, $m)) {
-                $files[(int)$m[1]] = $match;
+                $addFile($match, (int)$m[1]);
             }
         }
 
@@ -143,17 +157,18 @@ class DeviceCommandService
         $snPattern = $this->baseDir . DIRECTORY_SEPARATOR . "*({$sanitizedSn})*.json";
         $snMatches = glob($snPattern) ?: [];
         foreach ($snMatches as $match) {
-            if (in_array($match, $files)) {
+            $norm = strtolower(str_replace('\\', '/', $match));
+            if (isset($normalizedFiles[$norm])) {
                 continue;
             }
             $filename = basename($match);
             if (preg_match('/_(\d+)\.json$/', $filename, $m)) {
-                $files[(int)$m[1]] = $match;
+                $addFile($match, (int)$m[1]);
             } else {
                 if (!isset($files[0])) {
-                    $files[0] = $match;
+                    $addFile($match, 0);
                 } else {
-                    $files[] = $match;
+                    $addFile($match);
                 }
             }
         }
@@ -163,24 +178,35 @@ class DeviceCommandService
         // 3. Fallback: check if legacy unsegregated or older named files exist (e.g. {deviceName}.json)
         $deviceName = $this->getDeviceNameForSn($deviceSn);
         $legacyPrimary = $this->baseDir . DIRECTORY_SEPARATOR . "{$deviceName}.json";
-        if (file_exists($legacyPrimary) && !in_array($legacyPrimary, $files)) {
-            $files[] = $legacyPrimary;
+        $legacyNorm = strtolower(str_replace('\\', '/', $legacyPrimary));
+        if (file_exists($legacyPrimary) && !isset($normalizedFiles[$legacyNorm])) {
+            $addFile($legacyPrimary);
         }
 
-        // 4. Content fallback: scan files containing `"device_sn":"<sn>"`
-        $allBaseFiles = glob($this->baseDir . DIRECTORY_SEPARATOR . '*.json') ?: [];
-        $snNeedle = '"device_sn":"' . $deviceSn . '"';
-        foreach ($allBaseFiles as $f) {
-            if (in_array($f, $files)) {
-                continue;
-            }
-            if (file_exists($f) && filesize($f) > 0) {
-                $fp = @fopen($f, 'rb');
-                if ($fp) {
-                    $header = fread($fp, 2048);
-                    fclose($fp);
-                    if ($header !== false && str_contains($header, $snNeedle)) {
-                        $files[] = $f;
+        // 4. Content fallback: scan files containing `"device_sn":"<sn>"` ONLY IF no files found from steps 1-3
+        if (empty($files)) {
+            $allBaseFiles = glob($this->baseDir . DIRECTORY_SEPARATOR . '*.json') ?: [];
+            $snNeedle = '"device_sn":"' . $deviceSn . '"';
+            foreach ($allBaseFiles as $f) {
+                $normF = strtolower(str_replace('\\', '/', $f));
+                if (isset($normalizedFiles[$normF])) {
+                    continue;
+                }
+                if (file_exists($f) && filesize($f) > 0) {
+                    $fp = @fopen($f, 'rb');
+                    if ($fp) {
+                        // Use non-blocking shared lock to prevent Windows errno=13 lock violations
+                        if (@flock($fp, LOCK_SH | LOCK_NB)) {
+                            $header = @fread($fp, 2048);
+                            @flock($fp, LOCK_UN);
+                            fclose($fp);
+                            if ($header !== false && str_contains($header, $snNeedle)) {
+                                $addFile($f);
+                            }
+                        } else {
+                            // File is currently locked exclusively by another process (e.g. active push)
+                            fclose($fp);
+                        }
                     }
                 }
             }
@@ -420,25 +446,33 @@ class DeviceCommandService
         // Fast check: if file already starts with '{' and ends with '\n', it is already clean NDJSON
         $fpQuick = @fopen($filePath, 'rb');
         if ($fpQuick) {
-            clearstatcache(true, $filePath);
-            $size = filesize($filePath);
-            if ($size === 0) {
-                fclose($fpQuick);
-                return true;
-            }
-
-            $readLen = min($size, 1024);
-            $chunk = fread($fpQuick, $readLen);
-            if ($chunk !== false) {
-                $trimmed = ltrim($chunk);
-                if ($trimmed !== '' && $trimmed[0] === '{') {
-                    fseek($fpQuick, -1, SEEK_END);
-                    $lastChar = fgetc($fpQuick);
+            if (@flock($fpQuick, LOCK_SH | LOCK_NB)) {
+                clearstatcache(true, $filePath);
+                $size = filesize($filePath);
+                if ($size === 0) {
+                    @flock($fpQuick, LOCK_UN);
                     fclose($fpQuick);
-                    if ($lastChar === "\n") {
-                        return true;
+                    return true;
+                }
+
+                $readLen = min($size, 1024);
+                $chunk = @fread($fpQuick, $readLen);
+                if ($chunk !== false) {
+                    $trimmed = ltrim($chunk);
+                    if ($trimmed !== '' && $trimmed[0] === '{') {
+                        fseek($fpQuick, -1, SEEK_END);
+                        $lastChar = @fgetc($fpQuick);
+                        @flock($fpQuick, LOCK_UN);
+                        fclose($fpQuick);
+                        if ($lastChar === "\n") {
+                            return true;
+                        }
+                    } else {
+                        @flock($fpQuick, LOCK_UN);
+                        fclose($fpQuick);
                     }
                 } else {
+                    @flock($fpQuick, LOCK_UN);
                     fclose($fpQuick);
                 }
             } else {
