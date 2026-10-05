@@ -3,6 +3,7 @@
 use App\Models\Biometrics;
 use App\Models\Devices;
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
 use App\Repositories\LogsRepository;
 use App\Services\BiometricSyncService;
 use App\Services\DeviceCommandService;
@@ -102,9 +103,26 @@ beforeEach(function () {
         });
     }
 
+    if (!Schema::hasTable('device_logs_hrbliz')) {
+        Schema::create('device_logs_hrbliz', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('biometric_id')->nullable();
+            $table->string('name')->nullable();
+            $table->string('dtr_date')->nullable();
+            $table->string('date_time')->nullable();
+            $table->string('status')->nullable();
+            $table->boolean('is_Shifting')->default(0);
+            $table->string('schedule')->nullable();
+            $table->boolean('active')->default(1);
+            $table->string('device_name')->nullable();
+            $table->timestamps();
+        });
+    }
+
     Devices::query()->delete();
     Biometrics::query()->delete();
     DeviceLogs::query()->delete();
+    DeviceLogsHrbliz::query()->delete();
 });
 
 test('Devices model supports is_hrbliz boolean casting and scopes', function () {
@@ -217,10 +235,11 @@ test('LogsRepository dynamically translates HRBLIZ PINs to canonical biometric_i
     ]);
 
     expect($logHrbliz)->not->toBeNull();
-    // Must be saved under canonical biometric_id 2002 so DTR computation sees it!
+    // Must be saved in DeviceLogsHrbliz under canonical biometric_id 2002
     expect((int)$logHrbliz->biometric_id)->toBe(2002)
         ->and($logHrbliz->name)->toBe('Crisostomo Ibarra')
-        ->and($logHrbliz->device_name)->toBe('HRBLIZ Turnstile');
+        ->and($logHrbliz->device_name)->toBe('HRBLIZ Turnstile')
+        ->and($logHrbliz instanceof DeviceLogsHrbliz)->toBeTrue();
 
     // 2. Employee punches on Standard device sending standard ID 2002
     $logStd = $repo->createLog([
@@ -234,11 +253,23 @@ test('LogsRepository dynamically translates HRBLIZ PINs to canonical biometric_i
     expect($logStd)->not->toBeNull()
         ->and((int)$logStd->biometric_id)->toBe(2002)
         ->and($logStd->name)->toBe('Crisostomo Ibarra')
-        ->and($logStd->device_name)->toBe('Standard Turnstile');
+        ->and($logStd->device_name)->toBe('Standard Turnstile')
+        ->and($logStd instanceof DeviceLogs)->toBeTrue()
+        ->and($logStd instanceof DeviceLogsHrbliz)->toBeFalse();
 
-    // Both logs exist under the canonical employee ID 2002 for downstream timesheet / DTR generation
-    $allLogs = DeviceLogs::where('biometric_id', 2002)->orderBy('date_time', 'asc')->get();
-    expect($allLogs->count())->toBe(2);
+    // Standard log is in DeviceLogs, HRBLIZ log is in DeviceLogsHrbliz
+    expect(DeviceLogs::where('biometric_id', 2002)->count())->toBe(1);
+    expect(DeviceLogsHrbliz::where('biometric_id', 2002)->count())->toBe(1);
+
+    // Both logs are returned by TimeRecordRepository for DTR calculation
+    $timeRepo = app(\App\Contracts\TimeRecordRepositoryInterface::class);
+    $allTimeLogs = $timeRepo->getDeviceLogsByBiometricId(2002, '2026-09-23', '2026-09-23');
+    expect($allTimeLogs)->toHaveCount(2);
+
+    // Both logs are returned for dtr-self and DTR report
+    $dtrRepo = app(\App\Contracts\DtrReportRepositoryInterface::class);
+    $selfDtr = $dtrRepo->getSelfDtr(2002, '2026-09-23');
+    expect($selfDtr['deviceLogs']['logs'])->toHaveCount(2);
 });
 
 test('DeviceController updates is_hrbliz and filters paginated devices', function () {
@@ -396,9 +427,10 @@ test('connected HRBLIZ device never receives commands via /iclock/getrequest and
     ], $punchPayload);
 
     $resPunch->assertStatus(200);
-    $savedLog = DeviceLogs::where('biometric_id', 5005)->first();
+    $savedLog = DeviceLogsHrbliz::where('biometric_id', 5005)->first();
     expect($savedLog)->not->toBeNull()
         ->and($savedLog->status)->toBe('0');
+    expect(DeviceLogs::where('biometric_id', 5005)->first())->toBeNull();
 });
 
 test('punch ingestion accepts status 0 (In), 1 (Out), and 255 (Global) normally', function () {
@@ -437,11 +469,23 @@ test('punch ingestion accepts status 0 (In), 1 (Out), and 255 (Global) normally'
     $responseGlobal = $this->call('POST', '/iclock/cdata?SN=SN-HRBLIZ-PUNCH', [], [], [], ['REMOTE_ADDR' => '192.168.1.123', 'CONTENT_TYPE' => 'text/plain'], $payloadGlobal);
     $responseGlobal->assertStatus(200);
 
-    $logs = DeviceLogs::where('biometric_id', 4004)->orderBy('date_time', 'asc')->get();
+    $logs = DeviceLogsHrbliz::where('biometric_id', 4004)->orderBy('date_time', 'asc')->get();
     expect($logs)->toHaveCount(3);
     expect($logs[0]->status)->toBe('0');
     expect($logs[1]->status)->toBe('1');
     expect($logs[2]->status)->toBe('255');
+    expect(DeviceLogs::where('biometric_id', 4004)->count())->toBe(0);
+
+    // Also assert that DeviceLogAlertController dateEntries and scanDatabase display them!
+    $alertController = app(\App\Http\Controllers\DeviceLogAlertController::class);
+    $dateResponse = $alertController->dateEntries(request(), '2026-09-23');
+    $dateData = $dateResponse->getData(true);
+    expect($dateData['total'])->toBe(3);
+    expect($dateData['entries'][0]['is_hrbliz'])->toBeTrue();
+
+    $scanResponse = $alertController->scanDatabase(request());
+    $scanData = $scanResponse->getData(true);
+    expect($scanData['dates']['2026-09-23']['count'])->toBe(3);
 });
 
 test('DeviceService refuses modifying operations (syncDeviceTime, restartDevice, turnOffDevice, deleteUsersFromDevice) on HRBLIZ device', function () {

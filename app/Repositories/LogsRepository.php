@@ -7,7 +7,9 @@ use App\Contracts\LogsRepositoryInterface;
 use App\Models\Attendance;
 use App\Models\AttendanceInformation;
 use App\Models\Biometrics;
+use App\Models\Devices;
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
 use App\Models\EmployeeProfile;
 use App\Models\ExternalEmployees;
 use Illuminate\Support\Facades\DB;
@@ -26,7 +28,16 @@ class LogsRepository implements LogsRepositoryInterface
     {
         try {
             $device = !empty($data['ip_address']) ? $this->deviceRepository->findByIP($data['ip_address']) : null;
-            $isHrbliz = $device && (bool)$device->is_hrbliz;
+            if (!$device && !empty($data['serial_number'])) {
+                $device = Devices::where('serial_number', $data['serial_number'])->first();
+            }
+            if (!$device && !empty($data['device_name'])) {
+                $device = Devices::where('device_name', $data['device_name'])->first();
+            }
+
+            $isHrbliz = isset($data['is_hrbliz'])
+                ? (bool)$data['is_hrbliz']
+                : ($device && (bool)$device->is_hrbliz);
 
             $inputPin = (int)$data['biometric_id'];
             $canonicalBiometricId = $inputPin;
@@ -72,7 +83,10 @@ class LogsRepository implements LogsRepositoryInterface
                 'device_name' => $device?->device_name ?? 'Unknown',
             ];
 
-            return DB::transaction(function () use ($logData) {
+            return DB::transaction(function () use ($logData, $isHrbliz) {
+                if ($isHrbliz) {
+                    return DeviceLogsHrbliz::create($logData);
+                }
                 return DeviceLogs::create($logData);
             });
         } catch (\Exception $e) {
@@ -475,10 +489,18 @@ class LogsRepository implements LogsRepositoryInterface
 
         $startTime = microtime(true);
 
-        $query = DeviceLogs::whereNotNull('dtr_date')
-            ->where('dtr_date', '!=', '')
-            ->where('dtr_date', '<=', $cutoffDate);
-        $totalEligible = (clone $query)->count();
+        $models = [DeviceLogs::class];
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $models[] = DeviceLogsHrbliz::class;
+        }
+
+        $totalEligible = 0;
+        foreach ($models as $modelClass) {
+            $totalEligible += $modelClass::whereNotNull('dtr_date')
+                ->where('dtr_date', '!=', '')
+                ->where('dtr_date', '<=', $cutoffDate)
+                ->count();
+        }
 
         if ($dryRun || $totalEligible === 0) {
             return [
@@ -509,36 +531,38 @@ class LogsRepository implements LogsRepositoryInterface
         $archivedCount = 0;
 
         try {
-            while (true) {
-                // Fetch chunk of IDs and records to delete
-                $records = DeviceLogs::whereNotNull('dtr_date')
-                    ->where('dtr_date', '!=', '')
-                    ->where('dtr_date', '<=', $cutoffDate)
-                    ->orderBy('id', 'asc')
-                    ->limit($chunkSize)
-                    ->get();
+            foreach ($models as $modelClass) {
+                while (true) {
+                    // Fetch chunk of IDs and records to delete
+                    $records = $modelClass::whereNotNull('dtr_date')
+                        ->where('dtr_date', '!=', '')
+                        ->where('dtr_date', '<=', $cutoffDate)
+                        ->orderBy('id', 'asc')
+                        ->limit($chunkSize)
+                        ->get();
 
-                if ($records->isEmpty()) {
-                    break;
-                }
-
-                $ids = $records->pluck('id')->all();
-
-                // If archiving enabled, stream chunk to compressed archive file
-                if ($archiveFp) {
-                    foreach ($records as $record) {
-                        gzwrite($archiveFp, json_encode($record->toArray(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
-                        $archivedCount++;
+                    if ($records->isEmpty()) {
+                        break;
                     }
-                }
 
-                // Delete chunk by IDs
-                $deleted = DeviceLogs::whereIn('id', $ids)->delete();
-                $deletedCount += $deleted;
+                    $ids = $records->pluck('id')->all();
 
-                // Tiny sleep between chunks to avoid lock contention
-                if (count($ids) >= $chunkSize) {
-                    usleep(10000); // 10ms
+                    // If archiving enabled, stream chunk to compressed archive file
+                    if ($archiveFp) {
+                        foreach ($records as $record) {
+                            gzwrite($archiveFp, json_encode($record->toArray(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+                            $archivedCount++;
+                        }
+                    }
+
+                    // Delete chunk by IDs
+                    $deleted = $modelClass::whereIn('id', $ids)->delete();
+                    $deletedCount += $deleted;
+
+                    // Tiny sleep between chunks to avoid lock contention
+                    if (count($ids) >= $chunkSize) {
+                        usleep(10000); // 10ms
+                    }
                 }
             }
         } finally {

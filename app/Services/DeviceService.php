@@ -7,6 +7,7 @@ use App\Contracts\LogsRepositoryInterface;
 use App\Models\AttendanceInformation;
 use App\Models\Biometrics;
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
 use App\Models\Devices;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -717,6 +718,17 @@ class DeviceService
                     ->get();
                 foreach ($existingLogs as $el) {
                     $existingKeys[$el->biometric_id . '|' . $el->date_time] = true;
+                }
+
+                // Check DeviceLogsHrbliz if table exists
+                if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+                    $existingHrblizLogs = DeviceLogsHrbliz::whereIn('dtr_date', $dates)
+                        ->whereIn('biometric_id', $allLookupPins)
+                        ->select(['biometric_id', 'date_time'])
+                        ->get();
+                    foreach ($existingHrblizLogs as $ehl) {
+                        $existingKeys[$ehl->biometric_id . '|' . $ehl->date_time] = true;
+                    }
                 }
 
                 // Check AttendanceInformation

@@ -6,6 +6,8 @@ use App\Models\Attendance;
 use App\Models\AttendanceInformation;
 use App\Models\Biometrics;
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
+use App\Models\Devices;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -140,16 +142,33 @@ class DeviceLogAlertController extends Controller
         $dateCounts = DeviceLogs::selectRaw('dtr_date, COUNT(*) as count')
             ->whereNotNull('dtr_date')
             ->groupBy('dtr_date')
-            ->orderBy('dtr_date')
             ->get();
 
-        if ($dateCounts->isEmpty()) {
-            return response()->json(['dates' => [], 'files' => [], 'late_pulls' => []]);
+        $hrbCounts = collect();
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $hrbCounts = DeviceLogsHrbliz::selectRaw('dtr_date, COUNT(*) as count')
+                ->whereNotNull('dtr_date')
+                ->groupBy('dtr_date')
+                ->get();
         }
 
         $dateMap = [];
         foreach ($dateCounts as $row) {
-            $dateMap[$row->dtr_date] = ['count' => $row->count];
+            $dateMap[$row->dtr_date] = ['count' => (int) $row->count];
+        }
+
+        foreach ($hrbCounts as $row) {
+            if (isset($dateMap[$row->dtr_date])) {
+                $dateMap[$row->dtr_date]['count'] += (int) $row->count;
+            } else {
+                $dateMap[$row->dtr_date] = ['count' => (int) $row->count];
+            }
+        }
+
+        ksort($dateMap);
+
+        if (empty($dateMap)) {
+            return response()->json(['dates' => [], 'files' => [], 'late_pulls' => []]);
         }
 
         return response()->json([
@@ -164,13 +183,19 @@ class DeviceLogAlertController extends Controller
      */
     public function dateEntries(Request $request, string $date)
     {
-        $logs = DeviceLogs::where('dtr_date', $date)
-            ->orderBy('date_time')
-            ->get();
+        $stdLogs = DeviceLogs::where('dtr_date', $date)->get();
+
+        $hrbLogs = collect();
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $hrbLogs = DeviceLogsHrbliz::where('dtr_date', $date)->get();
+        }
+
+        $logs = $stdLogs->concat($hrbLogs)->sortBy('date_time')->values();
 
         $entries = [];
         foreach ($logs as $log) {
             $time = $log->date_time ? substr($log->date_time, 11, 8) : '';
+            $isHrbliz = ($log instanceof DeviceLogsHrbliz) || (!empty($log->device_name) && str_contains(strtoupper($log->device_name), 'HRBLIZ'));
             $entries[] = [
                 'biometric_id' => (string) $log->biometric_id,
                 'name' => $log->name ?? '',
@@ -178,6 +203,7 @@ class DeviceLogAlertController extends Controller
                 'dtr_time' => $time,
                 'dtr_type' => (string) ($log->status ?? ''),
                 'device_name' => $log->device_name ?? '',
+                'is_hrbliz' => (bool) $isHrbliz,
                 'created_at' => $log->created_at ? $log->created_at->format('Y-m-d h:i a') : '',
             ];
         }
@@ -314,19 +340,30 @@ class DeviceLogAlertController extends Controller
                 sort($datesList);
             }
         } else {
-            $query = DeviceLogs::query();
+            $queryStd = DeviceLogs::query();
+            $queryHrb = \Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')
+                ? DeviceLogsHrbliz::query()
+                : null;
 
             if (!empty($datesList)) {
-                $query->whereIn('dtr_date', $datesList);
+                $queryStd->whereIn('dtr_date', $datesList);
+                $queryHrb?->whereIn('dtr_date', $datesList);
             }
 
             if ($biometricId) {
-                $query->where('biometric_id', $biometricId);
+                $queryStd->where('biometric_id', $biometricId);
+                $queryHrb?->where('biometric_id', $biometricId);
             } elseif ($name) {
-                $query->where('name', 'LIKE', "%{$name}%");
+                $queryStd->where('name', 'LIKE', "%{$name}%");
+                $queryHrb?->where('name', 'LIKE', "%{$name}%");
             }
 
-            $logs = $query->orderBy('dtr_date')->orderBy('date_time')->get();
+            $stdLogs = $queryStd->get();
+            $hrbLogs = $queryHrb ? $queryHrb->get() : collect();
+
+            $logs = $stdLogs->concat($hrbLogs)
+                ->sortBy(fn($x) => $x->dtr_date . ' ' . $x->date_time)
+                ->values();
         }
 
         $dateLabel = 'All Dates';
@@ -461,23 +498,35 @@ class DeviceLogAlertController extends Controller
             ]);
         }
 
-        $query = DeviceLogs::query();
+        $queryStd = DeviceLogs::query();
+        $queryHrb = \Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')
+            ? DeviceLogsHrbliz::query()
+            : null;
 
         if ($biometricId) {
-            $query->where('biometric_id', $biometricId);
+            $queryStd->where('biometric_id', $biometricId);
+            $queryHrb?->where('biometric_id', $biometricId);
         } elseif ($name) {
-            $query->where('name', 'LIKE', "%{$name}%");
+            $queryStd->where('name', 'LIKE', "%{$name}%");
+            $queryHrb?->where('name', 'LIKE', "%{$name}%");
         }
 
         if (!empty($datesList)) {
-            $query->whereIn('dtr_date', $datesList);
+            $queryStd->whereIn('dtr_date', $datesList);
+            $queryHrb?->whereIn('dtr_date', $datesList);
         }
 
-        $logs = $query->orderBy('dtr_date')->orderBy('date_time')->get();
+        $stdLogs = $queryStd->get();
+        $hrbLogs = $queryHrb ? $queryHrb->get() : collect();
+
+        $logs = $stdLogs->concat($hrbLogs)
+            ->sortBy(fn($x) => $x->dtr_date . ' ' . $x->date_time)
+            ->values();
 
         $entries = [];
         foreach ($logs as $log) {
             $time = $log->date_time ? substr($log->date_time, 11, 8) : '';
+            $isHrbliz = ($log instanceof DeviceLogsHrbliz) || (!empty($log->device_name) && str_contains(strtoupper($log->device_name), 'HRBLIZ'));
             $entries[] = [
                 'biometric_id' => (string) $log->biometric_id,
                 'name' => $log->name ?? '',
@@ -485,6 +534,7 @@ class DeviceLogAlertController extends Controller
                 'dtr_time' => $time,
                 'dtr_type' => (string) ($log->status ?? ''),
                 'device_name' => $log->device_name ?? '',
+                'is_hrbliz' => (bool) $isHrbliz,
                 'created_at' => $log->created_at ? $log->created_at->format('Y-m-d h:i a') : '',
             ];
         }
@@ -679,16 +729,32 @@ class DeviceLogAlertController extends Controller
             $deviceName = !empty($entry['device_name']) ? trim($entry['device_name']) : 'Unknown';
             $dateTime = $dtrDate . ' ' . $dtrTime;
 
-            $exists = DeviceLogs::where('biometric_id', $biometricId)
+            $device = Devices::where('device_name', $deviceName)->first();
+            $isHrbliz = ($device && (bool)$device->is_hrbliz)
+                || (!empty($entry['is_hrbliz']))
+                || str_contains(strtoupper($deviceName), 'HRBLIZ');
+
+            $existsStd = DeviceLogs::where('biometric_id', $biometricId)
                 ->where('date_time', $dateTime)
                 ->exists();
 
-            if ($exists) {
+            $existsHrb = false;
+            if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+                $existsHrb = DeviceLogsHrbliz::where('biometric_id', $biometricId)
+                    ->where('date_time', $dateTime)
+                    ->exists();
+            }
+
+            if ($existsStd || $existsHrb) {
                 $skippedCount++;
                 continue;
             }
 
-            DeviceLogs::create([
+            $targetModel = ($isHrbliz && \Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz'))
+                ? DeviceLogsHrbliz::class
+                : DeviceLogs::class;
+
+            $targetModel::create([
                 'biometric_id' => $biometricId,
                 'name' => $name,
                 'dtr_date' => $dtrDate,

@@ -5,6 +5,7 @@ namespace App\Repositories;
 use App\Contracts\TimeRecordRepositoryInterface;
 use App\Models\Biometrics;
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
 use App\Models\DTR;
 use App\Models\Schedule;
 use App\Models\TimeShifts;
@@ -28,7 +29,24 @@ class TimeRecordRepository implements TimeRecordRepositoryInterface
             $query->where('dtr_date', '<=', $dateTo);
         }
 
-        return $query->orderBy('date_time')->get()->toArray();
+        $stdLogs = $query->get();
+
+        $hrbLogs = collect();
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $queryHrb = DeviceLogsHrbliz::where('biometric_id', $biometricId);
+            if ($dateFrom) {
+                $queryHrb->where('dtr_date', '>=', $dateFrom);
+            }
+            if ($dateTo) {
+                $queryHrb->where('dtr_date', '<=', $dateTo);
+            }
+            $hrbLogs = $queryHrb->get();
+        }
+
+        return $stdLogs->concat($hrbLogs)
+            ->sortBy('date_time')
+            ->values()
+            ->toArray();
     }
 
     /**
@@ -88,11 +106,22 @@ class TimeRecordRepository implements TimeRecordRepositoryInterface
      */
     public function getEmployeesWithDeviceLogs(string $dateFrom, string $dateTo): array
     {
-        return DeviceLogs::where('dtr_date', '>=', $dateFrom)
+        $stdIds = DeviceLogs::where('dtr_date', '>=', $dateFrom)
             ->where('dtr_date', '<=', $dateTo)
             ->distinct()
             ->pluck('biometric_id')
             ->toArray();
+
+        $hrbIds = [];
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $hrbIds = DeviceLogsHrbliz::where('dtr_date', '>=', $dateFrom)
+                ->where('dtr_date', '<=', $dateTo)
+                ->distinct()
+                ->pluck('biometric_id')
+                ->toArray();
+        }
+
+        return array_values(array_unique(array_merge($stdIds, $hrbIds)));
     }
 
 

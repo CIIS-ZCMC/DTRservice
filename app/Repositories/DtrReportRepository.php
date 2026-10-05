@@ -5,6 +5,7 @@ namespace App\Repositories;
 use App\Contracts\DtrReportRepositoryInterface;
 use App\Models\Biometrics;
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
 use App\Models\LeaveApplication;
 use App\Models\OfficialBusinessApplication;
 use App\Models\OfficialTimeApplication;
@@ -33,11 +34,20 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             return [];
         }
 
-        $logs = DeviceLogs::where('biometric_id', $biometricId)
+        $stdLogs = DeviceLogs::where('biometric_id', $biometricId)
             ->whereBetween('dtr_date', [$dateFrom, $dateTo])
-            ->orderBy('dtr_date')
-            ->orderBy('date_time')
-            ->get()
+            ->get();
+
+        $hrbLogs = collect();
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $hrbLogs = DeviceLogsHrbliz::where('biometric_id', $biometricId)
+                ->whereBetween('dtr_date', [$dateFrom, $dateTo])
+                ->get();
+        }
+
+        $logs = $stdLogs->concat($hrbLogs)
+            ->sortBy(fn($x) => $x->dtr_date . ' ' . $x->date_time)
+            ->values()
             ->toArray();
 
         // Batch-fetch all schedules for the date range
@@ -1344,9 +1354,16 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             return [];
         }
 
-        $allLogs = DeviceLogs::where('biometric_id', $biometricId)
-            ->orderBy('date_time')
-            ->get()
+        $stdLogs = DeviceLogs::where('biometric_id', $biometricId)->get();
+
+        $hrbLogs = collect();
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $hrbLogs = DeviceLogsHrbliz::where('biometric_id', $biometricId)->get();
+        }
+
+        $allLogs = $stdLogs->concat($hrbLogs)
+            ->sortBy('date_time')
+            ->values()
             ->toArray();
 
         $dateLogs = array_values(array_filter($allLogs, fn($log) => $log['dtr_date'] === $date));

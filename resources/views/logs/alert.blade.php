@@ -532,7 +532,7 @@
                 if (fBio && !e.biometric_id.toLowerCase().includes(fBio)) return false;
                 if (fName && !e.name.toLowerCase().includes(fName)) return false;
                 if (fTime && !e.dtr_time.toLowerCase().includes(fTime)) return false;
-                if (fDevice && !e.device_name.toLowerCase().includes(fDevice)) return false;
+                if (fDevice && !e.device_name.toLowerCase().includes(fDevice) && !(e.is_hrbliz && 'hrbliz'.includes(fDevice))) return false;
                 return true;
             });
 
@@ -563,7 +563,10 @@
                             <td class="py-2 px-2 themed-text-primary">${escapeHtml(e.name)}</td>
                             <td class="py-2 px-2 font-mono text-blue-500">${escapeHtml(e.dtr_time)}</td>
                             <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.dtr_type)}</td>
-                            <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.device_name)}</td>
+                            <td class="py-2 px-2 themed-text-muted">
+                                ${escapeHtml(e.device_name)}
+                                ${e.is_hrbliz ? `<span class="bg-indigo-500/15 text-indigo-500 dark:text-indigo-400 border border-indigo-500/30 text-[10px] px-1.5 py-0.5 rounded font-mono ml-1 font-semibold">HRBLIZ</span>` : ''}
+                            </td>
                             <td class="py-2 px-2 font-mono themed-text-muted">${escapeHtml(e.created_at)}</td>
                         </tr>`;
                 });
@@ -724,7 +727,7 @@
                 if (fBio && !e.biometric_id.toLowerCase().includes(fBio)) return false;
                 if (fName && !e.name.toLowerCase().includes(fName)) return false;
                 if (fTime && !e.dtr_time.toLowerCase().includes(fTime)) return false;
-                if (fDevice && !e.device_name.toLowerCase().includes(fDevice)) return false;
+                if (fDevice && !e.device_name.toLowerCase().includes(fDevice) && !(e.is_hrbliz && 'hrbliz'.includes(fDevice))) return false;
                 return true;
             });
         }
@@ -883,7 +886,10 @@
                             <td class="py-2 px-2 themed-text-secondary">${escapeHtml(e.dtr_date)}</td>
                             <td class="py-2 px-2 font-mono text-blue-500">${escapeHtml(e.dtr_time)}</td>
                             <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.dtr_type)}</td>
-                            <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.device_name)}</td>
+                            <td class="py-2 px-2 themed-text-muted">
+                                ${escapeHtml(e.device_name)}
+                                ${e.is_hrbliz ? `<span class="bg-indigo-500/15 text-indigo-500 dark:text-indigo-400 border border-indigo-500/30 text-[10px] px-1.5 py-0.5 rounded font-mono ml-1 font-semibold">HRBLIZ</span>` : ''}
+                            </td>
                         </tr>`;
                 });
 
@@ -1429,7 +1435,7 @@
                         <td class="py-1.5 px-2 themed-text-primary">${escapeHtml(e.name)}</td>
                         <td class="py-1.5 px-2 font-mono text-emerald-500 font-semibold">${escapeHtml(e.dtr_time)}</td>
                         <td class="py-1.5 px-2 themed-text-muted font-medium">
-                            ${isViaAttendanceMode ? `<span class="text-emerald-400 font-semibold"><i class="fas fa-clipboard-check mr-1"></i>${escapeHtml(e.device_name)}</span>` : escapeHtml(e.device_name)}
+                            ${isViaAttendanceMode ? `<span class="text-emerald-400 font-semibold"><i class="fas fa-clipboard-check mr-1"></i>${escapeHtml(e.device_name)}</span>` : `${escapeHtml(e.device_name)}${e.is_hrbliz ? ' <span class="bg-indigo-500/15 text-indigo-500 dark:text-indigo-400 border border-indigo-500/30 text-[10px] px-1.5 py-0.5 rounded font-mono ml-1 font-semibold">HRBLIZ</span>' : ''}`}
                         </td>
                     </tr>`;
                 });
