@@ -824,6 +824,11 @@ class DeviceService
                 'filtered_count' => count($filteredRows),
                 'new_saved' => $newSavedCount,
                 'duplicates_skipped' => $duplicatesSkipped,
+                'logs' => array_map(fn($row) => [
+                    'biometric_id' => $row['pin'],
+                    'date_time' => $row['datetime'],
+                    'status' => $row['status'],
+                ], $filteredRows),
                 'sample' => $sampleSaved,
             ];
         } catch (\Throwable $e) {

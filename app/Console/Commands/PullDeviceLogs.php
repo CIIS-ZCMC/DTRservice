@@ -124,7 +124,10 @@ class PullDeviceLogs extends Command
                     ]]
                 );
 
-                if (!empty($result['sample'])) {
+                if (!empty($result['logs'])) {
+                    $this->info('Registered logs on device:');
+                    $this->table(['Biometric ID', 'Date & Time', 'Status'], $result['logs']);
+                } elseif (!empty($result['sample'])) {
                     $this->info('Sample saved logs:');
                     $this->table(['Biometric ID', 'Date & Time', 'Status'], $result['sample']);
                 }
