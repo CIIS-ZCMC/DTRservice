@@ -25,11 +25,13 @@ class LogViewerController extends Controller
         $laravelLog = $this->readLogFile('laravel.log', $lines);
         $deviceLog = $this->readLogFile('device_logs.log', $lines);
         $registrationLog = $this->readLogFile('registration_logs.log', $lines);
+        $operationLog = $this->readLogFile('operation_logs.log', $lines);
 
         return response()->json([
             'laravel' => $laravelLog,
             'device' => $deviceLog,
             'registration' => $registrationLog,
+            'operation' => $operationLog,
         ]);
     }
 
@@ -41,7 +43,7 @@ class LogViewerController extends Controller
         $filename = $request->get('file');
 
         // Security: only allow specific log files
-        $allowedFiles = ['laravel.log', 'device_logs.log', 'registration_logs.log'];
+        $allowedFiles = ['laravel.log', 'device_logs.log', 'registration_logs.log', 'operation_logs.log'];
         if (!in_array($filename, $allowedFiles)) {
             return response()->json(['error' => 'Invalid file'], 400);
         }

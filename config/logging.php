@@ -97,6 +97,14 @@ return [
             'replace_placeholders' => true,
         ],
 
+        'operation_logs' => [
+            'driver' => 'daily',
+            'path' => storage_path('logs/operation_logs.log'),
+            'level' => env('LOG_LEVEL', 'debug'),
+            'days' => env('LOG_DAILY_DAYS', 14),
+            'replace_placeholders' => true,
+        ],
+
 
         'daily' => [
             'driver' => 'daily',

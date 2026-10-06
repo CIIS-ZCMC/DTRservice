@@ -110,6 +110,26 @@ class ZkPushParser
     }
 
     /**
+     * Check if a raw line or push request represents a device operation log (OPLOG / OPERLOG).
+     */
+    public static function isOperationLog(string $line, ?string $table = null): bool
+    {
+        if (!empty($table) && in_array(strtoupper(trim($table)), ['OPERLOG', 'OPLOG'])) {
+            return true;
+        }
+
+        $trimmed = trim($line);
+        if (preg_match('/^(?:OPLOG|OPERLOG)\b/i', $trimmed) ||
+            preg_match('/^(?:OPLOG|OPERLOG)\s*[:\t\s]/i', $trimmed) ||
+            stripos($trimmed, 'OPLOG') === 0 ||
+            stripos($trimmed, 'OPERLOG') === 0) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Resolve the employee's canonical PIN from a parsed record.
      * In ZKTeco v9 / older models:
      * - PIN is often an internal device slot (e.g., 2842).

@@ -779,6 +779,8 @@ class DeviceService
                     'dtr_time' => $item['time'],
                     'dtr_type' => $item['status'],
                     'ip_address' => $device->ip_address,
+                    'serial_number' => $device->serial_number,
+                    'device_name' => $device->device_name,
                 ];
                 $rawLine = "{$item['pin']}\t{$item['datetime']}\t{$item['status']}";
 

@@ -11,9 +11,12 @@ class EmployeeProfile extends Model
       public function name()
         {
             $personal_information = $this->personalInformation;
-            $fullName = $personal_information['first_name'] . ' ' . $personal_information['last_name'];
+            if (!$personal_information) {
+                return null;
+            }
+            $fullName = ($personal_information['first_name'] ?? '') . ' ' . ($personal_information['last_name'] ?? '');
 
-            return $fullName;
+            return trim($fullName) ?: null;
         }
 
         

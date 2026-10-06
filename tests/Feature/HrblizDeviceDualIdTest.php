@@ -780,3 +780,188 @@ test('attendance saving correctly checks biometric_id on standard devices and hr
         ->and($logHrb2->name)->toBe('Andres Bonifacio')
         ->and($logHrb2->device_name)->toBe('HRBLIZ Attendance Terminal');
 });
+
+test('HRBLIZ attendance saving does not re-translate canonical ID when ID collides with another employee hrbliz_biometric_id', function () {
+    if (!Schema::hasTable('attendances')) {
+        Schema::create('attendances', function (Blueprint $table) {
+            $table->id();
+            $table->integer('attendance_key')->default(1);
+            $table->string('open_date')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    if (!Schema::hasTable('attendance__information')) {
+        Schema::create('attendance__information', function (Blueprint $table) {
+            $table->id();
+            $table->unsignedBigInteger('biometric_id')->nullable();
+            $table->string('name')->nullable();
+            $table->string('area')->nullable();
+            $table->string('areacode')->nullable();
+            $table->string('sector')->nullable();
+            $table->string('first_entry')->nullable();
+            $table->string('last_entry')->nullable();
+            $table->unsignedBigInteger('attendances_id')->nullable();
+            $table->string('email')->nullable();
+            $table->timestamps();
+        });
+    }
+
+    $att = new \App\Models\Attendance();
+    $att->attendance_key = 1;
+    $att->open_date = '2026-10-06';
+    $att->save();
+
+    // Employee 1: Francisco (biometric_id = 1508, hrbliz_biometric_id = 5842)
+    $empFrancisco = Biometrics::create([
+        'biometric_id' => 1508,
+        'hrbliz_biometric_id' => 5842,
+        'name' => 'Francisco, G-third',
+        'name_with_biometric' => 'Francisco, G-third [1508]',
+    ]);
+
+    $ep1 = new \App\Models\EmployeeProfile();
+    $ep1->biometric_id = 1508;
+    $ep1->save();
+
+    // Employee 2: Ahaja (biometric_id = 2221, hrbliz_biometric_id = 1508 - COLLISION with Francisco canonical ID!)
+    $empAhaja = Biometrics::create([
+        'biometric_id' => 2221,
+        'hrbliz_biometric_id' => 1508,
+        'name' => 'Ahaja, Norodom',
+        'name_with_biometric' => 'Ahaja, Norodom [2221]',
+    ]);
+
+    $ep2 = new \App\Models\EmployeeProfile();
+    $ep2->biometric_id = 2221;
+    $ep2->save();
+
+    $hrblizDevice = Devices::create([
+        'device_name' => 'HRBLIZ Main Gate',
+        'serial_number' => 'SN-HRBLIZ-COLLISION',
+        'ip_address' => '192.168.10.99',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'for_attendance' => 1,
+    ]);
+
+    $repo = app(LogsRepository::class);
+
+    // Francisco punches on HRBLIZ device with PIN 5842
+    $log = $repo->createLog([
+        'biometric_id' => 5842,
+        'ip_address' => '192.168.10.99',
+        'dtr_date' => '2026-10-06',
+        'dtr_time' => '08:00:00',
+        'dtr_type' => '0',
+    ]);
+
+    // Attendance in UMIS (AttendanceInformation) MUST belong to Francisco (1508), NOT Ahaja (2221)!
+    $attInfo = \App\Models\AttendanceInformation::where('first_entry', '2026-10-06 08:00:00')->first();
+    expect($attInfo)->not->toBeNull();
+    expect((int)$attInfo->biometric_id)->toBe(1508);
+    expect($attInfo->name)->toContain('Francisco');
+
+    // Also test when raw_biometric_id is passed directly (as from DeviceService or LogsService)
+    $logFromService = $repo->createLog([
+        'biometric_id' => 1508,
+        'raw_biometric_id' => 5842,
+        'is_hrbliz' => true,
+        'ip_address' => '192.168.10.99',
+        'dtr_date' => '2026-10-06',
+        'dtr_time' => '17:00:00',
+        'dtr_type' => '1',
+    ]);
+
+    $attInfoOut = \App\Models\AttendanceInformation::where('first_entry', '2026-10-06 17:00:00')->first();
+    expect($attInfoOut)->not->toBeNull();
+    expect((int)$attInfoOut->biometric_id)->toBe(1508);
+    expect($attInfoOut->name)->toContain('Francisco');
+});
+
+test('automatic Biometrics model event listeners do not auto update HRBLIZ devices with receiver_by_default = 0', function () {
+    $commandService = app(DeviceCommandService::class);
+    $commandService->clearCommands();
+
+    // 1. Setup Standard device (receives sync)
+    Devices::create([
+        'device_name' => 'Standard Terminal',
+        'serial_number' => 'SN-STD-AUTO-01',
+        'ip_address' => '192.168.1.10',
+        'is_active' => true,
+        'is_hrbliz' => false,
+        'receiver_by_default' => 1,
+        'for_attendance' => 1,
+    ]);
+
+    // 2. Setup HRBLIZ device with receiver_by_default = 0 (send-only attendance terminal)
+    Devices::create([
+        'device_name' => 'HRBLIZ Attendance Only',
+        'serial_number' => 'SN-HRBLIZ-SENDONLY-01',
+        'ip_address' => '192.168.1.20',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'receiver_by_default' => 0,
+        'for_attendance' => 1,
+    ]);
+
+    // Test A: Model CREATED listener
+    $templates = [
+        ['Finger_ID' => '0', 'Size' => '1200', 'Valid' => '1', 'Template' => 'TMP_AUTO_001'],
+    ];
+
+    $bio = Biometrics::create([
+        'biometric_id' => 9955,
+        'hrbliz_biometric_id' => 8855,
+        'name' => 'Model Event User',
+        'privilege' => 0,
+        'biometric' => json_encode($templates),
+    ]);
+
+    $stdCmds = $commandService->getAllCommands('SN-STD-AUTO-01');
+    $hrblizCmds = $commandService->getAllCommands('SN-HRBLIZ-SENDONLY-01');
+
+    // Standard device received provision commands
+    expect($stdCmds)->not->toBeEmpty();
+    expect($stdCmds[0]['command'])->toContain('PIN=9955');
+
+    // HRBLIZ send-only device received absolutely NOTHING
+    expect($hrblizCmds)->toBeEmpty();
+
+    // Test B: Model UPDATED listener (name change)
+    $commandService->clearCommands();
+    $bio->update(['name' => 'Updated Event User']);
+
+    $stdCmdsUpdate = $commandService->getAllCommands('SN-STD-AUTO-01');
+    $hrblizCmdsUpdate = $commandService->getAllCommands('SN-HRBLIZ-SENDONLY-01');
+
+    expect($stdCmdsUpdate)->not->toBeEmpty();
+    expect($stdCmdsUpdate[0]['command'])->toContain('Name=Updated Event User');
+    expect($hrblizCmdsUpdate)->toBeEmpty();
+
+    // Test C: Model UPDATED listener (biometric template change)
+    $commandService->clearCommands();
+    $updatedTemplates = [
+        ['Finger_ID' => '0', 'Size' => '1200', 'Valid' => '1', 'Template' => 'TMP_AUTO_001_MOD'],
+        ['Finger_ID' => '1', 'Size' => '1200', 'Valid' => '1', 'Template' => 'TMP_AUTO_002_NEW'],
+    ];
+    $bio->update(['biometric' => json_encode($updatedTemplates)]);
+
+    $stdCmdsBioUpdate = $commandService->getAllCommands('SN-STD-AUTO-01');
+    $hrblizCmdsBioUpdate = $commandService->getAllCommands('SN-HRBLIZ-SENDONLY-01');
+
+    expect($stdCmdsBioUpdate)->not->toBeEmpty();
+    expect($hrblizCmdsBioUpdate)->toBeEmpty();
+
+    // Test D: Model DELETED listener
+    $commandService->clearCommands();
+    $bio->delete();
+
+    $stdCmdsDelete = $commandService->getAllCommands('SN-STD-AUTO-01');
+    $hrblizCmdsDelete = $commandService->getAllCommands('SN-HRBLIZ-SENDONLY-01');
+
+    expect($stdCmdsDelete)->not->toBeEmpty();
+    expect($stdCmdsDelete[0]['command'])->toContain('DATA DELETE USER');
+    expect($hrblizCmdsDelete)->toBeEmpty();
+});
+

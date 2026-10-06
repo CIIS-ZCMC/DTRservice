@@ -7,6 +7,7 @@ use App\Contracts\ScheduleRepositoryInterface;
 use App\Contracts\DeviceRepositoryInterface;
 use App\Models\Biometrics;
 use App\Models\Devices;
+use App\Services\OperationLogger;
 use App\Services\RegistrationLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -27,8 +28,9 @@ class LogsService
     public function storeLog(Request $request): string
     {
         $clientIp = $request->ip();
-        $sourceSn = $request->query('SN') ?? $request->header('X-Device-SN');
+        $sourceSn = $request->input('SN') ?? $request->query('SN') ?? $request->header('SN') ?? $request->header('X-Device-SN');
         $rawBody = $request->getContent();
+        $table = strtoupper((string)($request->input('table') ?? $request->query('table', '')));
 
         $this->deviceRepository->markAsConnected($clientIp);
 
@@ -45,7 +47,7 @@ class LogsService
                 }
 
                 try {
-                    $this->processLogLine($line, $clientIp, $sourceSn);
+                    $this->processLogLine($line, $clientIp, $sourceSn, $table);
                 } catch (\Throwable $th) {
                     Log::channel('device_logs')->error('Error processing device log line', [
                         'error' => $th->getMessage(),
@@ -62,7 +64,7 @@ class LogsService
     /**
      * Parse and persist a single device log line.
      */
-    private function processLogLine(string $line, string $clientIp, ?string $requestSn = null)
+    private function processLogLine(string $line, string $clientIp, ?string $requestSn = null, ?string $table = null)
     {
         // Check if line is a biometric template push (e.g. FP PIN=493\tFID=3\tSize=612\tValid=1\tTMP=...)
         if (ZkPushParser::isBiometricTemplateLine($line)) {
@@ -185,7 +187,13 @@ class LogsService
             return "OK";
         }
 
-        // Parse tab-separated format.
+        // Check if line is a device operation log (OPLOG / OPERLOG or pushed under table=OPERLOG/OPLOG)
+        if (ZkPushParser::isOperationLog($line, $table)) {
+            $this->processOperationLogLine($line, $clientIp, $requestSn, $table);
+            return "OK";
+        }
+
+        // Parse tab-separated format for attendance punches
         $parts = preg_split('/\t/', $line);
         Log::channel('device_logs')->debug('Parts', ['parts' => $parts]);
 
@@ -194,82 +202,22 @@ class LogsService
             return "ERROR";
         }
 
-        // Two formats are sent by the device:
-        // - ATTLOG: biometric_id \t datetime \t status \t ...
-        // - OPLOG:  "OPLOG <op>" \t biometric_id \t datetime \t param \t ...
-        $isOplog = false;
-        $opCode = null;
-        if (stripos($parts[0], 'OPLOG') === 0) {
-            if (count($parts) < 4) {
-                Log::channel('device_logs')->error('Invalid OPLOG data format', ['line' => $line, 'parts' => $parts]);
-                return "OK";
-            }
-            $isOplog = true;
-            if (preg_match('/OPLOG\s*(\d+)/i', $parts[0], $opMatches)) {
-                $opCode = (int)$opMatches[1];
-            }
-            $biometric_id = $parts[1];
-            $datetime = $parts[2];
-            $dtr_type = $parts[3] ?? '255';
-        } else {
-            $biometric_id = $parts[0];
-            $datetime = $parts[1];
-            $dtr_type = $parts[2];
-        }
+        $biometric_id = $parts[0];
+        $datetime = $parts[1];
+        $dtr_type = $parts[2];
 
-        // Validate biometric_id is numeric
-        if (!is_numeric($biometric_id)) {
-            Log::channel('device_logs')->error('Invalid biometric_id (must be numeric)', ['biometric_id' => $biometric_id, 'line' => $line]);
-            return "OK";
-        }
-
-        // Self-Healing Auto-Restore from Database
-        // Trigger only on actual deletion/clear opcodes: Delete User (2), Delete Fingerprint (4), Clear Data (8), Delete Admin (10), Delete Face (24), Bio Clear (36), User Clear (71)
-        if ($isOplog && $opCode !== null && in_array($opCode, [2, 4, 8, 10, 24, 36, 71])) {
-            $device = $this->deviceRepository->findByIP($clientIp);
-            if ($device && !empty($device->serial_number)) {
-                // Collect candidate PINs from parts[1] (operator PIN), parts[3] (target PIN), parts[4] (param)
-                $candidatePins = [];
-                if (isset($parts[1]) && is_numeric($parts[1]) && (int)$parts[1] > 0) {
-                    $candidatePins[] = (int)$parts[1];
-                }
-                if (isset($parts[3]) && is_numeric($parts[3]) && (int)$parts[3] > 0) {
-                    $candidatePins[] = (int)$parts[3];
-                }
-                if (isset($parts[4]) && is_numeric($parts[4]) && (int)$parts[4] > 0) {
-                    $candidatePins[] = (int)$parts[4];
-                }
-                $candidatePins = array_unique($candidatePins);
-
-                $commandService = app(\App\Services\DeviceCommandService::class);
-                foreach ($candidatePins as $pinToRestore) {
-                    // Prevent duplicate queueing if device already has pending restore commands
-                    if ($commandService->hasPendingUserCommand($device->serial_number, $pinToRestore)) {
-                        continue;
-                    }
-
-                    // Prevent auto-restore if server queued a delete command for this user
-                    if ($commandService->hasPendingCommand($device->serial_number, "DATA DELETE USER\tPIN={$pinToRestore}") ||
-                        $commandService->hasPendingCommand($device->serial_number, "DATA DELETE USER PIN={$pinToRestore}")) {
-                        continue;
-                    }
-
-                    $bioUser = null;
-                    if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
-                        $bioUser = Biometrics::where('biometric_id', $pinToRestore)->first();
-                    }
-                    if ($bioUser && !empty($bioUser->biometric) && $bioUser->biometric !== 'NOT_YET_REGISTERED') {
-                        $queuedCount = (int)($this->syncService?->syncUserAndTemplatesToDevice($device->serial_number, $pinToRestore) ?? 0);
-                        RegistrationLogger::logAutoRestore($pinToRestore, $bioUser->name, $device->serial_number, $clientIp, $opCode, $queuedCount);
-                    }
-                }
-            }
-        }
-
-        // Skip system/device operation events (biometric_id 0 is not a real user).
-        // These come from OPLOG operation logs (e.g. config changes) and are not attendance.
-        if ((int)$biometric_id <= 0) {
-            Log::channel('device_logs')->info('Skipped system operation log (no real user)', ['line' => $line]);
+        // Validate biometric_id is numeric and a valid real user (PIN <= 0 is a system/operation event)
+        if (!is_numeric($biometric_id) || (int)$biometric_id <= 0) {
+            OperationLogger::logOperation(
+                opCode: 0,
+                operatorPin: $biometric_id,
+                opDateTime: $datetime,
+                params: array_slice($parts, 2),
+                rawLine: $line,
+                ipAddress: $clientIp,
+                deviceSn: $requestSn,
+                table: $table
+            );
             return "OK";
         }
 
@@ -280,8 +228,6 @@ class LogsService
         }
 
         // Validate dtr_type/status is a small numeric code (not an IP/garbage).
-        // Malformed lines must be skipped so they don't truncate the status column
-        // or cause the device to retry the same bad data indefinitely.
         if (!is_numeric($dtr_type) || (int)$dtr_type < 0 || (int)$dtr_type > 255) {
             Log::channel('device_logs')->error('Invalid dtr_type (status), skipping line', [
                 'dtr_type' => $dtr_type,
@@ -293,21 +239,8 @@ class LogsService
 
         // Standard ZKTeco / HRBLIZ / UMIS attendance status codes:
         // 0=Check-In, 1=Check-Out, 2=Break-Out, 3=Break-In, 4=OT-In, 5=OT-Out, 255=Global/Undefined
-        // OPLOG entries use parts[3] as an operation parameter, not attendance status.
-        // Only accept standard attendance codes for OPLOG to prevent invalid data.
         $validAttendanceCodes = [0, 1, 2, 3, 4, 5, 255];
-        if ($isOplog && !in_array((int)$dtr_type, $validAttendanceCodes)) {
-            Log::channel('device_logs')->warning('OPLOG with non-attendance status code, skipping line', [
-                'dtr_type' => $dtr_type,
-                'biometric_id' => $biometric_id,
-                'line' => $line,
-                'parts' => $parts,
-            ]);
-            return "OK";
-        }
-
-        // Log entries with unusual (non-standard) status codes for ATTLOG
-        if (!$isOplog && !in_array((int)$dtr_type, $validAttendanceCodes)) {
+        if (!in_array((int)$dtr_type, $validAttendanceCodes)) {
             Log::channel('device_logs')->warning('Unusual dtr_type (status) code for ATTLOG', [
                 'dtr_type' => $dtr_type,
                 'biometric_id' => $biometric_id,
@@ -350,7 +283,9 @@ class LogsService
             'dtr_date' => $dateTime->format('Y-m-d'),
             'dtr_time' => $dateTime->format('H:i:s'),
             'dtr_type' => $dtr_type,
-            'ip_address' => $clientIp
+            'ip_address' => $clientIp,
+            'serial_number' => $requestSn ?? $device?->serial_number,
+            'device_name' => $device?->device_name,
         ];
 
         //Write to DB
@@ -363,5 +298,112 @@ class LogsService
         $this->logsRepository->writeStructuredLog($logData, $line);
 
         return "OK";
+    }
+
+    /**
+     * Process and record a device operation log line.
+     * Operation logs are logged to dedicated operation log files and never stored as attendance logs.
+     */
+    protected function processOperationLogLine(string $line, string $clientIp, ?string $requestSn = null, ?string $table = null): void
+    {
+        $parts = preg_split('/\t/', $line);
+
+        $opCode = null;
+        $operatorPin = null;
+        $opDateTime = null;
+        $params = [];
+
+        $isTableOplog = !empty($table) && in_array(strtoupper(trim($table)), ['OPERLOG', 'OPLOG']);
+
+        if (preg_match('/^(?:OPLOG|OPERLOG)\s*[:\s]?\s*(\d+)/i', $parts[0], $opMatches)) {
+            // E.g. "OPLOG 4\t1001\t2026-10-06 08:30:00\t0\t0"
+            $opCode = (int)$opMatches[1];
+            $operatorPin = $parts[1] ?? '0';
+            $opDateTime = $parts[2] ?? null;
+            $params = array_slice($parts, 3);
+        } elseif (preg_match('/^(?:OPLOG|OPERLOG)$/i', trim($parts[0]))) {
+            // E.g. "OPLOG\t4\t1001\t2026-10-06 08:30:00\t0\t0"
+            $opCode = isset($parts[1]) && is_numeric($parts[1]) ? (int)$parts[1] : null;
+            $operatorPin = $parts[2] ?? '0';
+            $opDateTime = $parts[3] ?? null;
+            $params = array_slice($parts, 4);
+        } elseif ($isTableOplog) {
+            // Push table=OPERLOG without "OPLOG" prefix in line
+            if (count($parts) >= 3 && isset($parts[2]) && strtotime($parts[2])) {
+                $opCode = is_numeric($parts[0]) ? (int)$parts[0] : null;
+                $operatorPin = $parts[1] ?? '0';
+                $opDateTime = $parts[2];
+                $params = array_slice($parts, 3);
+            } elseif (count($parts) >= 2 && isset($parts[1]) && strtotime($parts[1])) {
+                $operatorPin = $parts[0] ?? '0';
+                $opDateTime = $parts[1];
+                $opCode = is_numeric($parts[2] ?? null) ? (int)$parts[2] : null;
+                $params = array_slice($parts, 3);
+            } else {
+                $opCode = is_numeric($parts[0]) ? (int)$parts[0] : null;
+                $operatorPin = $parts[1] ?? '0';
+                $opDateTime = $parts[2] ?? null;
+                $params = array_slice($parts, 3);
+            }
+        } else {
+            // Generic OPLOG prefix fallback
+            $operatorPin = $parts[1] ?? '0';
+            $opDateTime = $parts[2] ?? null;
+            $params = array_slice($parts, 3);
+        }
+
+        // Self-Healing Auto-Restore on actual deletion/clear opcodes:
+        // Delete User (2), Clear Data (8), Admin Delete User (9), Delete Admin (10),
+        // Delete Face (24), Bio Clear (36), User Clear (71)
+        if ($opCode !== null && in_array($opCode, [2, 8, 9, 10, 24, 36, 71])) {
+            $device = (!empty($requestSn) ? Devices::where('serial_number', $requestSn)->first() : null)
+                ?? $this->deviceRepository->findByIP($clientIp);
+
+            if ($device && !empty($device->serial_number)) {
+                $candidatePins = [];
+                if (is_numeric($operatorPin) && (int)$operatorPin > 0) {
+                    $candidatePins[] = (int)$operatorPin;
+                }
+                foreach ($params as $param) {
+                    if (is_numeric($param) && (int)$param > 0 && !strtotime($param)) {
+                        $candidatePins[] = (int)$param;
+                    }
+                }
+                $candidatePins = array_unique($candidatePins);
+
+                $commandService = app(\App\Services\DeviceCommandService::class);
+                foreach ($candidatePins as $pinToRestore) {
+                    if ($commandService->hasPendingUserCommand($device->serial_number, $pinToRestore)) {
+                        continue;
+                    }
+
+                    if ($commandService->hasPendingCommand($device->serial_number, "DATA DELETE USER\tPIN={$pinToRestore}") ||
+                        $commandService->hasPendingCommand($device->serial_number, "DATA DELETE USER PIN={$pinToRestore}")) {
+                        continue;
+                    }
+
+                    $bioUser = null;
+                    if (\Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+                        $bioUser = Biometrics::where('biometric_id', $pinToRestore)->first();
+                    }
+                    if ($bioUser && !empty($bioUser->biometric) && $bioUser->biometric !== 'NOT_YET_REGISTERED') {
+                        $queuedCount = (int)($this->syncService?->syncUserAndTemplatesToDevice($device->serial_number, $pinToRestore) ?? 0);
+                        RegistrationLogger::logAutoRestore($pinToRestore, $bioUser->name, $device->serial_number, $clientIp, $opCode, $queuedCount);
+                    }
+                }
+            }
+        }
+
+        // Log operation to dedicated log files (Monolog channel + daily text audit file)
+        OperationLogger::logOperation(
+            opCode: $opCode,
+            operatorPin: $operatorPin,
+            opDateTime: $opDateTime,
+            params: $params,
+            rawLine: $line,
+            ipAddress: $clientIp,
+            deviceSn: $requestSn,
+            table: $table
+        );
     }
 }

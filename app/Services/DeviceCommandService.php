@@ -1539,6 +1539,11 @@ class DeviceCommandService
         }
 
         self::$previousPendingCache = null;
+        if ($deviceSn !== null) {
+            unset(self::$deviceNameCache[$deviceSn]);
+        } else {
+            self::$deviceNameCache = [];
+        }
     }
 
     /**
