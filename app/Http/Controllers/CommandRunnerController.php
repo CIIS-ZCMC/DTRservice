@@ -237,6 +237,7 @@ class CommandRunnerController extends Controller
                 'biometrics:check-device-match',
                 'biometrics:delete-user',
                 'app:biometric-delete',
+                'devices:clear-logs',
             ])) {
                 return response()->json([
                     'success' => false,

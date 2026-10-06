@@ -1250,7 +1250,10 @@ class DeviceController extends Controller
             return response("OK\n", 200)->header('Content-Type', 'text/plain');
         }
 
-        $device = Devices::where('serial_number', $sn)->first();
+        $device = Devices::where('serial_number', $sn)
+            ->orWhere('ip_address', $sn)
+            ->orWhere('ip_address', $request->ip())
+            ->first();
         if ($device && (bool)$device->is_hrbliz && !$device->canReceiveSync()) {
             // HRBLIZ devices with receiver_by_default = 0 strictly only send attendance or DTR.
             // Never dispatch any commands to update data in the device.

@@ -965,3 +965,88 @@ test('automatic Biometrics model event listeners do not auto update HRBLIZ devic
     expect($hrblizCmdsDelete)->toBeEmpty();
 });
 
+test('100% zero-touch protection: HRBLIZ device with receiver_by_default = 0 is never touched by any subsystem or command', function () {
+    $commandService = app(DeviceCommandService::class);
+    $deviceService = app(\App\Services\DeviceService::class);
+
+    $hrblizDev = Devices::create([
+        'device_name' => 'HRBLIZ Zero Touch Terminal',
+        'serial_number' => 'SN-HRBLIZ-ZEROTOUCH',
+        'ip_address' => '192.168.10.77',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'receiver_by_default' => 0,
+        'for_attendance' => 1,
+    ]);
+
+    // 1. Direct queueCommand attempt is REFUSED and dropped
+    $singleRes = $commandService->queueCommand('SN-HRBLIZ-ZEROTOUCH', 'REBOOT');
+    expect($singleRes)->toBeEmpty();
+
+    // 2. Batch queueCommandsBatch attempt is DROPPED
+    $batchCount = $commandService->queueCommandsBatch([
+        ['device_sn' => 'SN-HRBLIZ-ZEROTOUCH', 'command' => 'DATA USER PIN=123'],
+        ['device_sn' => 'SN-HRBLIZ-ZEROTOUCH', 'command' => 'SET OPTIONS DateTime=2026-10-06 09:00:00'],
+    ]);
+    expect($batchCount)->toBe(0);
+
+    // Verify command storage has zero commands for this SN
+    expect($commandService->getAllCommands('SN-HRBLIZ-ZEROTOUCH'))->toBeEmpty();
+    expect($commandService->getPendingCommands('SN-HRBLIZ-ZEROTOUCH'))->toBeEmpty();
+
+    // 3. /iclock/getrequest poll returns OK\n with zero commands
+    $response = $this->get('/iclock/getrequest?SN=SN-HRBLIZ-ZEROTOUCH');
+    $response->assertStatus(200);
+    expect(trim($response->getContent()))->toBe('OK');
+
+    // 4. Time synchronization is rejected
+    $timeRes = $deviceService->syncDeviceTime($hrblizDev->id);
+    expect($timeRes['success'])->toBeFalse();
+    expect($timeRes['channel'])->toBe('Skipped');
+    expect($timeRes['message'])->toContain('Cannot sync time to HRBLIZ device');
+
+    // 5. Restart is rejected
+    $restartRes = $deviceService->restartDevice($hrblizDev->id);
+    expect($restartRes['success'])->toBeFalse();
+    expect($restartRes['channel'])->toBe('Skipped');
+    expect($restartRes['message'])->toContain('Cannot restart HRBLIZ device');
+
+    // 6. Power off throws exception
+    expect(fn() => $deviceService->turnOffDevice($hrblizDev->id))
+        ->toThrow(\Exception::class, 'Cannot power off HRBLIZ device');
+
+    // 7. Attendance log clearing is strictly prohibited
+    $clearRes = $deviceService->clearAttendanceLogsFromDevice($hrblizDev, ['force' => true]);
+    expect($clearRes['status'])->toBe('skipped_hrbliz');
+    expect($clearRes['message'])->toContain('prohibited');
+
+    // 8. Log resend is skipped
+    $resendRes = $deviceService->requestLogResend($hrblizDev);
+    expect($resendRes['status'])->toBe('skipped_hrbliz');
+
+    // 9. Deleting users is rejected
+    $delRes = $deviceService->deleteUsersFromDevice($hrblizDev, ['123']);
+    expect($delRes['success'])->toBeFalse();
+    expect($delRes['message'])->toContain('Cannot modify or delete users on HRBLIZ device');
+
+    // 10. CommandRunnerController blocks prohibited operations with 422 HTTP status
+    $runnerController = app(\App\Http\Controllers\CommandRunnerController::class);
+    $requestClear = \Illuminate\Http\Request::create('/api/command-runner/run', 'POST', [
+        'command' => 'devices:clear-logs',
+        'device_target' => (string)$hrblizDev->id,
+    ]);
+    $resClear = $runnerController->runCommand($requestClear);
+    expect($resClear->getStatusCode())->toBe(422);
+
+    $requestSync = \Illuminate\Http\Request::create('/api/command-runner/run', 'POST', [
+        'command' => 'biometrics:sync-device',
+        'device_target' => (string)$hrblizDev->id,
+        'pin' => 123,
+    ]);
+    $resSync = $runnerController->runCommand($requestSync);
+    expect($resSync->getStatusCode())->toBe(422);
+
+    // Final check: Queue remains completely untouched and clean
+    expect($commandService->getAllCommands('SN-HRBLIZ-ZEROTOUCH'))->toBeEmpty();
+});
+
