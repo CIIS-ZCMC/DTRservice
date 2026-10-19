@@ -100,8 +100,8 @@ class TimeRecordService
         $scheduleTimes = array_filter($scheduleTimes, fn($value) => $value !== null);
 
         $validEntries = $this->getEntriesWithinSchedule($entries->toArray(), $scheduleTimes);
-        $workingHours = $this->ComputeWorkingHours($validEntries['entries'], $scheduleTimes);
         $formattedEntries = $this->formatEntries($validEntries['entries'], $scheduleTimes, $date, $is_next_day);
+        $workingHours = $this->ComputeWorkingHours($formattedEntries, $scheduleTimes);
 
         $dtrData = [
             'biometric_id' => $biometricId,
@@ -204,8 +204,12 @@ class TimeRecordService
                 if ($entryTime->between($windowStart, $windowEnd)) {
                     // Check if this schedule time has already been matched
                     if (!in_array($idx, $matchedScheduleIndices)) {
-                        // Check if 3+ minutes from last matched entry
-                        if ($lastMatchedTime === null || abs($entryTime->diffInMinutes($lastMatchedTime)) >= $intervalMinutes) {
+                        // Check if break transition (first_out to second_in): allow 1+ min interval for break entries
+                        $isBreakTransition = (!empty($matchedScheduleIndices) && end($matchedScheduleIndices) === 1 && $idx === 2);
+                        $minInterval = $isBreakTransition ? 1 : $intervalMinutes;
+
+                        // Check if minimum minutes from last matched entry
+                        if ($lastMatchedTime === null || abs($entryTime->diffInMinutes($lastMatchedTime)) >= $minInterval) {
                             $matched = true;
                             $matchedSchedule = $schedule[$idx];
                             $status = true;
@@ -214,7 +218,7 @@ class TimeRecordService
                             $lastMatchedTime = $entryTime;
                             break;
                         } else {
-                            $reason = 'not within 3 mins from recent - match schedule but invalid';
+                            $reason = 'not within ' . $minInterval . ' mins from recent - match schedule but invalid';
                         }
                     }
                 }
@@ -248,9 +252,16 @@ class TimeRecordService
             ];
         }
 
+        $slotKeys = ['first_in', 'first_out', 'second_in', 'second_out'];
+        $slotValues = [];
+        foreach ($slotKeys as $idx => $key) {
+            $slotValues[$idx] = $entries[$key] ?? $entries[$idx] ?? null;
+        }
+
         // Build a continuous timeline for schedule based on the first entry's date
         // so cross-midnight schedules (e.g. 22:00 -> 06:00) are correctly ordered.
-        $baseDate = !empty($entries) ? Carbon::parse($entries[0])->startOfDay() : now()->startOfDay();
+        $nonEmptyEntries = array_values(array_filter($slotValues));
+        $baseDate = !empty($nonEmptyEntries) ? Carbon::parse($nonEmptyEntries[0])->startOfDay() : now()->startOfDay();
         $base = Carbon::parse($schedule[0])->startOfMinute()->setDateFrom($baseDate);
         $scheduleTimes = [$base->copy()];
         for ($i = 1; $i < count($schedule); $i++) {
@@ -267,14 +278,14 @@ class TimeRecordService
         $schedSecondIn = isset($scheduleTimes[2]) ? $scheduleTimes[2] : null;
         $schedSecondOut = isset($scheduleTimes[3]) ? $scheduleTimes[3] : null;
 
-        $requiredFirstShift = abs($schedFirstOut->diffInMinutes($schedFirstIn));
-        $requiredSecondShift = $schedSecondIn && $schedSecondOut ? abs($schedSecondOut->diffInMinutes($schedSecondIn)) : 0;
+        $requiredFirstShift = (int) abs($schedFirstOut->diffInMinutes($schedFirstIn));
+        $requiredSecondShift = $schedSecondIn && $schedSecondOut ? (int) abs($schedSecondOut->diffInMinutes($schedSecondIn)) : 0;
         $requiredTotalMinutes = $requiredFirstShift + $requiredSecondShift;
 
         // Entries are now full datetimes - parse directly, no date normalization needed
         $matchedEntries = [];
         for ($i = 0; $i < 4; $i++) {
-            $matchedEntries[$i] = isset($entries[$i]) ? Carbon::parse($entries[$i])->startOfMinute() : null;
+            $matchedEntries[$i] = $slotValues[$i] ? Carbon::parse($slotValues[$i])->startOfMinute() : null;
         }
 
         // Regular worked minutes - clamp each segment to schedule boundaries
@@ -283,7 +294,7 @@ class TimeRecordService
             $effIn = $matchedEntries[0]->greaterThan($schedFirstIn) ? $matchedEntries[0] : $schedFirstIn;
             $effOut = $matchedEntries[1]->lessThan($schedFirstOut) ? $matchedEntries[1] : $schedFirstOut;
             if ($effOut->greaterThan($effIn)) {
-                $regularFirst = abs($effOut->diffInMinutes($effIn));
+                $regularFirst = (int) abs($effOut->diffInMinutes($effIn));
             }
         }
 
@@ -292,7 +303,7 @@ class TimeRecordService
             $effIn = $matchedEntries[2]->greaterThan($schedSecondIn) ? $matchedEntries[2] : $schedSecondIn;
             $effOut = $matchedEntries[3]->lessThan($schedSecondOut) ? $matchedEntries[3] : $schedSecondOut;
             if ($effOut->greaterThan($effIn)) {
-                $regularSecond = abs($effOut->diffInMinutes($effIn));
+                $regularSecond = (int) abs($effOut->diffInMinutes($effIn));
             }
         }
 
@@ -303,10 +314,10 @@ class TimeRecordService
         // For 2-slot shifting schedules: check first_out
         $overtimeMinutes = 0;
         if ($schedSecondOut && $matchedEntries[3] && $matchedEntries[3]->greaterThan($schedSecondOut)) {
-            $overtimeMinutes = abs($matchedEntries[3]->diffInMinutes($schedSecondOut));
+            $overtimeMinutes = (int) abs($matchedEntries[3]->diffInMinutes($schedSecondOut));
         }
         if (!$schedSecondOut && $matchedEntries[1] && $matchedEntries[1]->greaterThan($schedFirstOut)) {
-            $overtimeMinutes = abs($matchedEntries[1]->diffInMinutes($schedFirstOut));
+            $overtimeMinutes = (int) abs($matchedEntries[1]->diffInMinutes($schedFirstOut));
         }
 
         // Undertime: required regular minutes not fulfilled within schedule
@@ -325,7 +336,7 @@ class TimeRecordService
         ];
     }
 
-    public function formatEntries(array $entries, array $schedule, string $date = null, bool $isNextDay = false)
+    public function formatEntries(array $entries, array $schedule, ?string $date = null, bool $isNextDay = false)
     {
         $slots = [
             'first_in' => null,
