@@ -633,9 +633,9 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                     $diffOut = abs($logTs - strtotime($date . ' ' . $firstOutTime));
                     $diffIn = abs($logTs - strtotime($date . ' ' . $secondInTime));
 
-                    if ($diffOut <= $diffIn && $diffOut <= 10800) {
+                    if ($diffOut <= $diffIn && $diffOut <= 12600) {
                         $firstOut = $breakLogs[0]['date_time'];
-                    } elseif ($diffIn <= 10800) {
+                    } elseif ($diffIn <= 12600) {
                         $secondIn = $breakLogs[0]['date_time'];
                     }
                 } elseif (count($breakLogs) >= 2) {
@@ -706,10 +706,10 @@ class DtrReportRepository implements DtrReportRepositoryInterface
     }
 
     /**
-     * Find the device log closest to a target datetime (within 3 hours)
+     * Find the device log closest to a target datetime (within 3 hours 30 mins)
      * Optional time range constraint (e.g., '00:00:00' to '13:00:00')
      */
-    private function findClosestLog(array $deviceLogs, string $targetDateTime, ?string $minTime = null, ?string $maxTime = null, int $maxThreshold = 10800): ?string
+    private function findClosestLog(array $deviceLogs, string $targetDateTime, ?string $minTime = null, ?string $maxTime = null, int $maxThreshold = 12600): ?string
     {
         $targetTimestamp = strtotime($targetDateTime);
         $closestLog = null;
@@ -1335,7 +1335,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
     /**
      * Filter device logs into time slots using interval-based logic.
-     * Pattern: first_in → 3hr gap → first_out → 2min gap → second_in → 3hr gap → second_out
+     * Pattern: first_in → 3.5hr gap → first_out → 2min gap → second_in → 3hr gap → second_out
      */
     private function filterByIntervals(array $deviceLogs): array
     {
@@ -1359,14 +1359,14 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         $slots['first_in'] = $this->formatTime(substr($deviceLogs[0]['date_time'], 11, 8));
         $usedIndices[] = 0;
 
-        // Entry 2: first_out = first log >= 3 hours after first_in
+        // Entry 2: first_out = first log >= 3 hours 30 mins after first_in
         $firstInTime = strtotime($deviceLogs[0]['date_time']);
         for ($i = 1; $i < count($deviceLogs); $i++) {
             if (in_array($i, $usedIndices)) {
                 continue;
             }
             $logTime = strtotime($deviceLogs[$i]['date_time']);
-            if (($logTime - $firstInTime) >= 10800) {
+            if (($logTime - $firstInTime) >= 12600) {
                 $slots['first_out'] = $this->formatTime(substr($deviceLogs[$i]['date_time'], 11, 8));
                 $usedIndices[] = $i;
                 $firstOutTime = $logTime;

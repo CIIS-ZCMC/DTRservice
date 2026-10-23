@@ -172,7 +172,7 @@ class TimeRecordService
         $results = [];
         $matchedScheduleIndices = [];
         $lastMatchedTime = null;
-        $windowHours = 3;
+        $windowMinutes = 210; // 3 hours and 30 mins
         $intervalMinutes = 3;
 
         // Build a continuous timeline for schedule times based on the first entry's date
@@ -197,9 +197,9 @@ class TimeRecordService
 
             // Find matching schedule time
             foreach ($scheduleTimes as $idx => $scheduleCarbon) {
-                // Check if entry is within 3-hour window of schedule
-                $windowStart = $scheduleCarbon->copy()->subHours($windowHours);
-                $windowEnd = $scheduleCarbon->copy()->addHours($windowHours);
+                // Check if entry is within 3.5-hour (3h 30m) window of schedule
+                $windowStart = $scheduleCarbon->copy()->subMinutes($windowMinutes);
+                $windowEnd = $scheduleCarbon->copy()->addMinutes($windowMinutes);
 
                 if ($entryTime->between($windowStart, $windowEnd)) {
                     // Check if this schedule time has already been matched
@@ -213,7 +213,7 @@ class TimeRecordService
                             $matched = true;
                             $matchedSchedule = $schedule[$idx];
                             $status = true;
-                            $reason = 'within 3-hour window - match schedule';
+                            $reason = 'within 3.5-hour window - match schedule';
                             $matchedScheduleIndices[] = $idx;
                             $lastMatchedTime = $entryTime;
                             break;
@@ -354,7 +354,7 @@ class TimeRecordService
         }
 
         $slotKeys = ['first_in', 'first_out', 'second_in', 'second_out'];
-        $windowMinutes = 180; // 3 hours
+        $windowMinutes = 210; // 3 hours and 30 mins
 
         // Build continuous timeline for schedule based on first entry's date
         $baseDate = !empty($entries) ? Carbon::parse($entries[0])->startOfDay() : Carbon::parse($date ?? 'now')->startOfDay();
@@ -438,7 +438,7 @@ class TimeRecordService
             'second_in' => null,
             'second_out' => null,
         ];
-        $windowMinutes = 180; // 3 hours
+        $windowMinutes = 210; // 3 hours and 30 mins
 
         // Build continuous timeline for schedule based on first entry's date
         $baseDate = !empty($entries) ? Carbon::parse($entries[0])->startOfDay() : Carbon::parse($date)->startOfDay();

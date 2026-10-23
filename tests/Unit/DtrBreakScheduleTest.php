@@ -120,3 +120,54 @@ test('DtrReportRepository handles single break punch correctly', function () {
     expect($result2['second_in'])->toBeNull();
     expect($result2['second_out'])->toBe('04:00 PM');
 });
+
+test('TimeRecordService matches entries up to 3 hours and 30 mins (210 mins) window from schedule', function () {
+    $service = app(TimeRecordService::class);
+    $schedule = ['08:00:00', '12:00:00', '13:00:00', '17:00:00'];
+
+    // 04:40:00 is 3 hours 20 minutes (200 minutes) before 08:00:00 (within 210m window, beyond old 180m window)
+    // 20:20:00 is 3 hours 20 minutes (200 minutes) after 17:00:00 (within 210m window, beyond old 180m window)
+    $entries = [
+        '2026-06-29 04:40:00',
+        '2026-06-29 12:00:00',
+        '2026-06-29 13:00:00',
+        '2026-06-29 20:20:00',
+    ];
+
+    $valid = $service->getEntriesWithinSchedule($entries, $schedule);
+    expect($valid['entries'])->toHaveCount(4);
+    expect($valid['entries'])->toEqual($entries);
+
+    $formatted = $service->formatEntries($valid['entries'], $schedule, '2026-06-29');
+    expect($formatted['first_in'])->toBe('2026-06-29 04:40:00');
+    expect($formatted['first_out'])->toBe('2026-06-29 12:00:00');
+    expect($formatted['second_in'])->toBe('2026-06-29 13:00:00');
+    expect($formatted['second_out'])->toBe('2026-06-29 20:20:00');
+});
+
+test('DtrReportRepository matches logs within 3 hours 30 mins (12600s) threshold', function () {
+    $repository = app(DtrReportRepository::class);
+    $reflection = new ReflectionClass(DtrReportRepository::class);
+    $method = $reflection->getMethod('matchLogsToScheduleSlots');
+    $method->setAccessible(true);
+
+    $scheduleData = [
+        'first_entry' => '08:00:00',
+        'second_entry' => '12:00:00',
+        'third_entry' => '13:00:00',
+        'last_entry' => '17:00:00',
+        'is_cross_midnight' => false,
+    ];
+
+    // Single break punch at 16:20 (3 hours 20 mins after third_entry 13:00, within 12600s, outside old 10800s)
+    $deviceLogs = [
+        ['date_time' => '2026-06-29 08:00:00'],
+        ['date_time' => '2026-06-29 16:20:00'],
+        ['date_time' => '2026-06-29 17:00:00'],
+    ];
+
+    $result = $method->invoke($repository, $deviceLogs, $scheduleData, '2026-06-29');
+    expect($result['first_in'])->toBe('08:00 AM');
+    expect($result['second_in'])->toBe('04:20 PM');
+    expect($result['second_out'])->toBe('05:00 PM');
+});
