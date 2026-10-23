@@ -19,7 +19,8 @@ class DeviceLogController extends Controller
      * Display a listing of device logs.
      *
      * Optional Query Parameters:
-     * - biometric_id: Filter by biometric PIN/ID
+     * - hrbliz_biometric_id: Filter by HRBLIZ biometric ID (automatically resolved to canonical ID)
+     * - biometric_id: Filter by standard biometric PIN/ID
      * - date: Exact DTR date (YYYY-MM-DD)
      * - date_from: Start date (YYYY-MM-DD)
      * - date_to: End date (YYYY-MM-DD)
@@ -38,8 +39,15 @@ class DeviceLogController extends Controller
 
         $query = $useHrbliz ? DeviceLogsHrbliz::query() : DeviceLogs::query();
 
-        if ($request->filled('biometric_id')) {
-            $query->where('biometric_id', $request->query('biometric_id'));
+        if ($request->filled('hrbliz_biometric_id')) {
+            $hrbPin = (int)$request->query('hrbliz_biometric_id');
+            $canonicalBio = Schema::hasTable('biometrics')
+                ? Biometrics::where('hrbliz_biometric_id', $hrbPin)->first()
+                : null;
+            $targetBioId = $canonicalBio?->biometric_id ?? $hrbPin;
+            $query->where('biometric_id', (string)$targetBioId);
+        } elseif ($request->filled('biometric_id')) {
+            $query->where('biometric_id', (string)$request->query('biometric_id'));
         }
 
         if ($request->filled('date')) {
@@ -119,7 +127,8 @@ class DeviceLogController extends Controller
      * Supports both:
      * 1) Single log JSON object:
      *    {
-     *      "biometric_id": "1001",
+     *      "hrbliz_biometric_id": "8765",      // HRBLIZ employee biometric ID (auto-mapped to canonical biometric_id)
+     *      // OR "biometric_id": "1001",       // standard biometric_id by default
      *      "date_time": "2026-10-23 08:00:00",
      *      "status": 0,
      *      "name": "Juan Dela Cruz",           // optional (auto-resolved from Biometrics if omitted)
@@ -190,6 +199,15 @@ class DeviceLogController extends Controller
                 continue;
             }
 
+            // Support hrbliz_biometric_id as primary input or fallback to biometric_id
+            $hrblizPin = $item['hrbliz_biometric_id'] ?? null;
+            $bioPin = $item['biometric_id'] ?? null;
+
+            if ($hrblizPin === null && $bioPin === null) {
+                $validationErrors["logs.{$index}.biometric_id"] = ['Either hrbliz_biometric_id or biometric_id is required.'];
+                continue;
+            }
+
             // Normalization of date/time fields if separated (e.g. dtr_date + dtr_time)
             $dateTimeStr = $item['date_time'] ?? null;
             if (!$dateTimeStr && !empty($item['dtr_date']) && !empty($item['dtr_time'])) {
@@ -216,7 +234,6 @@ class DeviceLogController extends Controller
             $item['dtr_date'] = $formattedDtrDate;
 
             $validator = Validator::make($item, [
-                'biometric_id' => 'required',
                 'name'         => 'nullable|string|max:191',
                 'dtr_date'     => 'required|date_format:Y-m-d',
                 'date_time'    => 'required|date_format:Y-m-d H:i:s',
@@ -231,15 +248,16 @@ class DeviceLogController extends Controller
                 $validationErrors["logs.{$index}"] = $validator->errors()->all();
             } else {
                 $validatedRecords[] = [
-                    'biometric_id' => (string)$item['biometric_id'],
-                    'name'         => !empty($item['name']) ? trim($item['name']) : null,
-                    'dtr_date'     => $formattedDtrDate,
-                    'date_time'    => $formattedDateTime,
-                    'status'       => isset($item['status']) ? (int)$item['status'] : 0,
-                    'is_Shifting'  => isset($item['is_Shifting']) ? (int)$item['is_Shifting'] : 0,
-                    'schedule'     => $item['schedule'] ?? null,
-                    'active'       => isset($item['active']) ? (int)$item['active'] : 1,
-                    'device_name'  => !empty($item['device_name']) ? trim($item['device_name']) : 'API',
+                    'raw_hrbliz_id' => $hrblizPin !== null ? (string)$hrblizPin : null,
+                    'raw_bio_id'    => $bioPin !== null ? (string)$bioPin : null,
+                    'name'          => !empty($item['name']) ? trim($item['name']) : null,
+                    'dtr_date'      => $formattedDtrDate,
+                    'date_time'     => $formattedDateTime,
+                    'status'        => isset($item['status']) ? (int)$item['status'] : 0,
+                    'is_Shifting'   => isset($item['is_Shifting']) ? (int)$item['is_Shifting'] : 0,
+                    'schedule'      => $item['schedule'] ?? null,
+                    'active'        => isset($item['active']) ? (int)$item['active'] : 1,
+                    'device_name'   => !empty($item['device_name']) ? trim($item['device_name']) : 'API',
                 ];
             }
         }
@@ -252,19 +270,38 @@ class DeviceLogController extends Controller
             ], 422);
         }
 
-        // 3. Cache employee names from Biometrics to avoid N+1 queries during batch inserts
-        $missingNamesPinList = collect($validatedRecords)
-            ->filter(fn($rec) => empty($rec['name']))
-            ->pluck('biometric_id')
+        // 3. Resolve IDs and Employee Names from Biometrics
+        // Collect all distinct IDs for batch lookup
+        $hrblizIdsToLookup = collect($validatedRecords)
+            ->filter(fn($rec) => !empty($rec['raw_hrbliz_id']))
+            ->pluck('raw_hrbliz_id')
             ->unique()
             ->values()
             ->all();
 
-        $nameLookup = [];
-        if (!empty($missingNamesPinList) && Schema::hasTable('biometrics')) {
-            $nameLookup = Biometrics::whereIn('biometric_id', $missingNamesPinList)
-                ->pluck('name', 'biometric_id')
-                ->toArray();
+        $stdIdsToLookup = collect($validatedRecords)
+            ->filter(fn($rec) => empty($rec['raw_hrbliz_id']) && !empty($rec['raw_bio_id']))
+            ->pluck('raw_bio_id')
+            ->unique()
+            ->values()
+            ->all();
+
+        $biometricsByHrbliz = [];
+        $biometricsByStd = [];
+
+        if (Schema::hasTable('biometrics')) {
+            if (!empty($hrblizIdsToLookup)) {
+                $biometricsByHrbliz = Biometrics::whereIn('hrbliz_biometric_id', $hrblizIdsToLookup)
+                    ->get()
+                    ->keyBy(fn($b) => (string)$b->hrbliz_biometric_id)
+                    ->all();
+            }
+            if (!empty($stdIdsToLookup)) {
+                $biometricsByStd = Biometrics::whereIn('biometric_id', $stdIdsToLookup)
+                    ->get()
+                    ->keyBy(fn($b) => (string)$b->biometric_id)
+                    ->all();
+            }
         }
 
         // 4. Perform insertion inside a database transaction
@@ -274,22 +311,68 @@ class DeviceLogController extends Controller
         try {
             DB::transaction(function () use (
                 &$validatedRecords,
-                &$nameLookup,
+                &$biometricsByHrbliz,
+                &$biometricsByStd,
                 $preventDuplicates,
                 $targetModelClass,
                 &$insertedLogs,
                 &$skippedDuplicates
             ) {
-                foreach ($validatedRecords as $record) {
-                    // Resolve name if missing
-                    if (empty($record['name'])) {
-                        $record['name'] = $nameLookup[$record['biometric_id']] ?? 'Unknown';
+                foreach ($validatedRecords as $rec) {
+                    $canonicalBiometricId = null;
+                    $employeeName = $rec['name'];
+                    $hrblizIdEcho = $rec['raw_hrbliz_id'];
+
+                    if (!empty($rec['raw_hrbliz_id'])) {
+                        // Look up via hrbliz_biometric_id
+                        $matched = $biometricsByHrbliz[$rec['raw_hrbliz_id']] ?? null;
+                        if (!$matched && Schema::hasTable('biometrics')) {
+                            // Fallback if hrbliz_biometric_id was stored under biometric_id
+                            $matched = Biometrics::where('biometric_id', $rec['raw_hrbliz_id'])->first();
+                        }
+
+                        if ($matched) {
+                            $canonicalBiometricId = (string)$matched->biometric_id;
+                            if (empty($employeeName)) {
+                                $employeeName = $matched->name;
+                            }
+                        } else {
+                            $canonicalBiometricId = $rec['raw_hrbliz_id'];
+                        }
+                    } else {
+                        // Standard biometric_id
+                        $matched = $biometricsByStd[$rec['raw_bio_id']] ?? null;
+                        if ($matched) {
+                            $canonicalBiometricId = (string)$matched->biometric_id;
+                            $hrblizIdEcho = $matched->hrbliz_biometric_id ? (string)$matched->hrbliz_biometric_id : null;
+                            if (empty($employeeName)) {
+                                $employeeName = $matched->name;
+                            }
+                        } else {
+                            $canonicalBiometricId = $rec['raw_bio_id'];
+                        }
                     }
+
+                    if (empty($employeeName)) {
+                        $employeeName = 'Unknown';
+                    }
+
+                    $insertData = [
+                        'biometric_id' => $canonicalBiometricId,
+                        'name'         => $employeeName,
+                        'dtr_date'     => $rec['dtr_date'],
+                        'date_time'    => $rec['date_time'],
+                        'status'       => $rec['status'],
+                        'is_Shifting'  => $rec['is_Shifting'],
+                        'schedule'     => $rec['schedule'],
+                        'active'       => $rec['active'],
+                        'device_name'  => $rec['device_name'],
+                    ];
 
                     // Duplicate check
                     if ($preventDuplicates) {
-                        $exists = $targetModelClass::where('biometric_id', $record['biometric_id'])
-                            ->where('date_time', $record['date_time'])
+                        $exists = $targetModelClass::where('biometric_id', $canonicalBiometricId)
+                            ->where('date_time', $rec['date_time'])
                             ->exists();
 
                         if ($exists) {
@@ -298,7 +381,13 @@ class DeviceLogController extends Controller
                         }
                     }
 
-                    $created = $targetModelClass::create($record);
+                    $created = $targetModelClass::create($insertData);
+                    
+                    // Attach hrbliz_biometric_id attribute for client response convenience
+                    if ($hrblizIdEcho !== null) {
+                        $created->setAttribute('hrbliz_biometric_id', $hrblizIdEcho);
+                    }
+
                     $insertedLogs[] = $created;
                 }
             });
@@ -316,12 +405,17 @@ class DeviceLogController extends Controller
         // 5. Response formatting
         if (!$isBatch) {
             if ($skippedDuplicates > 0 && empty($insertedLogs)) {
+                $firstRec = $validatedRecords[0];
+                $lookupId = $firstRec['raw_hrbliz_id'] ?? $firstRec['raw_bio_id'];
+                
                 return response()->json([
                     'success' => true,
                     'is_duplicate' => true,
                     'message' => 'Log already exists in database (duplicate skipped).',
-                    'data' => $targetModelClass::where('biometric_id', $validatedRecords[0]['biometric_id'])
-                        ->where('date_time', $validatedRecords[0]['date_time'])
+                    'data' => $targetModelClass::where('date_time', $firstRec['date_time'])
+                        ->where(function ($q) use ($lookupId) {
+                            $q->where('biometric_id', $lookupId);
+                        })
                         ->first(),
                 ], 200);
             }

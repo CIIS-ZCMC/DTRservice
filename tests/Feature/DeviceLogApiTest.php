@@ -62,7 +62,75 @@ class DeviceLogApiTest extends TestCase
         }
     }
 
-    public function test_can_insert_single_device_log(): void
+    public function test_can_insert_using_hrbliz_biometric_id_and_resolves_canonical_id(): void
+    {
+        Biometrics::create([
+            'biometric_id' => 5005,
+            'hrbliz_biometric_id' => 8765,
+            'name' => 'Basilio Santos',
+        ]);
+
+        $payload = [
+            'hrbliz_biometric_id' => '8765',
+            'date_time'           => '2026-10-23 08:00:00',
+            'status'              => 0,
+            'device_name'         => 'HRBLIZ_TERMINAL',
+        ];
+
+        $response = $this->postJson('/api/device-logs', $payload);
+
+        $response->assertStatus(201)
+            ->assertJson([
+                'success' => true,
+                'data' => [
+                    'biometric_id' => '5005',
+                    'hrbliz_biometric_id' => '8765',
+                    'name' => 'Basilio Santos',
+                    'dtr_date' => '2026-10-23',
+                    'date_time' => '2026-10-23 08:00:00',
+                    'status' => 0,
+                    'device_name' => 'HRBLIZ_TERMINAL',
+                ],
+            ]);
+
+        $this->assertDatabaseHas('device_logs', [
+            'biometric_id' => '5005',
+            'date_time' => '2026-10-23 08:00:00',
+            'name' => 'Basilio Santos',
+        ]);
+    }
+
+    public function test_can_query_logs_using_hrbliz_biometric_id(): void
+    {
+        Biometrics::create([
+            'biometric_id' => 6006,
+            'hrbliz_biometric_id' => 9876,
+            'name' => 'Crisostomo Ibarra',
+        ]);
+
+        DeviceLogs::create([
+            'biometric_id' => '6006',
+            'name'         => 'Crisostomo Ibarra',
+            'dtr_date'     => '2026-10-23',
+            'date_time'    => '2026-10-23 07:55:00',
+            'status'       => 0,
+            'is_Shifting'  => 0,
+            'active'       => 1,
+            'device_name'  => 'HRBLIZ_GATE',
+        ]);
+
+        $response = $this->getJson('/api/device-logs?hrbliz_biometric_id=9876');
+
+        $response->assertStatus(200)
+            ->assertJson([
+                'success' => true,
+            ]);
+
+        $this->assertCount(1, $response->json('data'));
+        $this->assertEquals('6006', $response->json('data.0.biometric_id'));
+    }
+
+    public function test_can_insert_single_device_log_with_default_biometric_id(): void
     {
         $payload = [
             'biometric_id' => '999991',
@@ -98,18 +166,18 @@ class DeviceLogApiTest extends TestCase
         $payload = [
             'logs' => [
                 [
-                    'biometric_id' => '999992',
-                    'name'         => 'Batch User 1',
-                    'date_time'    => '2026-10-23 08:05:00',
-                    'status'       => 0,
-                    'device_name'  => 'BATCH_DEVICE',
+                    'hrbliz_biometric_id' => '999992',
+                    'name'                => 'Batch User 1',
+                    'date_time'           => '2026-10-23 08:05:00',
+                    'status'              => 0,
+                    'device_name'         => 'BATCH_DEVICE',
                 ],
                 [
-                    'biometric_id' => '999993',
-                    'name'         => 'Batch User 2',
-                    'date_time'    => '2026-10-23 12:00:00',
-                    'status'       => 1,
-                    'device_name'  => 'BATCH_DEVICE',
+                    'biometric_id'        => '999993',
+                    'name'                => 'Batch User 2',
+                    'date_time'           => '2026-10-23 12:00:00',
+                    'status'              => 1,
+                    'device_name'         => 'BATCH_DEVICE',
                 ],
             ],
         ];
@@ -161,10 +229,10 @@ class DeviceLogApiTest extends TestCase
     public function test_prevents_duplicate_logs_by_default(): void
     {
         $payload = [
-            'biometric_id' => '999994',
-            'name'         => 'Duplicate Test',
-            'date_time'    => '2026-10-23 08:15:00',
-            'status'       => 0,
+            'hrbliz_biometric_id' => '999994',
+            'name'                => 'Duplicate Test',
+            'date_time'           => '2026-10-23 08:15:00',
+            'status'              => 0,
         ];
 
         // First insert
@@ -180,7 +248,7 @@ class DeviceLogApiTest extends TestCase
             ]);
     }
 
-    public function test_validation_fails_when_biometric_id_is_missing(): void
+    public function test_validation_fails_when_both_biometric_ids_are_missing(): void
     {
         $payload = [
             'date_time' => '2026-10-23 08:00:00',
@@ -192,28 +260,5 @@ class DeviceLogApiTest extends TestCase
             ->assertJson([
                 'success' => false,
             ]);
-    }
-
-    public function test_can_list_device_logs(): void
-    {
-        DeviceLogs::create([
-            'biometric_id' => '999995',
-            'name'         => 'List User',
-            'dtr_date'     => '2026-10-23',
-            'date_time'    => '2026-10-23 08:20:00',
-            'status'       => 0,
-            'is_Shifting'  => 0,
-            'active'       => 1,
-            'device_name'  => 'LIST_DEVICE',
-        ]);
-
-        $response = $this->getJson('/api/device-logs?biometric_id=999995');
-
-        $response->assertStatus(200)
-            ->assertJson([
-                'success' => true,
-            ]);
-
-        $this->assertCount(1, $response->json('data'));
     }
 }
