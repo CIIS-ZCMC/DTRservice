@@ -248,6 +248,9 @@
                         }
 
                         $hasTimeEntries = $record['first_in'] || $record['second_in'] || $record['first_out'] || $record['second_out'];
+                        $statusLabel = $record['first_in'] ?? '';
+                        $hasActualTime = $record['first_out'] || $record['second_in'] || $record['second_out'];
+                        $isStatusRow = !$hasApplication && !$hasActualTime && in_array(strtoupper($statusLabel), ['ABSENT', 'DAY OFF']);
                     @endphp
                     <tr>
                         <td style="width: 35px !important;font-size:10px;font-weight:bold">{{ $record['day'] }}</td>
@@ -268,6 +271,8 @@
                                 }
                             @endphp
                             <td colspan="6" style="text-align: center;"><span style="padding-right:60px !important">{{ $application }}</span></td>
+                        @elseif ($isStatusRow)
+                            <td colspan="6" style="text-align: center; font-size: 10px; font-weight: bold;">{{ $statusLabel }}</td>
                         @else
                             <td>{{ $record['first_in'] ?? '' }}</td>
                             <td>{{ $record['first_out'] ?? '' }}</td>

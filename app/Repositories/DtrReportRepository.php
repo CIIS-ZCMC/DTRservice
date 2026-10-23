@@ -1285,18 +1285,25 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 }
             }
         } else {
-            // Single pair schedule - only calculate early out, skip missing punch undertime
+            // Single pair schedule (e.g., 8AM-4PM, 2PM-10PM, 10PM-6AM)
             $schedLastTime = $schedLast ?? $schedSecond;
+            $actualIn = $actualFirstIn ?? $actualSecondIn;
             $actualOut = $actualSecondOut ?? $actualFirstOut;
-            if ($actualOut !== null && $schedLastTime !== null && $actualOut < $schedLastTime) {
-                // Handle cross-midnight: if schedule end is next day (schedLast < schedFirst)
-                if ($schedLastTime < $schedFirst) {
-                    $schedLastTime += 24 * 60;
+
+            // Late arrival
+            if ($actualIn !== null && $schedFirst !== null && $actualIn > $schedFirst) {
+                $totalMinutes += $actualIn - $schedFirst;
+            }
+
+            // Early departure (undertime)
+            if ($actualOut !== null && $schedLastTime !== null) {
+                $isCrossMidnight = ($schedLastTime < $schedFirst);
+                $effSchedLast = $isCrossMidnight ? ($schedLastTime + 24 * 60) : $schedLastTime;
+                $effActualOut = ($isCrossMidnight && $actualOut < $schedFirst) ? ($actualOut + 24 * 60) : $actualOut;
+
+                if ($effActualOut < $effSchedLast) {
+                    $totalMinutes += $effSchedLast - $effActualOut;
                 }
-                if ($actualOut < $schedFirst) {
-                    $actualOut += 24 * 60;
-                }
-                $totalMinutes += $schedLastTime - $actualOut;
             }
         }
 

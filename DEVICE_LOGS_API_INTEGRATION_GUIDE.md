@@ -389,13 +389,29 @@ public class DtrIntegration
 
 ---
 
-## 5. Integration Summary & Verification
+## 5. Error Responses & Troubleshooting
 
-1. **Dual ID Compatibility**: 
-   - When submitting logs, send `hrbliz_biometric_id`.
-   - The DTRService maps `hrbliz_biometric_id` $\rightarrow$ canonical `biometric_id` automatically using the `biometrics` table.
-   - If an employee has no separate `hrbliz_biometric_id` registered, the API seamlessly falls back to matching against their standard `biometric_id`.
-2. **Duplicate Protection**:
-   - `prevent_duplicates: true` is enabled by default. It prevents accidental double-swipes or duplicate network packets within the exact second.
-3. **Automated Employee Attribution**:
-   - Employee names do not need to be provided by the client; the API populates the employee's official name upon insert.
+| HTTP Status / Error | Meaning | Typical Cause & Remedy |
+|:---:|---|---|
+| **`Connection Timeout (5000ms)`** | TCP Handshake Failed | The server process is either not running on port 8000, not bound to `--host=0.0.0.0`, or blocked by Windows Firewall on the host machine. (See Troubleshooting below). |
+| `422 Unprocessable Entity` | Validation Error | Missing `hrbliz_biometric_id` / `biometric_id` or invalid `date_time` format (`YYYY-MM-DD HH:MM:SS`). |
+| `404 Not Found` | Resource Not Found | Log ID does not exist when accessing `/api/device-logs/{id}`. |
+| `500 Internal Server Error` | Database or Server Error | Check Laravel log (`storage/logs/laravel.log`) or database connectivity. |
+
+### Resolving "Connection Timeout 5000ms"
+If your client says `Connection timeout: 5000ms` or `ETIMEDOUT`:
+1. **Ensure the Server is Running on All Interfaces**:
+   On the host machine, make sure the service is started with `--host=0.0.0.0`:
+   ```bash
+   php artisan serve --host=0.0.0.0 --port=8000
+   ```
+2. **Verify Correct Host IP**:
+   If connecting across the local network (LAN), use the host's LAN IP instead of `localhost`:
+   ```
+   http://192.168.36.49:8000/api/device-logs
+   ```
+3. **Open Inbound Port 8000 on Windows Firewall**:
+   Run this in an elevated PowerShell/Command Prompt on the server:
+   ```powershell
+   netsh advfirewall firewall add rule name="Laravel DTRService Port 8000" dir=in action=allow protocol=TCP localport=8000
+   ```
