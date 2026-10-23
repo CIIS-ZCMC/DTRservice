@@ -3,6 +3,7 @@
 use App\Http\Controllers\BiometricsController;
 use App\Http\Controllers\CommandRunnerController;
 use App\Http\Controllers\DeviceController;
+use App\Http\Controllers\DeviceLogController;
 use App\Http\Controllers\DtrReportController;
 use App\Http\Controllers\TimeRecordController;
 use Illuminate\Http\Request;
@@ -26,7 +27,12 @@ Route::match(['get', 'post'], '/devices/request-resend', [DeviceController::clas
 Route::match(['get', 'post'], '/devices/{id}/request-resend', [DeviceController::class, 'requestDeviceLogResend']);
 Route::match(['get', 'post'], '/devices/clear-logs', [DeviceController::class, 'clearAttendanceLogs']);
 Route::match(['get', 'post'], '/devices/{id}/clear-logs', [DeviceController::class, 'clearDeviceAttendanceLogs']);
+
+// Device logs routes
+Route::get('/device-logs', [DeviceLogController::class, 'index']);
+Route::post('/device-logs', [DeviceLogController::class, 'store']);
 Route::match(['get', 'post'], '/device-logs/prune', [DeviceController::class, 'pruneDatabaseLogs']);
+Route::get('/device-logs/{id}', [DeviceLogController::class, 'show'])->whereNumber('id');
 Route::get('/devices/{id}/status', [DeviceController::class, 'status']);
 Route::match(['get', 'post'], '/devices/{id}/test-connection', [DeviceController::class, 'testConnection']);
 Route::match(['put', 'post', 'patch'], '/devices/{id}/name', [DeviceController::class, 'updateName']);
