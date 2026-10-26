@@ -625,47 +625,88 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                 $breakLogs = array_values($availableLogs);
                 usort($breakLogs, fn($a, $b) => strcmp($a['date_time'], $b['date_time']));
 
+                $targetOutTs = strtotime($date . ' ' . $firstOutTime);
+                $targetInTs = strtotime($date . ' ' . $secondInTime);
+
+                // Filter break candidates: must be within 12600s (3.5 hours) threshold of first_out or second_in
+                $candidates = array_values(array_filter($breakLogs, function ($log) use ($targetOutTs, $targetInTs) {
+                    $logTs = strtotime($log['date_time']);
+                    $diffOut = abs($logTs - $targetOutTs);
+                    $diffIn = abs($logTs - $targetInTs);
+                    return $diffOut <= 12600 || $diffIn <= 12600;
+                }));
+
                 $firstOut = null;
                 $secondIn = null;
 
-                if (count($breakLogs) === 1) {
-                    $logTs = strtotime($breakLogs[0]['date_time']);
-                    $diffOut = abs($logTs - strtotime($date . ' ' . $firstOutTime));
-                    $diffIn = abs($logTs - strtotime($date . ' ' . $secondInTime));
+                if (count($candidates) === 1) {
+                    $logTs = strtotime($candidates[0]['date_time']);
+                    $diffOut = abs($logTs - $targetOutTs);
+                    $diffIn = abs($logTs - $targetInTs);
 
                     if ($diffOut <= $diffIn && $diffOut <= 12600) {
-                        $firstOut = $breakLogs[0]['date_time'];
+                        $firstOut = $candidates[0]['date_time'];
                     } elseif ($diffIn <= 12600) {
-                        $secondIn = $breakLogs[0]['date_time'];
+                        $secondIn = $candidates[0]['date_time'];
                     }
-                } elseif (count($breakLogs) >= 2) {
-                    if (count($breakLogs) === 2) {
-                        $firstOut = $breakLogs[0]['date_time'];
-                        $secondIn = $breakLogs[1]['date_time'];
+                } elseif (count($candidates) >= 2) {
+                    if (count($candidates) === 2) {
+                        $log0Ts = strtotime($candidates[0]['date_time']);
+                        $log1Ts = strtotime($candidates[1]['date_time']);
+
+                        // If the two logs are within 60 seconds of each other, it's a bounce/duplicate tap, not a separate In/Out
+                        if (($log1Ts - $log0Ts) < 60) {
+                            $diffOut = abs($log0Ts - $targetOutTs);
+                            $diffIn = abs($log0Ts - $targetInTs);
+                            if ($diffOut <= $diffIn && $diffOut <= 12600) {
+                                $firstOut = $candidates[0]['date_time'];
+                            } elseif ($diffIn <= 12600) {
+                                $secondIn = $candidates[0]['date_time'];
+                            }
+                        } else {
+                            $diffOut = abs($log0Ts - $targetOutTs);
+                            $diffIn = abs($log1Ts - $targetInTs);
+
+                            if ($diffOut <= 12600) {
+                                $firstOut = $candidates[0]['date_time'];
+                            }
+                            if ($diffIn <= 12600) {
+                                $secondIn = $candidates[1]['date_time'];
+                            }
+                        }
                     } else {
-                        $bestOutIdx = 0;
+                        $bestOutIdx = -1;
                         $minDiffOut = PHP_INT_MAX;
-                        $targetOutTs = strtotime($date . ' ' . $firstOutTime);
-                        for ($k = 0; $k < count($breakLogs) - 1; $k++) {
-                            $diff = abs(strtotime($breakLogs[$k]['date_time']) - $targetOutTs);
-                            if ($diff < $minDiffOut) {
+                        for ($k = 0; $k < count($candidates) - 1; $k++) {
+                            $diff = abs(strtotime($candidates[$k]['date_time']) - $targetOutTs);
+                            if ($diff <= 12600 && $diff < $minDiffOut) {
                                 $minDiffOut = $diff;
                                 $bestOutIdx = $k;
                             }
                         }
-                        $firstOut = $breakLogs[$bestOutIdx]['date_time'];
+                        if ($bestOutIdx !== -1) {
+                            $firstOut = $candidates[$bestOutIdx]['date_time'];
+                        }
 
-                        $bestInIdx = $bestOutIdx + 1;
+                        $startInIdx = ($bestOutIdx !== -1) ? $bestOutIdx + 1 : 0;
+                        $bestInIdx = -1;
                         $minDiffIn = PHP_INT_MAX;
-                        $targetInTs = strtotime($date . ' ' . $secondInTime);
-                        for ($k = $bestOutIdx + 1; $k < count($breakLogs); $k++) {
-                            $diff = abs(strtotime($breakLogs[$k]['date_time']) - $targetInTs);
-                            if ($diff < $minDiffIn) {
+                        $outLogTs = ($bestOutIdx !== -1) ? strtotime($candidates[$bestOutIdx]['date_time']) : null;
+
+                        for ($k = $startInIdx; $k < count($candidates); $k++) {
+                            $candTs = strtotime($candidates[$k]['date_time']);
+                            if ($outLogTs !== null && ($candTs - $outLogTs) < 60) {
+                                continue;
+                            }
+                            $diff = abs($candTs - $targetInTs);
+                            if ($diff <= 12600 && $diff < $minDiffIn) {
                                 $minDiffIn = $diff;
                                 $bestInIdx = $k;
                             }
                         }
-                        $secondIn = $breakLogs[$bestInIdx]['date_time'];
+                        if ($bestInIdx !== -1) {
+                            $secondIn = $candidates[$bestInIdx]['date_time'];
+                        }
                     }
                 }
 

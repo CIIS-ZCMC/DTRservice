@@ -171,3 +171,31 @@ test('DtrReportRepository matches logs within 3 hours 30 mins (12600s) threshold
     expect($result['second_in'])->toBe('04:20 PM');
     expect($result['second_out'])->toBe('05:00 PM');
 });
+
+test('DtrReportRepository does not assign duplicate morning arrival punches to break slots', function () {
+    $repository = app(DtrReportRepository::class);
+    $reflection = new ReflectionClass(DtrReportRepository::class);
+    $method = $reflection->getMethod('matchLogsToScheduleSlots');
+    $method->setAccessible(true);
+
+    $scheduleData = [
+        'first_entry' => '08:00:00',
+        'second_entry' => '12:00:00',
+        'third_entry' => '13:00:00',
+        'last_entry' => '17:00:00',
+        'is_cross_midnight' => false,
+    ];
+
+    // User taps multiple times when arriving in the morning at 7:46am
+    $deviceLogs = [
+        ['date_time' => '2026-10-26 07:46:10'],
+        ['date_time' => '2026-10-26 07:46:25'],
+        ['date_time' => '2026-10-26 07:46:40'],
+    ];
+
+    $result = $method->invoke($repository, $deviceLogs, $scheduleData, '2026-10-26');
+    expect($result['first_in'])->toBe('07:46 AM');
+    expect($result['first_out'])->toBeNull();
+    expect($result['second_in'])->toBeNull();
+    expect($result['second_out'])->toBeNull();
+});
