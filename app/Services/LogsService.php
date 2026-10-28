@@ -19,9 +19,11 @@ class LogsService
         protected LogsRepositoryInterface $logsRepository,
         protected ScheduleRepositoryInterface $scheduleRepository,
         protected DeviceRepositoryInterface $deviceRepository,
-        protected ?BiometricSyncService $syncService = null
+        protected ?BiometricSyncService $syncService = null,
+        protected ?ZkPunchForwarderService $zkForwarder = null
     ) {
         $this->syncService = $syncService ?? app(BiometricSyncService::class);
+        $this->zkForwarder = $zkForwarder ?? app(ZkPunchForwarderService::class);
     }
 
 
@@ -296,6 +298,19 @@ class LogsService
 
         //Write to structured log table Daily
         $this->logsRepository->writeStructuredLog($logData, $line);
+
+        // Forward punch to ZKTeco Integration Server (Port 8080) for desktop payroll (Port 4370)
+        try {
+            $this->zkForwarder?->forwardPunch(
+                $targetPin,
+                $dateTimeStr,
+                (int)$dtr_type,
+                $device,
+                $requestSn ?? $device?->serial_number ?? $device?->device_name
+            );
+        } catch (\Throwable $e) {
+            Log::channel('device_logs')->debug('ZKTeco punch forward skipped or failed: ' . $e->getMessage());
+        }
 
         return "OK";
     }

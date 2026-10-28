@@ -804,6 +804,19 @@ class DeviceService
                 $this->logsRepository->writeToFile($logData);
                 $this->logsRepository->writeStructuredLog($logData, $rawLine);
 
+                // Forward punch to ZKTeco Integration Server (Port 8080) for desktop payroll (Port 4370)
+                try {
+                    app(\App\Services\ZkPunchForwarderService::class)->forwardPunch(
+                        $canonicalPin,
+                        $item['datetime'],
+                        (int)$item['status'],
+                        $device,
+                        $device->serial_number ?: $device->device_name
+                    );
+                } catch (\Throwable $e) {
+                    Log::channel('device_logs')->debug('ZKTeco pull forward skipped or failed: ' . $e->getMessage());
+                }
+
                 $newSavedCount++;
                 if (count($sampleSaved) < 20) {
                     $sampleSaved[] = [

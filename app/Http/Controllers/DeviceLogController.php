@@ -402,6 +402,22 @@ class DeviceLogController extends Controller
             ], 500);
         }
 
+        // 4.1 Forward newly inserted punches to ZKTeco Integration Server (Port 8080) for desktop payroll (Port 4370)
+        if (!empty($insertedLogs)) {
+            try {
+                $forwardPayload = array_map(fn($log) => [
+                    'pin'       => (string)$log->biometric_id,
+                    'time'      => $log->date_time,
+                    'status'    => (int)$log->status,
+                    'device_sn' => $log->device_name ?: 'DTR_API',
+                ], $insertedLogs);
+
+                app(\App\Services\ZkPunchForwarderService::class)->forwardBatch($forwardPayload);
+            } catch (\Throwable $e) {
+                Log::channel('device_logs')->debug('ZKTeco batch forward skipped or failed: ' . $e->getMessage());
+            }
+        }
+
         // 5. Response formatting
         if (!$isBatch) {
             if ($skippedDuplicates > 0 && empty($insertedLogs)) {
