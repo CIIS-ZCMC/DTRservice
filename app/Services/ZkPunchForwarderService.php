@@ -27,15 +27,26 @@ class ZkPunchForwarderService
         $this->defaultDeviceSn = config('zkteco.device_sn', 'DTRSERVICE_8181');
         $this->useHrblizId = (bool)config('zkteco.use_hrbliz_id', true);
 
-        // Parse allowed device IDs (e.g. '7' or '7,14,18')
-        $rawDeviceIds = trim((string)config('zkteco.device_ids', ''));
-        if ($rawDeviceIds === '' || $rawDeviceIds === '*' || strtolower($rawDeviceIds) === 'all') {
-            $this->allowedDeviceIds = []; // Empty signifies all permitted
+        // Parse allowed device IDs (supports '27', '27,7,14', or array '[27, 7, 14]')
+        $rawDeviceIds = config('zkteco.device_ids', '');
+        if (is_array($rawDeviceIds)) {
+            $this->allowedDeviceIds = array_values(array_map('strval', $rawDeviceIds));
         } else {
-            $this->allowedDeviceIds = array_values(array_filter(
-                array_map('trim', explode(',', $rawDeviceIds)),
-                fn($id) => $id !== ''
-            ));
+            $trimmed = trim((string)$rawDeviceIds);
+            if ($trimmed === '' || $trimmed === '*' || strtolower($trimmed) === 'all') {
+                $this->allowedDeviceIds = []; // Empty signifies all permitted
+            } else {
+                $decoded = json_decode($trimmed, true);
+                if (is_array($decoded)) {
+                    $this->allowedDeviceIds = array_values(array_map('strval', $decoded));
+                } else {
+                    $stripped = trim($trimmed, "[]'\"");
+                    $this->allowedDeviceIds = array_values(array_filter(
+                        array_map(fn($v) => trim($v, " \t\n\r\0\x0B'\""), explode(',', $stripped)),
+                        fn($id) => $id !== ''
+                    ));
+                }
+            }
         }
     }
 
