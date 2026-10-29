@@ -17,8 +17,10 @@ class ZkPunchForwarderService
     protected string $defaultDeviceSn;
     protected array $allowedDeviceIds;
     protected bool $useHrblizId;
+    protected bool $strictHrblizStatus;
+    protected ?UmisPunchClassifierService $classifier;
 
-    public function __construct()
+    public function __construct(?UmisPunchClassifierService $classifier = null)
     {
         $this->enabled = (bool)config('zkteco.forward_enabled', true);
         $this->host = rtrim(config('zkteco.host', 'http://127.0.0.1:8080'), '/');
@@ -26,6 +28,8 @@ class ZkPunchForwarderService
         $this->apiKey = config('zkteco.api_key');
         $this->defaultDeviceSn = config('zkteco.device_sn', 'DTRSERVICE_8181');
         $this->useHrblizId = (bool)config('zkteco.use_hrbliz_id', true);
+        $this->strictHrblizStatus = (bool)config('zkteco.strict_hrbliz_status', true);
+        $this->classifier = $classifier ?? app(UmisPunchClassifierService::class);
 
         // Parse allowed device IDs (supports '27', '27,7,14', or array '[27, 7, 14]')
         $rawDeviceIds = config('zkteco.device_ids', '');
@@ -154,6 +158,42 @@ class ZkPunchForwarderService
     }
 
     /**
+     * Resolve the status code (0 for In, 1 for Out) strictly for HRBLIZ.
+     * If incoming punch has status 255 (neutral punch) and strict_hrbliz_status is enabled,
+     * uses UmisPunchClassifierService to classify into 0 (Check-In) or 1 (Check-Out)
+     * using the employee's assigned UMIS shift windows.
+     *
+     * @param string|int $canonicalPin
+     * @param string $dateTime
+     * @param int $status
+     * @return int Strictly 0 (Check-In) or 1 (Check-Out)
+     */
+    public function resolveForwardStatus(string|int $canonicalPin, string $dateTime, int $status): int
+    {
+        if (!$this->strictHrblizStatus) {
+            return $status;
+        }
+
+        // If status is already strictly 0 or 1, preserve it
+        if ($status === 0 || $status === 1) {
+            return $status;
+        }
+
+        // Classify status 255 (or any non-0/1 code) using UMIS schedule rules
+        try {
+            if ($this->classifier) {
+                return $this->classifier->classifyStatus($canonicalPin, $dateTime);
+            }
+        } catch (\Throwable $e) {
+            Log::channel('device_logs')->debug('Classifier error: ' . $e->getMessage());
+        }
+
+        // Safe fallback based on time of day
+        $hour = (int)date('H', strtotime($dateTime));
+        return ($hour < 12) ? 0 : 1;
+    }
+
+    /**
      * Create base HTTP client with headers and timeout configured.
      */
     protected function client()
@@ -239,6 +279,9 @@ class ZkPunchForwarderService
         // Map canonical biometric_id -> hrbliz_biometric_id (e.g. 493 -> 5180)
         $targetPin = $this->resolveForwardPin($pin);
 
+        // Resolve status to strictly 0 (In) or 1 (Out) for HRBLIZ
+        $targetStatus = $this->resolveForwardStatus($pin, $dateTime, (int)$status);
+
         $sn = $deviceSn;
         if (!$sn && $device instanceof Devices) {
             $sn = $device->serial_number ?: $device->device_name;
@@ -250,7 +293,7 @@ class ZkPunchForwarderService
             $payload = [
                 'pin' => $targetPin,
                 'time' => $dateTime,
-                'status' => (int)$status,
+                'status' => $targetStatus,
                 'device_sn' => $sn ?: $this->defaultDeviceSn,
             ];
 
@@ -348,10 +391,13 @@ class ZkPunchForwarderService
             // Resolve 493 -> 5180 if mapped
             $targetPin = $this->resolveForwardPin($rawPin);
 
+            // Resolve status to strictly 0 (In) or 1 (Out) for HRBLIZ
+            $targetStatus = $this->resolveForwardStatus($rawPin, $time, (int)($punch['status'] ?? $punch['dtr_type'] ?? 0));
+
             $formatted[] = [
                 'pin' => $targetPin,
                 'time' => $time,
-                'status' => (int)($punch['status'] ?? $punch['dtr_type'] ?? 0),
+                'status' => $targetStatus,
                 'device_sn' => $punch['device_sn'] ?? $punch['device_name'] ?? $this->defaultDeviceSn,
             ];
         }

@@ -67,6 +67,9 @@ ZK_FORWARD_DEVICE_IDS=
 
 # Map canonical biometric_id (e.g. 493) to hrbliz_biometric_id (e.g. 5180) for ZKTeco Server
 ZK_FORWARD_USE_HRBLIZ_ID=true
+
+# Strictly classify hardware status 255 into 0 (Check-In) or 1 (Check-Out) using UMIS shift windows
+ZK_STRICT_HRBLIZ_STATUS=true
 ```
 
 > [!TIP]

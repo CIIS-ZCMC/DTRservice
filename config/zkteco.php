@@ -40,6 +40,11 @@ return [
     // (e.g. biometric_id 493 is forwarded to Port 8080/4370 as hrbliz_biometric_id 5180)
     'use_hrbliz_id' => env('ZK_FORWARD_USE_HRBLIZ_ID', true),
 
+    // Enforce strictly 0 (Check-In) or 1 (Check-Out) status for HRBLIZ.
+    // If incoming punch has status 255 (neutral punch from biometric hardware),
+    // it is automatically classified into 0 or 1 using UMIS schedule shift windows.
+    'strict_hrbliz_status' => env('ZK_STRICT_HRBLIZ_STATUS', true),
+
     // Batch size for console synchronization commands
     'batch_size' => env('ZK_SERVER_BATCH_SIZE', 50),
 ];

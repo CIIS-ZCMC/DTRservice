@@ -118,14 +118,17 @@ class ZkSyncPunches extends Command
                 }
 
                 $mappedPin = $service->resolveForwardPin($log->biometric_id);
+                $rawStatus = (int)($log->status ?? 0);
+                $resolvedStatus = $service->resolveForwardStatus($log->biometric_id, $log->date_time, $rawStatus);
 
                 $logs[] = [
-                    'canonical_pin' => (string)$log->biometric_id,
-                    'pin'           => $mappedPin,
-                    'time'          => $log->date_time,
-                    'status'        => (int)($log->status ?? 0),
-                    'device_sn'     => $log->device_name ?: 'DTR_SERVICE',
-                    'source'        => 'device_logs',
+                    'canonical_pin'   => (string)$log->biometric_id,
+                    'pin'             => $mappedPin,
+                    'time'            => $log->date_time,
+                    'raw_status'      => $rawStatus,
+                    'status'          => $resolvedStatus,
+                    'device_sn'       => $log->device_name ?: 'DTR_SERVICE',
+                    'source'          => 'device_logs',
                 ];
             }
         }
@@ -154,14 +157,17 @@ class ZkSyncPunches extends Command
                     }
 
                     $mappedPin = $service->resolveForwardPin($log->biometric_id);
+                    $rawStatus = (int)($log->status ?? 0);
+                    $resolvedStatus = $service->resolveForwardStatus($log->biometric_id, $log->date_time, $rawStatus);
 
                     $logs[] = [
-                        'canonical_pin' => (string)$log->biometric_id,
-                        'pin'           => $mappedPin,
-                        'time'          => $log->date_time,
-                        'status'        => (int)($log->status ?? 0),
-                        'device_sn'     => $log->device_name ?: 'DTR_HRBLIZ',
-                        'source'        => 'device_logs_hrbliz',
+                        'canonical_pin'   => (string)$log->biometric_id,
+                        'pin'             => $mappedPin,
+                        'time'            => $log->date_time,
+                        'raw_status'      => $rawStatus,
+                        'status'          => $resolvedStatus,
+                        'device_sn'       => $log->device_name ?: 'DTR_HRBLIZ',
+                        'source'          => 'device_logs_hrbliz',
                     ];
                 }
             }
@@ -177,16 +183,18 @@ class ZkSyncPunches extends Command
         // Preview sample
         $sample = array_slice($logs, 0, 10);
         $this->table(
-            ['Canonical PIN', 'Forwarded PIN (HRBLIZ)', 'Date Time', 'Status', 'Device', 'Source'],
+            ['Canonical PIN', 'HRBLIZ PIN', 'Date Time', 'Raw Code', 'Resolved Status', 'Device'],
             array_map(fn($item) => [
                 $item['canonical_pin'],
                 $item['pin'] !== $item['canonical_pin']
                     ? "<fg=green>{$item['pin']} (Mapped)</>"
                     : $item['pin'],
                 $item['time'],
-                $item['status'],
+                $item['raw_status'],
+                $item['status'] === 0
+                    ? '<fg=green;options=bold>0 (Check-In)</>'
+                    : '<fg=cyan;options=bold>1 (Check-Out)</>',
                 $item['device_sn'],
-                $item['source'],
             ], $sample)
         );
 
