@@ -882,24 +882,24 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
                         $crossMidnightLogDateTime = $this->findClosestLog($deviceLogs, $targetDateTime, '00:00:00', $maxSearchTime, $searchThreshold);
 
+                        // Dynamic AM/PM threshold from current day's schedule
+                        $amPmThreshold = '13:00:00';
+                        if ($scheduleData) {
+                            if (!empty($scheduleData['second_entry'])) {
+                                $amPmThreshold = $scheduleData['second_entry'];
+                            } elseif (!empty($scheduleData['first_entry'])
+                                && !empty($scheduleData['last_entry'])
+                                && $scheduleData['first_entry'] !== $scheduleData['last_entry']) {
+                                $firstTs = strtotime($scheduleData['first_entry']);
+                                $lastTs = strtotime($scheduleData['last_entry']);
+                                $midTs = (int)(($firstTs + $lastTs) / 2);
+                                $amPmThreshold = date('H:i:s', $midTs);
+                            }
+                        }
+
                         if ($crossMidnightLogDateTime) {
                             $logTime = substr($crossMidnightLogDateTime, 11, 8);
                             $formattedTime = $this->formatTime($logTime);
-
-                            // Dynamic AM/PM threshold from current day's schedule
-                            $amPmThreshold = '13:00:00';
-                            if ($scheduleData) {
-                                if (!empty($scheduleData['second_entry'])) {
-                                    $amPmThreshold = $scheduleData['second_entry'];
-                                } elseif (!empty($scheduleData['first_entry'])
-                                    && !empty($scheduleData['last_entry'])
-                                    && $scheduleData['first_entry'] !== $scheduleData['last_entry']) {
-                                    $firstTs = strtotime($scheduleData['first_entry']);
-                                    $lastTs = strtotime($scheduleData['last_entry']);
-                                    $midTs = (int)(($firstTs + $lastTs) / 2);
-                                    $amPmThreshold = date('H:i:s', $midTs);
-                                }
-                            }
 
                             // AM log -> first_out; PM log -> second_out
                             if ($logTime < $amPmThreshold) {
@@ -913,10 +913,29 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
             // Remove cross-midnight log from device logs so it's not reused by matchLogsToScheduleSlots
             $logsForMatching = $deviceLogs;
+            $isPrevCrossMidnight = !empty($prevScheduleData['is_cross_midnight']);
+            $currentAmPmThreshold = $amPmThreshold ?? '13:00:00';
             if ($crossMidnightLogDateTime !== null) {
-                $logsForMatching = array_filter($deviceLogs, function ($log) use ($crossMidnightLogDateTime) {
-                    return $log['date_time'] !== $crossMidnightLogDateTime;
-                });
+                $crossMidnightTs = strtotime($crossMidnightLogDateTime);
+                $logsForMatching = array_values(array_filter($deviceLogs, function ($log) use ($crossMidnightLogDateTime, $crossMidnightTs, $scheduleData, $currentAmPmThreshold) {
+                    if ($log['date_time'] === $crossMidnightLogDateTime) {
+                        return false;
+                    }
+                    // If no schedule on current day, all morning logs before $currentAmPmThreshold belong to the cross-midnight shift checkout
+                    if (!$scheduleData && substr($log['date_time'], 11, 8) < $currentAmPmThreshold) {
+                        return false;
+                    }
+                    // Ignore duplicate/bounce taps within 60 seconds of the cross-midnight punch
+                    if (abs(strtotime($log['date_time']) - $crossMidnightTs) < 60) {
+                        return false;
+                    }
+                    return true;
+                }));
+            } elseif ($isPrevCrossMidnight && !$scheduleData) {
+                // Previous day was cross-midnight, current day has no schedule: morning logs belong to prev night checkout
+                $logsForMatching = array_values(array_filter($deviceLogs, function ($log) use ($currentAmPmThreshold) {
+                    return substr($log['date_time'], 11, 8) >= $currentAmPmThreshold;
+                }));
             }
 
             if (!empty($logsForMatching) && $scheduleData) {
@@ -934,7 +953,7 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             if (!$scheduleData && !empty($logsForMatching)) {
                 $amLogs = [];
                 $pmLogs = [];
-                foreach ($deviceLogs as $log) {
+                foreach ($logsForMatching as $log) {
                     $logTime = substr($log['date_time'], 11, 8);
                     $formattedTime = $this->formatTime($logTime);
                     if ($logTime < '12:00:00') {
@@ -1037,6 +1056,9 @@ class DtrReportRepository implements DtrReportRepositoryInterface
                         $timeSlots['second_out'] = null;
                         $remarks = $holiday['description'];
                     }
+                } elseif (!$hasScheduleData && !empty($prevScheduleData['is_cross_midnight'])) {
+                    $timeSlots['first_in'] = 'DAY OFF';
+                    $remarks = null;
                 } elseif (!$hasScheduleData && $hasOwnEntries) {
                     $timeSlots['first_in'] = null;
                     $remarks = 'no schedule';
