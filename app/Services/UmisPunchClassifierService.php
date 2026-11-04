@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
 use App\Models\EmployeeProfile;
 use App\Models\Schedule;
 use App\Models\TimeShifts;
@@ -12,25 +13,23 @@ use Illuminate\Support\Facades\Schema;
 
 class UmisPunchClassifierService
 {
-    /**
-     * Window in minutes around scheduled time (3 hours and 30 mins, matching UMIS standard)
-     */
-    protected int $windowMinutes = 210;
+    protected ?TimeRecordService $timeRecordService;
 
-    /**
-     * Minimum interval in minutes to distinguish distinct punches
-     */
-    protected int $minIntervalMinutes = 3;
+    public function __construct(?TimeRecordService $timeRecordService = null)
+    {
+        $this->timeRecordService = $timeRecordService ?? app(TimeRecordService::class);
+    }
 
     /**
      * Classify an attendance punch timestamp into strictly 0 (Check-In) or 1 (Check-Out)
-     * using UMIS shift schedules, slot windows, and chronological sequence rules.
+     * using UMIS slot assignment (formatEntries), employee shift schedule, and chronological sequence rules.
      *
      * @param int|string $biometricId Canonical biometric ID (UMIS PIN)
      * @param string $dateTime Full timestamp (YYYY-MM-DD HH:MM:SS)
+     * @param array $knownDayPunches Optional array of already known/batched timestamps for today
      * @return int 0 for Check-In, 1 for Check-Out
      */
-    public function classifyStatus(int|string $biometricId, string $dateTime): int
+    public function classifyStatus(int|string $biometricId, string $dateTime, array $knownDayPunches = []): int
     {
         $bioId = (int)$biometricId;
 
@@ -41,130 +40,201 @@ class UmisPunchClassifierService
         }
 
         $date = $punchCarbon->format('Y-m-d');
+        $currentDtStr = $punchCarbon->format('Y-m-d H:i:s');
 
-        // 1. Try to resolve employee schedule & time shift from UMIS
-        $timeShift = $this->getEmployeeTimeShift($bioId, $date);
+        // 1. Fetch all distinct punches for this employee today up to the current timestamp
+        $dayPunches = $this->getDayPunchesUntil($bioId, $date, $punchCarbon, $knownDayPunches);
 
-        if ($timeShift) {
-            $classified = $this->classifyByTimeShift($timeShift, $punchCarbon);
+        // 2. Resolve employee schedule times (today's schedule -> latest schedule -> system default)
+        $scheduleTimes = $this->resolveEmployeeScheduleTimes($bioId, $date);
+
+        // 3. Run UMIS formatEntries on all punches of the day
+        if (!empty($scheduleTimes) && !empty($dayPunches)) {
+            $classified = $this->classifyViaUmisSlots($dayPunches, $scheduleTimes, $date, $punchCarbon);
             if ($classified !== null) {
                 return $classified;
             }
         }
 
-        // 2. Fallback: Chronological sequence of punches for this employee today
-        $seqStatus = $this->classifyByDailySequence($bioId, $date, $punchCarbon);
-        if ($seqStatus !== null) {
-            return $seqStatus;
+        // 4. Fallback: Strict chronological alternation (1st=0/In, 2nd=1/Out, 3rd=0/In, 4th=1/Out)
+        $punchIndex = array_search($currentDtStr, $dayPunches, true);
+        if ($punchIndex === false) {
+            $punchIndex = count($dayPunches) - 1;
         }
 
-        // 3. Ultimate Fallback: Time of day (Morning = 0 / In, Afternoon = 1 / Out)
-        return ($punchCarbon->hour < 12) ? 0 : 1;
+        return ($punchIndex % 2 === 0) ? 0 : 1;
     }
 
     /**
-     * Classify a punch using the employee's assigned UMIS time shift.
+     * Run UMIS formatEntries on the accumulated punches of the day and find which slot the target punch belongs to.
      *
-     * @param TimeShifts $timeShift
-     * @param Carbon $punchTime
-     * @return int|null 0 (In), 1 (Out), or null if outside all shift windows
+     * @param array $dayPunches Chronologically sorted datetime strings of the day
+     * @param array $scheduleTimes ['08:00:00', '12:00:00', '13:00:00', '17:00:00']
+     * @param string $date YYYY-MM-DD
+     * @param Carbon $punchCarbon
+     * @return int|null 0 (In), 1 (Out), or null if not allocated
      */
-    protected function classifyByTimeShift(TimeShifts $timeShift, Carbon $punchTime): ?int
+    protected function classifyViaUmisSlots(array $dayPunches, array $scheduleTimes, string $date, Carbon $punchCarbon): ?int
     {
-        $baseDate = $punchTime->copy()->startOfDay();
+        try {
+            $slots = $this->timeRecordService->formatEntries($dayPunches, $scheduleTimes, $date);
 
-        // Build schedule slots: [ [type => 0|1, carbon => Carbon, name => string], ... ]
-        $slots = [];
+            $targetMinute = $punchCarbon->copy()->startOfMinute()->toDateTimeString();
 
-        // Check for 2-slot shifting vs 4-slot regular schedule
-        $firstIn = $timeShift->first_in ? Carbon::parse($timeShift->first_in)->setDateFrom($baseDate)->startOfMinute() : null;
-        $firstOut = $timeShift->first_out ? Carbon::parse($timeShift->first_out)->setDateFrom($baseDate)->startOfMinute() : null;
-        $secondIn = $timeShift->second_in ? Carbon::parse($timeShift->second_in)->setDateFrom($baseDate)->startOfMinute() : null;
-        $secondOut = $timeShift->second_out ? Carbon::parse($timeShift->second_out)->setDateFrom($baseDate)->startOfMinute() : null;
-
-        // Handle cross-midnight shifts (e.g. 22:00 in -> 06:00 out)
-        if ($firstIn && $firstOut && $firstOut->lt($firstIn)) {
-            $firstOut->addDay();
-        }
-
-        if ($firstIn) {
-            $slots[] = ['type' => 0, 'time' => $firstIn, 'slot' => 'first_in'];
-        }
-        if ($firstOut) {
-            $slots[] = ['type' => 1, 'time' => $firstOut, 'slot' => 'first_out'];
-        }
-        if ($secondIn) {
-            // If second_in is earlier than first_out, advance to next day
-            if ($firstOut && $secondIn->lt($firstOut)) {
-                $secondIn->addDay();
-            }
-            $slots[] = ['type' => 0, 'time' => $secondIn, 'slot' => 'second_in'];
-        }
-        if ($secondOut) {
-            if ($secondIn && $secondOut->lt($secondIn)) {
-                $secondOut->addDay();
-            }
-            $slots[] = ['type' => 1, 'time' => $secondOut, 'slot' => 'second_out'];
-        }
-
-        if (empty($slots)) {
-            return null;
-        }
-
-        // Find the slot with the smallest time difference within the 3.5-hour window
-        $bestDiff = null;
-        $bestType = null;
-
-        foreach ($slots as $slot) {
-            $diff = abs($punchTime->diffInMinutes($slot['time']));
-            if ($diff <= $this->windowMinutes) {
-                if ($bestDiff === null || $diff < $bestDiff) {
-                    $bestDiff = $diff;
-                    $bestType = $slot['type'];
+            foreach ($slots as $slotKey => $slotVal) {
+                if (!empty($slotVal) && $slotVal === $targetMinute) {
+                    // first_in or second_in -> 0 (Check-In)
+                    // first_out or second_out -> 1 (Check-Out)
+                    return in_array($slotKey, ['first_in', 'second_in'], true) ? 0 : 1;
                 }
             }
+
+            // If startOfMinute didn't match directly, check diff within 1 minute
+            foreach ($slots as $slotKey => $slotVal) {
+                if (!empty($slotVal)) {
+                    $slotCarbon = Carbon::parse($slotVal);
+                    if (abs($punchCarbon->diffInMinutes($slotCarbon)) <= 1) {
+                        return in_array($slotKey, ['first_in', 'second_in'], true) ? 0 : 1;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::channel('device_logs')->debug('classifyViaUmisSlots error: ' . $e->getMessage());
         }
 
-        return $bestType;
+        return null;
     }
 
     /**
-     * Classify based on the sequence of existing logs recorded today for this employee.
+     * Retrieve all chronological punch timestamps for this employee on this date up to $punchCarbon.
      *
      * @param int $bioId
      * @param string $date
-     * @param Carbon $punchTime
-     * @return int|null 0 for In, 1 for Out
+     * @param Carbon $punchCarbon
+     * @param array $knownDayPunches
+     * @return array<string> Sorted datetime strings (Y-m-d H:i:s)
      */
-    protected function classifyByDailySequence(int $bioId, string $date, Carbon $punchTime): ?int
+    protected function getDayPunchesUntil(int $bioId, string $date, Carbon $punchCarbon, array $knownDayPunches = []): array
     {
-        if (!Schema::hasTable('device_logs')) {
-            return null;
+        $cutoffStr = $punchCarbon->format('Y-m-d H:i:s');
+        $entries = [];
+
+        // Include any caller-supplied known punches up to cutoff
+        foreach ($knownDayPunches as $kp) {
+            try {
+                $kpCarbon = Carbon::parse($kp);
+                if ($kpCarbon->format('Y-m-d') === $date && $kpCarbon->format('Y-m-d H:i:s') <= $cutoffStr) {
+                    $entries[] = $kpCarbon->format('Y-m-d H:i:s');
+                }
+            } catch (\Throwable $e) {
+                // Ignore parse errors
+            }
         }
 
         try {
-            // Count prior distinct punches today before this punch time
-            $priorPunchesCount = DeviceLogs::where('biometric_id', $bioId)
-                ->where('dtr_date', $date)
-                ->where('date_time', '<', $punchTime->format('Y-m-d H:i:s'))
-                ->count();
-
-            // 0 prior punches today -> Check-In (0)
-            if ($priorPunchesCount === 0) {
-                return 0;
+            if (Schema::hasTable('device_logs')) {
+                $logs = DeviceLogs::where('biometric_id', $bioId)
+                    ->where('dtr_date', $date)
+                    ->where('date_time', '<=', $cutoffStr)
+                    ->orderBy('date_time', 'asc')
+                    ->pluck('date_time')
+                    ->all();
+                $entries = array_merge($entries, $logs);
             }
 
-            // Odd count of prior punches (e.g. 1 punch so far) -> Check-Out (1)
-            // Even count of prior punches (e.g. 2 punches so far) -> Check-In (0)
-            return ($priorPunchesCount % 2 === 1) ? 1 : 0;
+            if (Schema::hasTable('device_logs_hrbliz')) {
+                $hrbLogs = DeviceLogsHrbliz::where('biometric_id', $bioId)
+                    ->where('dtr_date', $date)
+                    ->where('date_time', '<=', $cutoffStr)
+                    ->orderBy('date_time', 'asc')
+                    ->pluck('date_time')
+                    ->all();
+                $entries = array_merge($entries, $hrbLogs);
+            }
         } catch (\Throwable $e) {
-            Log::channel('device_logs')->debug('classifyByDailySequence failed: ' . $e->getMessage());
-            return null;
+            Log::channel('device_logs')->debug('getDayPunchesUntil error: ' . $e->getMessage());
         }
+
+        // Ensure the current punch itself is included
+        if (!in_array($cutoffStr, $entries, true)) {
+            $entries[] = $cutoffStr;
+        }
+
+        // De-duplicate and sort ascending
+        $entries = array_values(array_unique($entries));
+        sort($entries);
+
+        return $entries;
     }
 
     /**
-     * Fetch active TimeShift for employee and date using UMIS relations.
+     * Resolve employee's schedule times:
+     * 1) Today's assigned schedule
+     * 2) Employee's most recent schedule in UMIS
+     * 3) Default system schedule (08:00 - 12:00 - 13:00 - 17:00)
+     *
+     * @param int $biometricId
+     * @param string $date
+     * @return array
+     */
+    protected function resolveEmployeeScheduleTimes(int $biometricId, string $date): array
+    {
+        // 1. Check for specific schedule today
+        $timeShift = $this->getEmployeeTimeShift($biometricId, $date);
+
+        // 2. If no schedule on this specific date, get the employee's latest active schedule
+        if (!$timeShift && Schema::hasTable('employee_profiles') && Schema::hasTable('schedules')) {
+            try {
+                $profile = EmployeeProfile::where('biometric_id', $biometricId)
+                    ->whereNull('deleted_at')
+                    ->first();
+
+                if ($profile) {
+                    $latestSched = Schedule::whereHas('employeeSchedules', function ($q) use ($profile) {
+                        $q->where('employee_profile_id', $profile->id);
+                    })
+                    ->whereNull('deleted_at')
+                    ->with('timeShift')
+                    ->orderBy('date', 'desc')
+                    ->first();
+
+                    $timeShift = $latestSched?->timeShift;
+                }
+            } catch (\Throwable $e) {
+                Log::channel('device_logs')->debug('resolveEmployeeScheduleTimes fallback error: ' . $e->getMessage());
+            }
+        }
+
+        // If we have a timeShift model, extract its schedule times
+        if ($timeShift) {
+            if (!empty($timeShift->second_in) || !empty($timeShift->second_out)) {
+                // 4-slot regular schedule
+                return array_filter([
+                    $timeShift->first_in,
+                    $timeShift->first_out,
+                    $timeShift->second_in,
+                    $timeShift->second_out,
+                ]);
+            } else {
+                // 2-slot shifting schedule
+                return array_filter([
+                    $timeShift->first_in,
+                    $timeShift->first_out,
+                ]);
+            }
+        }
+
+        // 3. Fallback to system default 4-slot schedule from config
+        return [
+            config('app.default_first_in', '08:00:00'),
+            config('app.default_first_out', '12:00:00'),
+            config('app.default_last_in', '13:00:00'),
+            config('app.default_last_out', '17:00:00'),
+        ];
+    }
+
+    /**
+     * Fetch active TimeShift for employee on a given date.
      */
     protected function getEmployeeTimeShift(int $biometricId, string $date): ?TimeShifts
     {

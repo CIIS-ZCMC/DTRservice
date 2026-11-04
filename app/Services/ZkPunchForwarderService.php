@@ -166,10 +166,15 @@ class ZkPunchForwarderService
      * @param string|int $canonicalPin
      * @param string $dateTime
      * @param int $status
+     * @param array $knownDayPunches Optional list of other punches today to maintain chronological context
      * @return int Strictly 0 (Check-In) or 1 (Check-Out)
      */
-    public function resolveForwardStatus(string|int $canonicalPin, string $dateTime, int $status): int
-    {
+    public function resolveForwardStatus(
+        string|int $canonicalPin,
+        string $dateTime,
+        int $status,
+        array $knownDayPunches = []
+    ): int {
         if (!$this->strictHrblizStatus) {
             return $status;
         }
@@ -182,7 +187,7 @@ class ZkPunchForwarderService
         // Classify status 255 (or any non-0/1 code) using UMIS schedule rules
         try {
             if ($this->classifier) {
-                return $this->classifier->classifyStatus($canonicalPin, $dateTime);
+                return $this->classifier->classifyStatus($canonicalPin, $dateTime, $knownDayPunches);
             }
         } catch (\Throwable $e) {
             Log::channel('device_logs')->debug('Classifier error: ' . $e->getMessage());
@@ -370,7 +375,16 @@ class ZkPunchForwarderService
             ];
         }
 
+        // Sort input punches chronologically by timestamp
+        usort($punches, function ($a, $b) {
+            $tA = $a['time'] ?? $a['date_time'] ?? ($a['dtr_date'] ?? '') . ' ' . ($a['dtr_time'] ?? '');
+            $tB = $b['time'] ?? $b['date_time'] ?? ($b['dtr_date'] ?? '') . ' ' . ($b['dtr_time'] ?? '');
+            return strcmp(trim($tA), trim($tB));
+        });
+
         $formatted = [];
+        $accumulatedByPinDate = [];
+
         foreach ($punches as $punch) {
             // Check per-item device filter if item has device_id or device_name
             $itemDevice = $punch['device_id'] ?? $punch['device_sn'] ?? $punch['device_name'] ?? $device;
@@ -391,8 +405,17 @@ class ZkPunchForwarderService
             // Resolve 493 -> 5180 if mapped
             $targetPin = $this->resolveForwardPin($rawPin);
 
-            // Resolve status to strictly 0 (In) or 1 (Out) for HRBLIZ
-            $targetStatus = $this->resolveForwardStatus($rawPin, $time, (int)($punch['status'] ?? $punch['dtr_type'] ?? 0));
+            // Group accumulated punches by PIN and Date for correct chronological context
+            $punchDate = substr(trim($time), 0, 10);
+            $pinDateKey = "{$rawPin}_{$punchDate}";
+            if (!isset($accumulatedByPinDate[$pinDateKey])) {
+                $accumulatedByPinDate[$pinDateKey] = [];
+            }
+            $accumulatedByPinDate[$pinDateKey][] = $time;
+
+            // Resolve status to strictly 0 (In) or 1 (Out) for HRBLIZ with accumulated context
+            $rawStatus = (int)($punch['status'] ?? $punch['dtr_type'] ?? 0);
+            $targetStatus = $this->resolveForwardStatus($rawPin, $time, $rawStatus, $accumulatedByPinDate[$pinDateKey]);
 
             $formatted[] = [
                 'pin' => $targetPin,

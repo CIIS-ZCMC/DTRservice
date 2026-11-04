@@ -96,6 +96,8 @@ class ZkSyncPunches extends Command
         }
 
         // 1. Standard DeviceLogs
+        $accumulatedByPinDate = [];
+
         if (in_array($source, ['all', 'standard']) && Schema::hasTable('device_logs')) {
             $q = DeviceLogs::query();
             if ($targetDate) {
@@ -119,7 +121,20 @@ class ZkSyncPunches extends Command
 
                 $mappedPin = $service->resolveForwardPin($log->biometric_id);
                 $rawStatus = (int)($log->status ?? 0);
-                $resolvedStatus = $service->resolveForwardStatus($log->biometric_id, $log->date_time, $rawStatus);
+
+                $punchDate = substr((string)$log->date_time, 0, 10);
+                $pinDateKey = "{$log->biometric_id}_{$punchDate}";
+                if (!isset($accumulatedByPinDate[$pinDateKey])) {
+                    $accumulatedByPinDate[$pinDateKey] = [];
+                }
+                $accumulatedByPinDate[$pinDateKey][] = (string)$log->date_time;
+
+                $resolvedStatus = $service->resolveForwardStatus(
+                    $log->biometric_id,
+                    $log->date_time,
+                    $rawStatus,
+                    $accumulatedByPinDate[$pinDateKey]
+                );
 
                 $logs[] = [
                     'canonical_pin'   => (string)$log->biometric_id,
@@ -158,7 +173,20 @@ class ZkSyncPunches extends Command
 
                     $mappedPin = $service->resolveForwardPin($log->biometric_id);
                     $rawStatus = (int)($log->status ?? 0);
-                    $resolvedStatus = $service->resolveForwardStatus($log->biometric_id, $log->date_time, $rawStatus);
+
+                    $punchDate = substr((string)$log->date_time, 0, 10);
+                    $pinDateKey = "{$log->biometric_id}_{$punchDate}";
+                    if (!isset($accumulatedByPinDate[$pinDateKey])) {
+                        $accumulatedByPinDate[$pinDateKey] = [];
+                    }
+                    $accumulatedByPinDate[$pinDateKey][] = (string)$log->date_time;
+
+                    $resolvedStatus = $service->resolveForwardStatus(
+                        $log->biometric_id,
+                        $log->date_time,
+                        $rawStatus,
+                        $accumulatedByPinDate[$pinDateKey]
+                    );
 
                     $logs[] = [
                         'canonical_pin'   => (string)$log->biometric_id,

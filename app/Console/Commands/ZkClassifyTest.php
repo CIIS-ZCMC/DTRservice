@@ -17,7 +17,8 @@ class ZkClassifyTest extends Command
      */
     protected $signature = 'zk:classify-test
                             {pin : Canonical biometric ID (UMIS PIN)}
-                            {time? : Timestamp (YYYY-MM-DD HH:MM:SS, defaults to now)}';
+                            {time? : Timestamp (YYYY-MM-DD HH:MM:SS, defaults to now)}
+                            {--prior= : Comma-separated list of prior timestamps today to provide chronological context}';
 
     /**
      * The console command description.
@@ -45,8 +46,14 @@ class ZkClassifyTest extends Command
         $hrbPin = $bio?->hrbliz_biometric_id;
         $forwardPin = $forwarder->resolveForwardPin($pin);
 
+        $priorOpt = $this->option('prior');
+        $knownDayPunches = [];
+        if ($priorOpt) {
+            $knownDayPunches = array_map('trim', explode(',', $priorOpt));
+        }
+
         // Classify
-        $status = $classifier->classifyStatus($pin, $parsedTime);
+        $status = $classifier->classifyStatus($pin, $parsedTime, $knownDayPunches);
         $statusText = $status === 0 ? '0 (Check-In)' : '1 (Check-Out)';
 
         $this->info("=== UMIS Punch Classification Test ===");
