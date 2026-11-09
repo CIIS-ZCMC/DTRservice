@@ -4,6 +4,7 @@ use App\Http\Controllers\BiometricHrblizMappingController;
 use App\Http\Controllers\CommandRunnerController;
 use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\DeviceLogAlertController;
+use App\Http\Controllers\DeviceLogController;
 use App\Http\Controllers\LogViewerController;
 use Illuminate\Support\Facades\Route;
 
@@ -13,6 +14,10 @@ Route::get('/', function () {
 
 // Device management web view
 Route::get('/devices', [DeviceController::class, 'managementView'])->name('devices.index');
+
+
+Route::get('/manual-punch', [DeviceLogController::class, 'manualPunchView'])->name('punches.manual');
+Route::get('/punches/employees', [DeviceLogController::class, 'searchEmployees'])->name('punches.employees');
 
 // HRBLIZ Biometrics Mapping & Verification (Temporary Tool)
 Route::get('/biometrics/hrbliz', [BiometricHrblizMappingController::class, 'index'])->name('biometrics.hrbliz');

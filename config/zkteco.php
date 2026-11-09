@@ -29,7 +29,7 @@ return [
     'api_key' => env('ZK_SERVER_API_KEY', null),
 
     // Default device name/identifier sent with punches forwarded from DTRService
-    'device_sn' => env('ZK_SERVER_DEVICE_SN', 'DTRSERVICE_8181'),
+    'device_sn' => env('ZK_SERVER_DEVICE_SN', 'RKQ4242300018'),
 
     // Specific device IDs permitted to forward punches to ZKTeco (e.g. '7' or '7,14,18').
     // If set, ONLY punches from these device ID(s) are forwarded.

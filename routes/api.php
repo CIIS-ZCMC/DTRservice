@@ -31,6 +31,8 @@ Route::match(['get', 'post'], '/devices/{id}/clear-logs', [DeviceController::cla
 // Device logs routes
 Route::get('/device-logs', [DeviceLogController::class, 'index']);
 Route::post('/device-logs', [DeviceLogController::class, 'store']);
+Route::match(['get', 'post'], '/manual-punch', [DeviceLogController::class, 'manualPunch']);
+Route::match(['get', 'post'], '/device-logs/manual', [DeviceLogController::class, 'manualPunch']);
 Route::match(['get', 'post'], '/device-logs/prune', [DeviceController::class, 'pruneDatabaseLogs']);
 Route::get('/device-logs/{id}', [DeviceLogController::class, 'show'])->whereNumber('id');
 Route::get('/devices/{id}/status', [DeviceController::class, 'status']);

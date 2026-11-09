@@ -261,4 +261,181 @@ class DeviceLogApiTest extends TestCase
                 'success' => false,
             ]);
     }
+
+    public function test_manual_punch_get_returns_metadata_and_schema(): void
+    {
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches*' => \Illuminate\Support\Facades\Http::response([
+                'status' => 'online',
+                'message' => 'Endpoint is active',
+            ], 200),
+        ]);
+
+        $response = $this->getJson('/api/manual-punch');
+
+        $response->assertStatus(200)
+            ->assertJson([
+                'success' => true,
+                'endpoint' => '/api/manual-punch',
+            ])
+            ->assertJsonStructure([
+                'success',
+                'endpoint',
+                'zkteco_server',
+                'request_schema',
+                'punch_status_reference',
+            ]);
+    }
+
+    public function test_manual_punch_records_in_database_and_synchronizes(): void
+    {
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => \Illuminate\Support\Facades\Http::response([
+                'success' => true,
+                'message' => 'Punch recorded',
+            ], 200),
+        ]);
+
+        Biometrics::create([
+            'biometric_id' => 7771,
+            'name' => 'Manuel Input Test',
+        ]);
+
+        $payload = [
+            'biometric_id' => '7771',
+            'date_time' => '2026-11-09 08:30:00',
+            'status' => 'in',
+            'device_name' => 'MANUAL_OFFICE',
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201)
+            ->assertJson([
+                'success' => true,
+                'data' => [
+                    'biometric_id' => '7771',
+                    'name' => 'Manuel Input Test',
+                    'date_time' => '2026-11-09 08:30:00',
+                    'status' => 0,
+                    'status_label' => 'Check-In',
+                    'device_name' => 'MANUAL_OFFICE',
+                ],
+                'zkteco_sync' => [
+                    'success' => true,
+                    'pin_sent' => '7771',
+                    'status_sent' => 0,
+                ],
+            ]);
+
+        $this->assertDatabaseHas('device_logs', [
+            'biometric_id' => '7771',
+            'date_time' => '2026-11-09 08:30:00',
+            'status' => 0,
+            'device_name' => 'MANUAL_OFFICE',
+        ]);
+    }
+
+    public function test_manual_punch_with_hrbliz_biometric_id_maps_canonical_id(): void
+    {
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => \Illuminate\Support\Facades\Http::response(['success' => true], 200),
+        ]);
+
+        Biometrics::create([
+            'biometric_id' => 493,
+            'hrbliz_biometric_id' => 5180,
+            'name' => 'Dr. HRBLIZ Employee',
+        ]);
+
+        $payload = [
+            'hrbliz_biometric_id' => '5180',
+            'date_time' => '2026-11-09 17:05:00',
+            'status' => 'out',
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201)
+            ->assertJson([
+                'success' => true,
+                'data' => [
+                    'biometric_id' => '493',
+                    'hrbliz_biometric_id' => '5180',
+                    'name' => 'Dr. HRBLIZ Employee',
+                    'status' => 1,
+                    'status_label' => 'Check-Out',
+                ],
+                'zkteco_sync' => [
+                    'success' => true,
+                    'pin_sent' => '5180',
+                    'status_sent' => 1,
+                ],
+            ]);
+
+        $this->assertDatabaseHas('device_logs', [
+            'biometric_id' => '493',
+            'date_time' => '2026-11-09 17:05:00',
+            'status' => 1,
+        ]);
+    }
+
+    public function test_manual_punch_skips_duplicates_safely(): void
+    {
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => \Illuminate\Support\Facades\Http::response(['success' => true], 200),
+        ]);
+
+        $payload = [
+            'biometric_id' => '8888',
+            'date_time' => '2026-11-09 09:00:00',
+            'status' => 0,
+        ];
+
+        $first = $this->postJson('/api/manual-punch', $payload);
+        $first->assertStatus(201);
+
+        $second = $this->postJson('/api/manual-punch', $payload);
+        $second->assertStatus(200)
+            ->assertJson([
+                'success' => true,
+                'is_duplicate' => true,
+            ]);
+    }
+
+    public function test_manual_punch_batch_processes_multiple_records(): void
+    {
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches*' => \Illuminate\Support\Facades\Http::response(['success' => true, 'inserted_count' => 2], 200),
+        ]);
+
+        $payload = [
+            'punches' => [
+                [
+                    'biometric_id' => '9001',
+                    'date_time' => '2026-11-09 08:00:00',
+                    'status' => 0,
+                ],
+                [
+                    'biometric_id' => '9002',
+                    'date_time' => '2026-11-09 08:05:00',
+                    'status' => 0,
+                ],
+            ],
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201)
+            ->assertJson([
+                'success' => true,
+                'inserted_count' => 2,
+                'total_received' => 2,
+            ]);
+
+        $this->assertDatabaseHas('device_logs', ['biometric_id' => '9001']);
+        $this->assertDatabaseHas('device_logs', ['biometric_id' => '9002']);
+    }
 }

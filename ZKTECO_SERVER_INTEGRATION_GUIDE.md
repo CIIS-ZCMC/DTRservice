@@ -58,7 +58,7 @@ Open your `.env` file on `192.168.9.243:8181` and configure:
 ZK_SERVER_FORWARD_ENABLED=true
 ZK_SERVER_HOST=http://127.0.0.1:8080
 ZK_SERVER_TIMEOUT=3
-ZK_SERVER_DEVICE_SN=DTRSERVICE_8181
+ZK_SERVER_DEVICE_SN=RKQ4242300018
 ZK_SERVER_BATCH_SIZE=50
 
 # Specific device ID(s) permitted to forward to ZKTeco (e.g. 7 or 7,14)
@@ -112,23 +112,129 @@ DTRService is ready to forward punches to http://127.0.0.1:8080!
 
 ## 3. How the Integration Operates Automatically
 
-Once enabled, DTRService automatically mirrors attendance punches into the ZKTeco server across three ingestion points:
+Once enabled, DTRService automatically mirrors attendance punches into the ZKTeco server across four ingestion points:
 
 1. **Real-Time Physical Clocks Push (`/iclock/cdata` via `LogsService`)**:  
    When a biometric device pushes an attendance punch (`ATTLOG`), DTRService saves it to MySQL and forwards it to `http://127.0.0.1:8080/api/punches`.
 
-2. **External Systems & Kiosks API (`POST /api/device-logs` via `DeviceLogController`)**:  
-   When kiosks or external portals post attendance records, DTRService resolves canonical IDs and forwards them to Port 8080.
+2. **Manual Punch Input Endpoint (`POST /api/manual-punch` & `POST /api/device-logs/manual`)**:  
+   Allows administrators, HR staff, or external systems to manually insert attendance punches. DTRService resolves employee details, records the punch in `device_logs`, and immediately forwards it **synchronously** to `http://192.168.9.243:8080/api/punches` (bypassing physical device ID restrictions).
 
-3. **Manual / Scheduled Device Pulling (`php artisan devices:pull-logs`)**:  
+3. **External Systems & Kiosks API (`POST /api/device-logs` via `DeviceLogController`)**:  
+   When kiosks or external portals post attendance records, DTRService resolves canonical IDs and forwards them to Port 8080. Pass `"sync_zkteco": true` to force synchronous forwarding.
+
+4. **Manual / Scheduled Device Pulling (`php artisan devices:pull-logs`)**:  
    Any newly pulled logs are automatically mirrored to Port 8080.
 
-4. **Fail-Safe Isolation**:  
+5. **Fail-Safe Isolation**:  
    Forwarding requests use a 3-second non-blocking timeout and are wrapped in isolated `try / catch` blocks. If the ZKTeco proxy is temporarily restarting, **DTRService operations and local database recording will never be interrupted or slowed down**.
 
 ---
 
-## 4. Backfilling / Syncing Existing Punches
+## 4. Manual Punch API Endpoint Reference
+
+Use this endpoint when you need to manually insert punches and have them synchronously recorded in **both** DTRService and the ZKTeco integration server on Port 8080.
+
+### 4.1. Single Manual Punch
+* **Method:** `POST`
+* **Path:** `/api/manual-punch` *(or `/api/device-logs/manual`)*
+* **Headers:** `Content-Type: application/json`, `Accept: application/json`
+
+#### Request Payload
+```json
+{
+  "biometric_id": "493",
+  "date_time": "2026-11-09 08:00:00",
+  "status": 0,
+  "device_name": "RKQ4242300018",
+  "sync_zkteco": true,
+  "prevent_duplicates": true
+}
+```
+
+> [!TIP]
+> - You can provide either **`biometric_id`** (e.g. `"493"`) or **`hrbliz_biometric_id`** (e.g. `"5180"`). The API automatically resolves the employee and translates to the correct identifier for Port 8080.
+> - **`status`** accepts integers (`0`=Check-In, `1`=Check-Out, `2`=Break-Out, `3`=Break-In, `4`=OT-In, `5`=OT-Out, `255`=Auto) or strings (`"in"`, `"out"`, `"break-out"`, `"break-in"`). If omitted or `255`, it is auto-classified using the employee's UMIS shift schedule.
+> - **`sync_zkteco`** defaults to `true`, guaranteeing synchronous push to `192.168.9.243:8080`.
+
+#### Successful Response (`201 Created`)
+```json
+{
+  "success": true,
+  "message": "Manual punch recorded successfully and synchronized with ZKTeco server.",
+  "data": {
+    "id": 14210,
+    "biometric_id": "493",
+    "hrbliz_biometric_id": "5180",
+    "name": "Juan Dela Cruz",
+    "dtr_date": "2026-11-09",
+    "date_time": "2026-11-09 08:00:00",
+    "status": 0,
+    "status_label": "Check-In",
+    "device_name": "RKQ4242300018",
+    "created_at": "2026-11-09T08:00:00.000000Z"
+  },
+  "zkteco_sync": {
+    "success": true,
+    "target_host": "http://192.168.9.243:8080",
+    "status_code": 200,
+    "latency_ms": 28.5,
+    "pin_sent": "5180",
+    "status_sent": 0,
+    "payload": {
+      "pin": "5180",
+      "time": "2026-11-09 08:00:00",
+      "status": 0,
+      "device_sn": "RKQ4242300018"
+    },
+    "response": {
+      "success": true,
+      "message": "Punch saved"
+    }
+  }
+}
+```
+
+### 4.2. Batch Manual Punches
+* **Method:** `POST /api/manual-punch`
+```json
+{
+  "sync_zkteco": true,
+  "punches": [
+    {
+      "biometric_id": "493",
+      "date_time": "2026-11-09 08:00:00",
+      "status": 0,
+      "device_sn": "RKQ4242300018"
+    },
+    {
+      "biometric_id": "493",
+      "date_time": "2026-11-09 17:00:00",
+      "status": 1,
+      "device_sn": "RKQ4242300018"
+    }
+  ]
+}
+```
+
+### 4.3. Direct ZKTeco Server Endpoint (Port 8080)
+If you wish to submit a punch directly to the ZKTeco SQLite database (bypassing DTRService MySQL):
+* **Method:** `POST`
+* **URL:** `http://192.168.9.243:8080/api/punches`
+* **Payload:**
+```json
+{
+  "pin": "5180",
+  "time": "2026-11-09 08:00:00",
+  "status": 0,
+  "device_sn": "RKQ4242300018"
+}
+```
+*(Note: Submitting directly to 8080 will NOT record into DTRService MySQL database or calculate UMIS DTR reports. Use `POST /api/manual-punch` on DTRService for full dual-system synchronous recording).*
+
+---
+
+## 5. Backfilling / Syncing Existing Punches
 
 To transfer historical or today's punches from DTRService into the ZKTeco database for legacy desktop payroll:
 

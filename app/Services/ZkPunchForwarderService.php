@@ -26,7 +26,7 @@ class ZkPunchForwarderService
         $this->host = rtrim(config('zkteco.host', 'http://127.0.0.1:8080'), '/');
         $this->timeout = (int)config('zkteco.timeout', 3);
         $this->apiKey = config('zkteco.api_key');
-        $this->defaultDeviceSn = config('zkteco.device_sn', 'DTRSERVICE_8181');
+        $this->defaultDeviceSn = config('zkteco.device_sn', 'RKQ4242300018');
         $this->useHrblizId = (bool)config('zkteco.use_hrbliz_id', true);
         $this->strictHrblizStatus = (bool)config('zkteco.strict_hrbliz_status', true);
         $this->classifier = $classifier ?? app(UmisPunchClassifierService::class);
@@ -263,6 +263,7 @@ class ZkPunchForwarderService
      * @param int $status Punch status code (0=In, 1=Out, etc.)
      * @param Devices|int|string|null $device Device model, ID, or SN
      * @param string|null $deviceSn Custom device identifier override
+     * @param bool $bypassDeviceFilter When true, ignores allowedDeviceIds filter (for manual inputs)
      * @return bool True if forward was successful or duplicate was handled
      */
     public function forwardPunch(
@@ -270,14 +271,15 @@ class ZkPunchForwarderService
         string $dateTime,
         int $status = 0,
         Devices|int|string|null $device = null,
-        ?string $deviceSn = null
+        ?string $deviceSn = null,
+        bool $bypassDeviceFilter = false
     ): bool {
         if (!$this->enabled) {
             return false;
         }
 
         // Check if device is allowed (if device restrictions are configured)
-        if (!$this->shouldForwardForDevice($device)) {
+        if (!$bypassDeviceFilter && !$this->shouldForwardForDevice($device)) {
             return false;
         }
 
@@ -335,13 +337,159 @@ class ZkPunchForwarderService
     }
 
     /**
+     * Forward a single punch synchronously and return complete transmission details.
+     *
+     * @param string|int $pin Employee biometric ID / PIN
+     * @param string $dateTime Timestamp YYYY-MM-DD HH:MM:SS
+     * @param int $status Punch status code (0=In, 1=Out, etc.)
+     * @param Devices|int|string|null $device Device model, ID, or SN
+     * @param string|null $deviceSn Custom device identifier override
+     * @param bool $bypassDeviceFilter When true, ignores allowedDeviceIds filter (for manual inputs)
+     * @return array [success => bool, target_host => string, status_code => int, latency_ms => float, pin_sent => string, status_sent => int, payload => array, response => ?array, error => ?string]
+     */
+    public function forwardPunchSync(
+        string|int $pin,
+        string $dateTime,
+        int $status = 0,
+        Devices|int|string|null $device = null,
+        ?string $deviceSn = null,
+        bool $bypassDeviceFilter = false
+    ): array {
+        if (!$this->enabled) {
+            return [
+                'success' => false,
+                'enabled' => false,
+                'message' => 'ZKTeco forwarding is disabled in configuration.',
+                'target_host' => $this->host,
+                'status_code' => 0,
+                'latency_ms' => 0.0,
+                'pin_sent' => (string)$pin,
+                'status_sent' => (int)$status,
+                'payload' => null,
+                'response' => null,
+                'error' => 'Forwarding is disabled in configuration (ZK_SERVER_FORWARD_ENABLED=false).',
+            ];
+        }
+
+        // Check if device is allowed (if device restrictions are configured and bypass is not set)
+        if (!$bypassDeviceFilter && !$this->shouldForwardForDevice($device)) {
+            return [
+                'success' => false,
+                'filtered' => true,
+                'message' => 'Device is filtered out by allowed device IDs configuration.',
+                'target_host' => $this->host,
+                'allowed_devices' => $this->allowedDeviceIds,
+                'status_code' => 0,
+                'latency_ms' => 0.0,
+                'pin_sent' => (string)$pin,
+                'status_sent' => (int)$status,
+                'payload' => null,
+                'response' => null,
+                'error' => 'Device ID is not in allowed list for ZKTeco forwarding.',
+            ];
+        }
+
+        // Map canonical biometric_id -> hrbliz_biometric_id (e.g. 493 -> 5180)
+        $targetPin = $this->resolveForwardPin($pin);
+
+        // Resolve status to strictly 0 (In) or 1 (Out) for HRBLIZ
+        $targetStatus = $this->resolveForwardStatus($pin, $dateTime, (int)$status);
+
+        $sn = $deviceSn;
+        if (!$sn && $device instanceof Devices) {
+            $sn = $device->serial_number ?: $device->device_name;
+        } elseif (!$sn && is_string($device)) {
+            $sn = $device;
+        }
+
+        $payload = [
+            'pin' => $targetPin,
+            'time' => $dateTime,
+            'status' => $targetStatus,
+            'device_sn' => $sn ?: $this->defaultDeviceSn,
+        ];
+
+        $start = microtime(true);
+        try {
+            $response = $this->client()->post("{$this->host}/api/punches", $payload);
+            $latencyMs = round((microtime(true) - $start) * 1000, 2);
+
+            if ($response->successful()) {
+                Log::channel('device_logs')->info('ZKTeco punch forwarded synchronously', [
+                    'original_pin' => $pin,
+                    'target_pin' => $targetPin,
+                    'date_time' => $dateTime,
+                    'device' => $sn,
+                    'latency_ms' => $latencyMs,
+                ]);
+
+                return [
+                    'success' => true,
+                    'target_host' => $this->host,
+                    'status_code' => $response->status(),
+                    'latency_ms' => $latencyMs,
+                    'pin_sent' => $targetPin,
+                    'status_sent' => $targetStatus,
+                    'payload' => $payload,
+                    'response' => $response->json() ?? ['raw' => $response->body()],
+                    'error' => null,
+                ];
+            }
+
+            Log::channel('device_logs')->warning('ZKTeco sync forward punch failed', [
+                'host' => $this->host,
+                'payload' => $payload,
+                'status' => $response->status(),
+                'response' => $response->body(),
+            ]);
+
+            return [
+                'success' => false,
+                'target_host' => $this->host,
+                'status_code' => $response->status(),
+                'latency_ms' => $latencyMs,
+                'pin_sent' => $targetPin,
+                'status_sent' => $targetStatus,
+                'payload' => $payload,
+                'response' => $response->json() ?? ['raw' => $response->body()],
+                'error' => "HTTP {$response->status()}: " . $response->body(),
+            ];
+        } catch (\Throwable $e) {
+            $latencyMs = round((microtime(true) - $start) * 1000, 2);
+            Log::channel('device_logs')->error('ZKTeco sync forward punch exception', [
+                'host' => $this->host,
+                'pin' => $targetPin,
+                'dateTime' => $dateTime,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'success' => false,
+                'target_host' => $this->host,
+                'status_code' => 0,
+                'latency_ms' => $latencyMs,
+                'pin_sent' => $targetPin,
+                'status_sent' => $targetStatus,
+                'payload' => $payload,
+                'response' => null,
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    /**
      * Forward a batch of punches to the ZKTeco integration server.
      *
      * @param array $punches Array of associative arrays [['pin' => ..., 'time' => ..., 'status' => ..., 'device_sn' => ..., 'device_id' => ...]]
      * @param Devices|int|string|null $device Optional common device
+     * @param bool $bypassDeviceFilter When true, ignores allowedDeviceIds filter (for manual inputs)
      * @return array [success => bool, total => int, inserted => int, skipped => int, errors => array]
      */
-    public function forwardBatch(array $punches, Devices|int|string|null $device = null): array
+    public function forwardBatch(
+        array $punches,
+        Devices|int|string|null $device = null,
+        bool $bypassDeviceFilter = false
+    ): array
     {
         if (empty($punches)) {
             return [
@@ -365,7 +513,7 @@ class ZkPunchForwarderService
         }
 
         // If common device given and restricted, check it
-        if ($device !== null && !$this->shouldForwardForDevice($device)) {
+        if (!$bypassDeviceFilter && $device !== null && !$this->shouldForwardForDevice($device)) {
             return [
                 'success' => true,
                 'total' => 0,
@@ -388,7 +536,7 @@ class ZkPunchForwarderService
         foreach ($punches as $punch) {
             // Check per-item device filter if item has device_id or device_name
             $itemDevice = $punch['device_id'] ?? $punch['device_sn'] ?? $punch['device_name'] ?? $device;
-            if ($itemDevice !== null && !$this->shouldForwardForDevice($itemDevice)) {
+            if (!$bypassDeviceFilter && $itemDevice !== null && !$this->shouldForwardForDevice($itemDevice)) {
                 continue;
             }
 

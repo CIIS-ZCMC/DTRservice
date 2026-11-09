@@ -412,7 +412,15 @@ class DeviceLogController extends Controller
                     'device_sn' => $log->device_name ?: 'DTR_API',
                 ], $insertedLogs);
 
-                app(\App\Services\ZkPunchForwarderService::class)->forwardBatch($forwardPayload);
+                $forceZkForward = filter_var(
+                    $request->input('sync_zkteco', $request->input('force_zk_forward', false)),
+                    FILTER_VALIDATE_BOOLEAN
+                );
+
+                app(\App\Services\ZkPunchForwarderService::class)->forwardBatch(
+                    $forwardPayload,
+                    bypassDeviceFilter: $forceZkForward
+                );
             } catch (\Throwable $e) {
                 Log::channel('device_logs')->debug('ZKTeco batch forward skipped or failed: ' . $e->getMessage());
             }
@@ -456,5 +464,556 @@ class DeviceLogController extends Controller
             'skipped_count'  => $skippedDuplicates,
             'data'           => $insertedLogs,
         ], 201);
+    }
+
+    /**
+     * Render the manual punch web interface.
+     *
+     * @param Request $request
+     * @return \Illuminate\Contracts\View\View
+     */
+    public function manualPunchView(Request $request)
+    {
+        $zkHost = config('zkteco.host', 'http://127.0.0.1:8080');
+        $zkForwarder = app(\App\Services\ZkPunchForwarderService::class);
+        $health = $zkForwarder->checkHealth();
+
+        return view('punches.manual', [
+            'zkHost' => $zkHost,
+            'zkHealth' => $health,
+        ]);
+    }
+
+    /**
+     * Search enrolled employees for manual punch autocomplete.
+     *
+     * @param Request $request
+     * @return JsonResponse
+     */
+    public function searchEmployees(Request $request): JsonResponse
+    {
+        $q = trim((string)$request->query('q', ''));
+
+        if (!Schema::hasTable('biometrics')) {
+            return response()->json(['success' => true, 'data' => []]);
+        }
+
+        $query = Biometrics::select('id', 'biometric_id', 'hrbliz_biometric_id', 'name');
+
+        if ($q !== '') {
+            $query->where(function ($sub) use ($q) {
+                $sub->where('biometric_id', 'LIKE', "{$q}%")
+                    ->orWhere('hrbliz_biometric_id', 'LIKE', "{$q}%")
+                    ->orWhere('name', 'LIKE', "%{$q}%");
+            });
+        }
+
+        $results = $query->orderBy('name', 'asc')
+            ->limit(20)
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'data' => $results->map(function ($b) {
+                return [
+                    'biometric_id' => (string)$b->biometric_id,
+                    'hrbliz_biometric_id' => $b->hrbliz_biometric_id ? (string)$b->hrbliz_biometric_id : null,
+                    'name' => $b->name ?: 'Employee #' . $b->biometric_id,
+                ];
+            }),
+        ]);
+    }
+
+    /**
+     * Manual punch input endpoint with synchronous forwarding to ZKTeco Integration Server (:8080).
+     *
+     * Handles both GET (endpoint metadata & connectivity check) and POST (manual punch recording).
+     *
+     * In POST mode:
+     * - Accepts canonical biometric_id, hrbliz_biometric_id, or pin
+     * - Automatically normalizes & parses timestamp (or defaults to current time)
+     * - Auto-resolves employee name and dual IDs from biometrics table
+     * - Auto-classifies punch status (0=Check-In, 1=Check-Out) using UMIS schedule if status is 255/omitted
+     * - Records the punch in DTRService (device_logs table)
+     * - Synchronously forwards the punch to the ZKTeco integration server on Port 8080 (192.168.9.243:8080)
+     * - Returns a complete JSON confirmation including DTRService record and ZKTeco sync result
+     *
+     * Supports both single punch and batch punches ({ "punches": [...] }).
+     *
+     * @param Request $request
+     * @return JsonResponse
+     */
+    public function manualPunch(Request $request): JsonResponse
+    {
+        $zkForwarder = app(\App\Services\ZkPunchForwarderService::class);
+
+        // GET request: Return endpoint documentation, schema, and live connectivity health
+        if ($request->isMethod('GET')) {
+            $health = $zkForwarder->checkHealth();
+
+            return response()->json([
+                'success' => true,
+                'endpoint' => '/api/manual-punch',
+                'description' => 'Manual Attendance Punch Ingestion with Synchronous ZKTeco (:8080) Forwarding',
+                'zkteco_server' => [
+                    'host' => $zkForwarder->getHost(),
+                    'forward_enabled' => $zkForwarder->isEnabled(),
+                    'health' => $health,
+                ],
+                'supported_methods' => ['POST', 'GET'],
+                'request_schema' => [
+                    'biometric_id' => 'string|int (canonical biometric PIN, e.g. "493")',
+                    'hrbliz_biometric_id' => 'string|int (HRBLIZ biometric PIN, e.g. "5180"). Auto-mapped to canonical ID',
+                    'pin' => 'string|int (alias for biometric_id or hrbliz_biometric_id)',
+                    'date_time' => 'string "YYYY-MM-DD HH:MM:SS" (optional, defaults to now)',
+                    'dtr_date' => 'string "YYYY-MM-DD" (optional alternative if date_time is omitted)',
+                    'dtr_time' => 'string "HH:MM:SS" (optional alternative if date_time is omitted)',
+                    'status' => 'int (0=Check-In, 1=Check-Out, 2=Break-Out, 3=Break-In, 4=OT-In, 5=OT-Out, 255=Auto) or string ("in", "out"). Auto-classified using UMIS shift schedule if omitted',
+                    'name' => 'string (optional employee name; auto-resolved from biometrics table if omitted)',
+                    'device_name' => 'string (optional, defaults to "' . config('zkteco.device_sn', 'RKQ4242300018') . '")',
+                    'sync_zkteco' => 'boolean (default: true) - Synchronously forwards to ZKTeco Port 8080',
+                    'prevent_duplicates' => 'boolean (default: true) - Skips insert if punch exists for exact timestamp',
+                    'force_forward' => 'boolean (default: false) - When duplicate exists in DTRService, still forwards to ZKTeco',
+                    'is_hrbliz' => 'boolean (default: false) - Store into device_logs_hrbliz instead of device_logs',
+                ],
+                'punch_status_reference' => [
+                    0 => 'Check-In (AM In / Shift Start)',
+                    1 => 'Check-Out (PM Out / Shift End)',
+                    2 => 'Break-Out (Lunch Out)',
+                    3 => 'Break-In (Lunch In)',
+                    4 => 'Overtime-In',
+                    5 => 'Overtime-Out',
+                    255 => 'Auto-classify using UMIS shift schedule',
+                ],
+                'example_post_single' => [
+                    'biometric_id' => '493',
+                    'date_time' => now()->format('Y-m-d H:i:s'),
+                    'status' => 0,
+                    'device_name' => config('zkteco.device_sn', 'RKQ4242300018'),
+                ],
+                'example_post_batch' => [
+                    'punches' => [
+                        [
+                            'biometric_id' => '493',
+                            'date_time' => now()->format('Y-m-d') . ' 08:00:00',
+                            'status' => 0,
+                        ],
+                        [
+                            'biometric_id' => '493',
+                            'date_time' => now()->format('Y-m-d') . ' 17:00:00',
+                            'status' => 1,
+                        ],
+                    ],
+                ],
+            ], 200);
+        }
+
+        // POST request: Handle single or batch punch submission
+        $rawPayload = $request->all();
+        $isBatch = false;
+        $items = [];
+
+        if ($request->isJson() && is_array($request->json()->all()) && array_is_list($request->json()->all())) {
+            $items = $request->json()->all();
+            $isBatch = true;
+        } elseif ($request->has('punches') && is_array($request->input('punches'))) {
+            $items = $request->input('punches');
+            $isBatch = true;
+        } elseif ($request->has('logs') && is_array($request->input('logs'))) {
+            $items = $request->input('logs');
+            $isBatch = true;
+        } else {
+            $items = [$rawPayload];
+        }
+
+        if (empty($items) || !isset($items[0])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No punch data provided in request. Supply biometric_id, hrbliz_biometric_id, or "punches" array.',
+            ], 422);
+        }
+
+        $preventDuplicates = filter_var(
+            $request->input('prevent_duplicates', $request->query('prevent_duplicates', true)),
+            FILTER_VALIDATE_BOOLEAN
+        );
+
+        $syncZkteco = filter_var(
+            $request->input('sync_zkteco', $request->query('sync_zkteco', true)),
+            FILTER_VALIDATE_BOOLEAN
+        );
+
+        $forceForward = filter_var(
+            $request->input('force_forward', $request->query('force_forward', false)),
+            FILTER_VALIDATE_BOOLEAN
+        );
+
+        $isHrbliz = filter_var(
+            $request->input('is_hrbliz', $request->query('is_hrbliz', false)),
+            FILTER_VALIDATE_BOOLEAN
+        );
+
+        $targetModelClass = ($isHrbliz && Schema::hasTable('device_logs_hrbliz'))
+            ? DeviceLogsHrbliz::class
+            : DeviceLogs::class;
+
+        // Process single punch
+        if (!$isBatch) {
+            $item = $items[0];
+
+            $rawPin = $item['biometric_id'] ?? $item['hrbliz_biometric_id'] ?? $item['pin'] ?? null;
+            if ($rawPin === null || trim((string)$rawPin) === '') {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Employee identifier is required. Provide biometric_id or hrbliz_biometric_id.',
+                    'errors' => [
+                        'biometric_id' => ['The biometric_id field is required.'],
+                    ],
+                ], 422);
+            }
+
+            // Normalization of date/time fields
+            $dateTimeStr = $item['date_time'] ?? null;
+            if (!$dateTimeStr && !empty($item['dtr_date']) && !empty($item['dtr_time'])) {
+                $dateTimeStr = trim($item['dtr_date']) . ' ' . trim($item['dtr_time']);
+            } elseif (!$dateTimeStr && !empty($item['dtr_date'])) {
+                $dateTimeStr = trim($item['dtr_date']) . ' ' . now()->format('H:i:s');
+            } elseif (!$dateTimeStr) {
+                $dateTimeStr = now()->format('Y-m-d H:i:s');
+            }
+
+            try {
+                $carbonDt = Carbon::parse($dateTimeStr);
+                $formattedDateTime = $carbonDt->format('Y-m-d H:i:s');
+                $formattedDtrDate = !empty($item['dtr_date'])
+                    ? Carbon::parse($item['dtr_date'])->format('Y-m-d')
+                    : $carbonDt->format('Y-m-d');
+            } catch (\Throwable $e) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Invalid date_time format. Expected YYYY-MM-DD HH:MM:SS.',
+                    'errors' => ['date_time' => [$e->getMessage()]],
+                ], 422);
+            }
+
+            // Resolve employee in biometrics table (maps canonical biometric_id, hrbliz_biometric_id, and name)
+            $canonicalBiometricId = (string)$rawPin;
+            $hrblizBiometricId = isset($item['hrbliz_biometric_id']) ? (string)$item['hrbliz_biometric_id'] : null;
+            $employeeName = !empty($item['name']) ? trim($item['name']) : null;
+
+            if (Schema::hasTable('biometrics')) {
+                $intPin = (int)$rawPin;
+                $matchedBio = Biometrics::where('biometric_id', $intPin)
+                    ->orWhere('hrbliz_biometric_id', $intPin)
+                    ->first();
+
+                if ($matchedBio) {
+                    $canonicalBiometricId = (string)$matchedBio->biometric_id;
+                    $hrblizBiometricId = $matchedBio->hrbliz_biometric_id ? (string)$matchedBio->hrbliz_biometric_id : $hrblizBiometricId;
+                    if (empty($employeeName)) {
+                        $employeeName = $matchedBio->name;
+                    }
+                }
+            }
+
+            if (empty($employeeName)) {
+                $employeeName = 'Unknown';
+            }
+
+            // Normalize and resolve punch status (0=Check-In, 1=Check-Out)
+            $rawStatusInput = $item['status'] ?? null;
+            $resolvedStatus = $this->normalizeStatus($rawStatusInput, $canonicalBiometricId, $formattedDateTime);
+            $deviceName = !empty($item['device_name']) ? trim($item['device_name']) : config('zkteco.device_sn', 'RKQ4242300018');
+
+            // Duplicate check
+            $existing = null;
+            if ($preventDuplicates) {
+                $existing = $targetModelClass::where('biometric_id', $canonicalBiometricId)
+                    ->where('date_time', $formattedDateTime)
+                    ->first();
+
+                if ($existing && !$forceForward) {
+                    return response()->json([
+                        'success' => true,
+                        'is_duplicate' => true,
+                        'message' => 'Punch log already exists in database (duplicate skipped).',
+                        'data' => [
+                            'id' => $existing->id,
+                            'biometric_id' => $existing->biometric_id,
+                            'hrbliz_biometric_id' => $hrblizBiometricId,
+                            'name' => $existing->name,
+                            'dtr_date' => $existing->dtr_date,
+                            'date_time' => $existing->date_time,
+                            'status' => (int)$existing->status,
+                            'status_label' => $this->getStatusLabel((int)$existing->status),
+                            'device_name' => $existing->device_name,
+                        ],
+                        'zkteco_sync' => [
+                            'success' => true,
+                            'target_host' => $zkForwarder->getHost(),
+                            'skipped' => true,
+                            'reason' => 'Skipped because punch is already recorded in database.',
+                        ],
+                    ], 200);
+                }
+            }
+
+            // Record into DTRService database
+            $createdLog = null;
+            if (!$existing) {
+                try {
+                    $createdLog = $targetModelClass::create([
+                        'biometric_id' => $canonicalBiometricId,
+                        'name'         => $employeeName,
+                        'dtr_date'     => $formattedDtrDate,
+                        'date_time'    => $formattedDateTime,
+                        'status'       => $resolvedStatus,
+                        'is_Shifting'  => isset($item['is_Shifting']) ? (int)$item['is_Shifting'] : 0,
+                        'schedule'     => $item['schedule'] ?? null,
+                        'active'       => isset($item['active']) ? (int)$item['active'] : 1,
+                        'device_name'  => $deviceName,
+                    ]);
+
+                    if ($hrblizBiometricId !== null) {
+                        $createdLog->setAttribute('hrbliz_biometric_id', $hrblizBiometricId);
+                    }
+                } catch (\Throwable $e) {
+                    Log::error('DeviceLogController::manualPunch insert error: ' . $e->getMessage());
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Failed to record manual punch in database: ' . $e->getMessage(),
+                    ], 500);
+                }
+            } else {
+                $createdLog = $existing;
+            }
+
+            // Synchronously forward to ZKTeco Integration Server (:8080)
+            $zkSyncResult = null;
+            if ($syncZkteco) {
+                $zkSyncResult = $zkForwarder->forwardPunchSync(
+                    pin: $canonicalBiometricId,
+                    dateTime: $formattedDateTime,
+                    status: $resolvedStatus,
+                    device: $deviceName,
+                    deviceSn: $deviceName,
+                    bypassDeviceFilter: true
+                );
+            } else {
+                $zkSyncResult = [
+                    'success' => true,
+                    'skipped' => true,
+                    'message' => 'ZKTeco forwarding bypassed via sync_zkteco=false.',
+                ];
+            }
+
+            $logRecord = $createdLog ?? $existing;
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Manual punch recorded successfully and synchronized with ZKTeco server.',
+                'data' => [
+                    'id' => $logRecord->id ?? null,
+                    'biometric_id' => $canonicalBiometricId,
+                    'hrbliz_biometric_id' => $hrblizBiometricId,
+                    'name' => $employeeName,
+                    'dtr_date' => $formattedDtrDate,
+                    'date_time' => $formattedDateTime,
+                    'status' => $resolvedStatus,
+                    'status_label' => $this->getStatusLabel($resolvedStatus),
+                    'device_name' => $deviceName,
+                    'created_at' => $logRecord->created_at ?? now(),
+                ],
+                'zkteco_sync' => $zkSyncResult,
+            ], 201);
+        }
+
+        // Process batch punches
+        $insertedLogs = [];
+        $skippedDuplicates = 0;
+        $batchForwardPunches = [];
+
+        foreach ($items as $index => $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+
+            $rawPin = $item['biometric_id'] ?? $item['hrbliz_biometric_id'] ?? $item['pin'] ?? null;
+            if ($rawPin === null || trim((string)$rawPin) === '') {
+                continue;
+            }
+
+            $dateTimeStr = $item['date_time'] ?? null;
+            if (!$dateTimeStr && !empty($item['dtr_date']) && !empty($item['dtr_time'])) {
+                $dateTimeStr = trim($item['dtr_date']) . ' ' . trim($item['dtr_time']);
+            } elseif (!$dateTimeStr && !empty($item['dtr_date'])) {
+                $dateTimeStr = trim($item['dtr_date']) . ' ' . now()->format('H:i:s');
+            } elseif (!$dateTimeStr) {
+                $dateTimeStr = now()->format('Y-m-d H:i:s');
+            }
+
+            try {
+                $carbonDt = Carbon::parse($dateTimeStr);
+                $formattedDateTime = $carbonDt->format('Y-m-d H:i:s');
+                $formattedDtrDate = !empty($item['dtr_date'])
+                    ? Carbon::parse($item['dtr_date'])->format('Y-m-d')
+                    : $carbonDt->format('Y-m-d');
+            } catch (\Throwable $e) {
+                continue;
+            }
+
+            $canonicalBiometricId = (string)$rawPin;
+            $hrblizBiometricId = isset($item['hrbliz_biometric_id']) ? (string)$item['hrbliz_biometric_id'] : null;
+            $employeeName = !empty($item['name']) ? trim($item['name']) : null;
+
+            if (Schema::hasTable('biometrics')) {
+                $intPin = (int)$rawPin;
+                $matchedBio = Biometrics::where('biometric_id', $intPin)
+                    ->orWhere('hrbliz_biometric_id', $intPin)
+                    ->first();
+
+                if ($matchedBio) {
+                    $canonicalBiometricId = (string)$matchedBio->biometric_id;
+                    $hrblizBiometricId = $matchedBio->hrbliz_biometric_id ? (string)$matchedBio->hrbliz_biometric_id : $hrblizBiometricId;
+                    if (empty($employeeName)) {
+                        $employeeName = $matchedBio->name;
+                    }
+                }
+            }
+
+            if (empty($employeeName)) {
+                $employeeName = 'Unknown';
+            }
+
+            $rawStatusInput = $item['status'] ?? null;
+            $resolvedStatus = $this->normalizeStatus($rawStatusInput, $canonicalBiometricId, $formattedDateTime);
+            $deviceName = !empty($item['device_name']) ? trim($item['device_name']) : config('zkteco.device_sn', 'RKQ4242300018');
+
+            if ($preventDuplicates) {
+                $exists = $targetModelClass::where('biometric_id', $canonicalBiometricId)
+                    ->where('date_time', $formattedDateTime)
+                    ->exists();
+
+                if ($exists) {
+                    $skippedDuplicates++;
+                    if (!$forceForward) {
+                        continue;
+                    }
+                }
+            }
+
+            $created = $targetModelClass::create([
+                'biometric_id' => $canonicalBiometricId,
+                'name'         => $employeeName,
+                'dtr_date'     => $formattedDtrDate,
+                'date_time'    => $formattedDateTime,
+                'status'       => $resolvedStatus,
+                'is_Shifting'  => isset($item['is_Shifting']) ? (int)$item['is_Shifting'] : 0,
+                'schedule'     => $item['schedule'] ?? null,
+                'active'       => isset($item['active']) ? (int)$item['active'] : 1,
+                'device_name'  => $deviceName,
+            ]);
+
+            if ($hrblizBiometricId !== null) {
+                $created->setAttribute('hrbliz_biometric_id', $hrblizBiometricId);
+            }
+
+            $insertedLogs[] = $created;
+
+            $batchForwardPunches[] = [
+                'pin' => $canonicalBiometricId,
+                'time' => $formattedDateTime,
+                'status' => $resolvedStatus,
+                'device_sn' => $deviceName,
+            ];
+        }
+
+        $zkBatchResult = null;
+        if ($syncZkteco && !empty($batchForwardPunches)) {
+            $zkBatchResult = $zkForwarder->forwardBatch($batchForwardPunches, bypassDeviceFilter: true);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => sprintf(
+                'Manual batch processed: %d inserted, %d skipped duplicates out of %d total.',
+                count($insertedLogs),
+                $skippedDuplicates,
+                count($items)
+            ),
+            'total_received' => count($items),
+            'inserted_count' => count($insertedLogs),
+            'skipped_count'  => $skippedDuplicates,
+            'data'           => $insertedLogs,
+            'zkteco_sync'    => $zkBatchResult,
+        ], 201);
+    }
+
+    /**
+     * Normalize status input (integer or string) and auto-classify if 255/omitted.
+     *
+     * @param mixed $status
+     * @param string|null $pin
+     * @param string|null $dateTime
+     * @return int Strictly punch code (0, 1, 2, 3, 4, 5)
+     */
+    protected function normalizeStatus(mixed $status, ?string $pin = null, ?string $dateTime = null): int
+    {
+        if ($status === null || $status === '' || $status === 255 || $status === '255') {
+            if ($pin !== null && $dateTime !== null) {
+                try {
+                    $classifier = app(\App\Services\UmisPunchClassifierService::class);
+                    return $classifier->classifyStatus($pin, $dateTime);
+                } catch (\Throwable $e) {
+                    $hour = (int)date('H', strtotime($dateTime));
+                    return ($hour < 12) ? 0 : 1;
+                }
+            }
+            return 0;
+        }
+
+        if (is_numeric($status)) {
+            $intStatus = (int)$status;
+            if ($intStatus === 255 && $pin !== null && $dateTime !== null) {
+                try {
+                    $classifier = app(\App\Services\UmisPunchClassifierService::class);
+                    return $classifier->classifyStatus($pin, $dateTime);
+                } catch (\Throwable $e) {
+                    $hour = (int)date('H', strtotime($dateTime));
+                    return ($hour < 12) ? 0 : 1;
+                }
+            }
+            return $intStatus;
+        }
+
+        $normalized = strtolower(trim((string)$status));
+        return match ($normalized) {
+            'in', 'check-in', 'checkin', 'time-in', 'timein', 'am-in', 'am in' => 0,
+            'out', 'check-out', 'checkout', 'time-out', 'timeout', 'pm-out', 'pm out' => 1,
+            'break-out', 'breakout', 'lunch-out', 'lunchout' => 2,
+            'break-in', 'breakin', 'lunch-in', 'lunchin' => 3,
+            'ot-in', 'otin', 'overtime-in' => 4,
+            'ot-out', 'otout', 'overtime-out' => 5,
+            default => 0,
+        };
+    }
+
+    /**
+     * Get human-readable description of punch status.
+     *
+     * @param int $status
+     * @return string
+     */
+    protected function getStatusLabel(int $status): string
+    {
+        return match ($status) {
+            0 => 'Check-In',
+            1 => 'Check-Out',
+            2 => 'Break-Out',
+            3 => 'Break-In',
+            4 => 'Overtime-In',
+            5 => 'Overtime-Out',
+            default => "Status {$status}",
+        };
     }
 }
