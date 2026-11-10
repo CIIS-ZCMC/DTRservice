@@ -349,26 +349,86 @@
                         <input type="hidden" id="selectedStatusInput" value="0">
                     </div>
 
-                    <!-- Additional Options & Device Tag -->
+                    <!-- Device Selector & Sync Options -->
                     <div class="pt-2 border-t space-y-3" style="border-color: var(--border-color);">
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            <div class="space-y-1.5">
-                                <label class="block text-xs font-semibold text-slate-300">Device Serial Number / Source</label>
-                                <input type="text" id="deviceNameInput" value="RKQ4242300018"
-                                    class="w-full px-3 py-2 rounded-lg border text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-500 font-mono text-xs"
-                                    style="background-color: var(--bg-input); border-color: var(--border-color);">
+                        <div class="space-y-2">
+                            <div class="flex items-center justify-between">
+                                <label for="deviceSelect" class="block text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-server text-teal-400 text-xs"></i>
+                                    <span>Select Biometric Terminal / Device <span class="text-rose-400">*</span></span>
+                                </label>
+                                <span id="deviceTypeBadge" class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                                    Biometric Terminal
+                                </span>
                             </div>
 
-                            <div class="space-y-2 pt-1 sm:pt-4">
-                                <label class="flex items-center gap-2 cursor-pointer select-none">
-                                    <input type="checkbox" id="syncZktecoCheckbox" checked class="w-4 h-4 rounded text-teal-600 bg-slate-800 border-slate-700 focus:ring-teal-500">
-                                    <span class="text-xs text-slate-300 font-medium">Forward to Port 8080 Synchronously</span>
-                                </label>
-                                <label class="flex items-center gap-2 cursor-pointer select-none">
-                                    <input type="checkbox" id="preventDuplicatesCheckbox" checked class="w-4 h-4 rounded text-teal-600 bg-slate-800 border-slate-700 focus:ring-teal-500">
-                                    <span class="text-xs text-slate-300 font-medium">Prevent duplicate punch entries</span>
-                                </label>
+                            <div class="relative">
+                                <select id="deviceSelect"
+                                    class="w-full px-3 py-2.5 rounded-lg border text-xs sm:text-sm text-white focus:outline-none focus:ring-2 focus:ring-teal-500 font-sans cursor-pointer transition-colors"
+                                    style="background-color: var(--bg-input); border-color: var(--border-color);">
+                                    @if(isset($devices) && $devices->isNotEmpty())
+                                        @foreach($devices as $dev)
+                                            <option value="{{ $dev->id }}"
+                                                data-device-id="{{ $dev->id }}"
+                                                data-device-name="{{ $dev->device_name }}"
+                                                data-serial-number="{{ $dev->serial_number }}"
+                                                data-ip="{{ $dev->ip_address }}"
+                                                data-is-hrbliz="{{ $dev->is_hrbliz ? '1' : '0' }}"
+                                                data-is-active="{{ $dev->is_active ? '1' : '0' }}"
+                                                {{ (config('zkteco.device_sn') && ($dev->serial_number === config('zkteco.device_sn') || $dev->device_name === config('zkteco.device_sn'))) || $loop->first ? 'selected' : '' }}>
+                                                {{ $dev->device_name }} — SN: {{ $dev->serial_number ?: 'N/A' }} ({{ $dev->ip_address }}) {{ $dev->is_hrbliz ? '• [HRBLIZ]' : '• [UMIS]' }}
+                                            </option>
+                                        @endforeach
+                                        <option value="custom" data-is-custom="1">-- Custom / Other Device --</option>
+                                    @else
+                                        <option value="custom" data-is-custom="1" selected>
+                                            Default Terminal (SN: {{ config('zkteco.device_sn', 'RKQ4242300018') }})
+                                        </option>
+                                    @endif
+                                </select>
                             </div>
+
+                            <!-- Target Routing Preview Pill -->
+                            <div id="deviceDetailsPill" class="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px] grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <div class="flex items-center gap-1.5 text-slate-400">
+                                    <i class="fa-solid fa-database text-teal-400 text-xs"></i>
+                                    <span>UMIS Device Log:</span>
+                                    <b id="previewDeviceName" class="text-teal-300 font-medium">--</b>
+                                </div>
+                                <div class="flex items-center gap-1.5 text-slate-400">
+                                    <i class="fa-solid fa-microchip text-amber-400 text-xs"></i>
+                                    <span>8080 Server (:8080):</span>
+                                    <b id="previewSerial" class="font-mono text-amber-300 font-medium">--</b>
+                                </div>
+                            </div>
+
+                            <!-- Custom Device Inputs (Hidden unless custom is chosen) -->
+                            <div id="customDeviceContainer" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                                <div class="space-y-1">
+                                    <label class="block text-[11px] font-semibold text-slate-400">Device Name (for UMIS logs)</label>
+                                    <input type="text" id="customDeviceNameInput" placeholder="e.g. TAD_ENTRANCE"
+                                        class="w-full px-3 py-1.5 rounded-lg border text-xs text-white focus:outline-none focus:ring-1 focus:ring-teal-500 font-mono"
+                                        style="background-color: var(--bg-input); border-color: var(--border-color);">
+                                </div>
+                                <div class="space-y-1">
+                                    <label class="block text-[11px] font-semibold text-slate-400">Serial Number (for Port 8080)</label>
+                                    <input type="text" id="customSerialInput" placeholder="e.g. RKQ4242300018"
+                                        class="w-full px-3 py-1.5 rounded-lg border text-xs text-white focus:outline-none focus:ring-1 focus:ring-teal-500 font-mono"
+                                        style="background-color: var(--bg-input); border-color: var(--border-color);">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Checkboxes Row -->
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                            <label class="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" id="syncZktecoCheckbox" checked class="w-4 h-4 rounded text-teal-600 bg-slate-800 border-slate-700 focus:ring-teal-500">
+                                <span class="text-xs text-slate-300 font-medium">Forward to Port 8080 Synchronously</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer select-none">
+                                <input type="checkbox" id="preventDuplicatesCheckbox" checked class="w-4 h-4 rounded text-teal-600 bg-slate-800 border-slate-700 focus:ring-teal-500">
+                                <span class="text-xs text-slate-300 font-medium">Prevent duplicate punch entries</span>
+                            </label>
                         </div>
                     </div>
 
@@ -397,6 +457,44 @@
                     <p class="text-xs text-slate-400">
                         Add multiple punches to record them in batch and send in a single synchronous push to Port 8080.
                     </p>
+
+                    <!-- Batch Target Device Selector -->
+                    <div class="p-3 rounded-lg bg-slate-900/50 border border-slate-800 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <label for="batchDeviceSelect" class="block text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                                <i class="fa-solid fa-server text-teal-400 text-xs"></i>
+                                <span>Batch Target Device <span class="text-rose-400">*</span></span>
+                            </label>
+                            <span id="batchDeviceTypeBadge" class="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                                Auto
+                            </span>
+                        </div>
+                        <select id="batchDeviceSelect"
+                            class="w-full px-3 py-2 rounded-lg border text-xs text-white focus:outline-none focus:ring-1 focus:ring-teal-500 font-sans cursor-pointer"
+                            style="background-color: var(--bg-input); border-color: var(--border-color);">
+                            @if(isset($devices) && $devices->isNotEmpty())
+                                @foreach($devices as $dev)
+                                    <option value="{{ $dev->id }}"
+                                        data-device-id="{{ $dev->id }}"
+                                        data-device-name="{{ $dev->device_name }}"
+                                        data-serial-number="{{ $dev->serial_number }}"
+                                        data-ip="{{ $dev->ip_address }}"
+                                        data-is-hrbliz="{{ $dev->is_hrbliz ? '1' : '0' }}"
+                                        {{ (config('zkteco.device_sn') && ($dev->serial_number === config('zkteco.device_sn') || $dev->device_name === config('zkteco.device_sn'))) || $loop->first ? 'selected' : '' }}>
+                                        {{ $dev->device_name }} — SN: {{ $dev->serial_number ?: 'N/A' }} ({{ $dev->ip_address }}) {{ $dev->is_hrbliz ? '• [HRBLIZ]' : '• [UMIS]' }}
+                                    </option>
+                                @endforeach
+                            @else
+                                <option value="custom" data-is-custom="1" selected>
+                                    Default Terminal (SN: {{ config('zkteco.device_sn', 'RKQ4242300018') }})
+                                </option>
+                            @endif
+                        </select>
+                        <div class="flex items-center justify-between text-[11px] text-slate-400 pt-0.5">
+                            <span>UMIS Device Log: <b id="batchPreviewDeviceName" class="text-teal-300 font-medium">--</b></span>
+                            <span>8080 Server: <b id="batchPreviewSerial" class="font-mono text-amber-300 font-medium">--</b></span>
+                        </div>
+                    </div>
 
                     <!-- Batch Rows Table -->
                     <div class="overflow-x-auto custom-scrollbar">
@@ -474,6 +572,18 @@
                             <div class="p-2.5 rounded bg-slate-900/40 border border-slate-800">
                                 <span class="text-slate-500 block text-[10px] uppercase font-bold">DTR Database ID</span>
                                 <span id="resDbId" class="font-mono text-slate-200 font-semibold">--</span>
+                            </div>
+                        </div>
+
+                        <!-- Device Routing Breakdown -->
+                        <div class="grid grid-cols-2 gap-2 text-xs">
+                            <div class="p-2.5 rounded bg-slate-900/40 border border-slate-800">
+                                <span class="text-slate-500 block text-[10px] uppercase font-bold">UMIS Device Log</span>
+                                <span id="resDeviceName" class="text-teal-300 font-semibold truncate block" title="Device Name saved in UMIS">--</span>
+                            </div>
+                            <div class="p-2.5 rounded bg-slate-900/40 border border-slate-800">
+                                <span class="text-slate-500 block text-[10px] uppercase font-bold">8080 Server SN</span>
+                                <span id="resDeviceSn" class="font-mono text-amber-300 font-semibold truncate block" title="Serial Number forwarded to Port 8080">--</span>
                             </div>
                         </div>
 
@@ -574,7 +684,21 @@
             const punchTimeInput = document.getElementById('punchTimeInput');
             const selectedStatusInput = document.getElementById('selectedStatusInput');
             const statusDescriptionLabel = document.getElementById('statusDescriptionLabel');
-            const deviceNameInput = document.getElementById('deviceNameInput');
+            const deviceSelect = document.getElementById('deviceSelect');
+            const deviceTypeBadge = document.getElementById('deviceTypeBadge');
+            const previewDeviceName = document.getElementById('previewDeviceName');
+            const previewSerial = document.getElementById('previewSerial');
+            const customDeviceContainer = document.getElementById('customDeviceContainer');
+            const customDeviceNameInput = document.getElementById('customDeviceNameInput');
+            const customSerialInput = document.getElementById('customSerialInput');
+
+            const batchDeviceSelect = document.getElementById('batchDeviceSelect');
+            const batchDeviceTypeBadge = document.getElementById('batchDeviceTypeBadge');
+            const batchPreviewDeviceName = document.getElementById('batchPreviewDeviceName');
+            const batchPreviewSerial = document.getElementById('batchPreviewSerial');
+
+            const resDeviceName = document.getElementById('resDeviceName');
+            const resDeviceSn = document.getElementById('resDeviceSn');
             const syncZktecoCheckbox = document.getElementById('syncZktecoCheckbox');
             const preventDuplicatesCheckbox = document.getElementById('preventDuplicatesCheckbox');
 
@@ -806,6 +930,75 @@
             btnRefreshHealth.addEventListener('click', checkServerHealth);
             checkServerHealth();
 
+            // 6.5. Device Selection Logic (App\Models\Devices)
+            function updateSelectedDevice() {
+                if (!deviceSelect) return;
+                const opt = deviceSelect.options[deviceSelect.selectedIndex];
+                const isCustom = opt?.dataset?.isCustom === '1' || deviceSelect.value === 'custom';
+
+                if (isCustom) {
+                    customDeviceContainer?.classList.remove('hidden');
+                    const cName = customDeviceNameInput?.value.trim() || 'Custom Terminal';
+                    const cSn = customSerialInput?.value.trim() || 'Custom SN';
+                    if (previewDeviceName) previewDeviceName.textContent = cName;
+                    if (previewSerial) previewSerial.textContent = cSn;
+                    if (deviceTypeBadge) {
+                        deviceTypeBadge.textContent = 'Custom Device';
+                        deviceTypeBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700';
+                    }
+                } else {
+                    customDeviceContainer?.classList.add('hidden');
+                    const devName = opt?.dataset?.deviceName || opt?.text || '--';
+                    const sn = opt?.dataset?.serialNumber || 'N/A';
+                    const isHrb = opt?.dataset?.isHrbliz === '1';
+
+                    if (previewDeviceName) previewDeviceName.textContent = devName;
+                    if (previewSerial) previewSerial.textContent = sn;
+                    if (deviceTypeBadge) {
+                        deviceTypeBadge.textContent = isHrb ? 'HRBLIZ Terminal' : 'UMIS Terminal';
+                        deviceTypeBadge.className = isHrb
+                            ? 'text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                            : 'text-[10px] font-bold px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/30';
+                    }
+                }
+            }
+
+            if (deviceSelect) {
+                deviceSelect.addEventListener('change', updateSelectedDevice);
+                customDeviceNameInput?.addEventListener('input', () => {
+                    if (deviceSelect.value === 'custom' && previewDeviceName) {
+                        previewDeviceName.textContent = customDeviceNameInput.value.trim() || 'Custom Terminal';
+                    }
+                });
+                customSerialInput?.addEventListener('input', () => {
+                    if (deviceSelect.value === 'custom' && previewSerial) {
+                        previewSerial.textContent = customSerialInput.value.trim() || 'Custom SN';
+                    }
+                });
+                updateSelectedDevice();
+            }
+
+            function updateBatchDevice() {
+                if (!batchDeviceSelect) return;
+                const opt = batchDeviceSelect.options[batchDeviceSelect.selectedIndex];
+                const name = opt?.dataset?.deviceName || opt?.text || '--';
+                const sn = opt?.dataset?.serialNumber || 'N/A';
+                const isHrb = opt?.dataset?.isHrbliz === '1';
+
+                if (batchPreviewDeviceName) batchPreviewDeviceName.textContent = name;
+                if (batchPreviewSerial) batchPreviewSerial.textContent = sn;
+                if (batchDeviceTypeBadge) {
+                    batchDeviceTypeBadge.textContent = isHrb ? 'HRBLIZ Terminal' : 'UMIS Terminal';
+                    batchDeviceTypeBadge.className = isHrb
+                        ? 'text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        : 'text-[10px] font-bold px-2 py-0.5 rounded bg-teal-500/20 text-teal-300 border border-teal-500/30';
+                }
+            }
+            if (batchDeviceSelect) {
+                batchDeviceSelect.addEventListener('change', updateBatchDevice);
+                updateBatchDevice();
+            }
+
             // 7. Submit Single Punch Handler
             btnSubmitPunch.addEventListener('click', handleSingleSubmit);
 
@@ -827,6 +1020,17 @@
                     return;
                 }
 
+                const opt = deviceSelect ? deviceSelect.options[deviceSelect.selectedIndex] : null;
+                const isCustom = opt?.dataset?.isCustom === '1' || deviceSelect?.value === 'custom';
+
+                let devId = isCustom ? undefined : (opt?.dataset?.deviceId ? parseInt(opt.dataset.deviceId, 10) : undefined);
+                let devName = isCustom ? customDeviceNameInput?.value.trim() : (opt?.dataset?.deviceName || undefined);
+                let devSn = isCustom ? customSerialInput?.value.trim() : (opt?.dataset?.serialNumber || undefined);
+                let devIsHrbliz = isCustom ? false : (opt?.dataset?.isHrbliz === '1');
+
+                if (!devName && devSn) devName = devSn;
+                if (!devSn && devName) devSn = devName;
+
                 const dateTime = `${date} ${time}`;
                 const payload = {
                     biometric_id: bioPin || undefined,
@@ -834,7 +1038,11 @@
                     name: empName || undefined,
                     date_time: dateTime,
                     status: parseInt(selectedStatusInput.value, 10),
-                    device_name: deviceNameInput.value.trim() || 'RKQ4242300018',
+                    device_id: devId,
+                    device_name: devName,
+                    serial_number: devSn,
+                    device_sn: devSn,
+                    is_hrbliz: devIsHrbliz,
                     sync_zkteco: syncZktecoCheckbox.checked,
                     prevent_duplicates: preventDuplicatesCheckbox.checked,
                 };
@@ -909,6 +1117,8 @@
                 resStatusBadge.textContent = d.status_label || `Status ${d.status}`;
                 resTimestamp.textContent = d.date_time;
                 resDbId.textContent = d.id ? `#${d.id}` : '(Existing)';
+                if (resDeviceName) resDeviceName.textContent = d.device_name || 'N/A';
+                if (resDeviceSn) resDeviceSn.textContent = d.serial_number || zk?.payload?.device_sn || 'N/A';
 
                 if (isDuplicate) {
                     syncResultStatusPill.className = "text-[10px] font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30";
@@ -1046,6 +1256,12 @@
                 const rows = document.querySelectorAll('#batchTableBody tr');
                 const punches = [];
 
+                const bOpt = batchDeviceSelect ? batchDeviceSelect.options[batchDeviceSelect.selectedIndex] : null;
+                const bId = bOpt?.dataset?.deviceId ? parseInt(bOpt.dataset.deviceId, 10) : undefined;
+                const bName = bOpt?.dataset?.deviceName || 'RKQ4242300018';
+                const bSn = bOpt?.dataset?.serialNumber || bName;
+                const bIsHrbliz = bOpt?.dataset?.isHrbliz === '1';
+
                 rows.forEach(tr => {
                     const pin = tr.querySelector('.batch-pin')?.value.trim();
                     const date = tr.querySelector('.batch-date')?.value.trim();
@@ -1057,7 +1273,11 @@
                             biometric_id: pin,
                             date_time: `${date} ${time}`,
                             status: parseInt(status, 10),
-                            device_name: 'RKQ4242300018',
+                            device_id: bId,
+                            device_name: bName,
+                            serial_number: bSn,
+                            device_sn: bSn,
+                            is_hrbliz: bIsHrbliz,
                         });
                     }
                 });

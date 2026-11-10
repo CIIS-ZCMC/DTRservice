@@ -4,6 +4,8 @@ namespace Tests\Feature;
 
 use App\Models\Biometrics;
 use App\Models\DeviceLogs;
+use App\Models\DeviceLogsHrbliz;
+use App\Models\Devices;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Schema;
@@ -45,6 +47,28 @@ class DeviceLogApiTest extends TestCase
                 $table->text('schedule')->nullable();
                 $table->integer('active')->default(1);
                 $table->string('device_name', 200)->nullable();
+                $table->timestamps();
+            });
+        }
+
+        if (!Schema::hasTable('devices')) {
+            Schema::create('devices', function (Blueprint $table) {
+                $table->id();
+                $table->string('device_name')->nullable();
+                $table->string('device_id')->nullable();
+                $table->string('serial_number')->nullable();
+                $table->string('ip_address')->nullable();
+                $table->integer('com_key')->default(0);
+                $table->integer('soap_port')->default(80);
+                $table->integer('udp_port')->default(4370);
+                $table->boolean('is_active')->default(1);
+                $table->boolean('is_registration')->default(0);
+                $table->boolean('for_attendance')->default(0);
+                $table->boolean('is_hrbliz')->default(0);
+                $table->boolean('receiver_by_default')->default(1);
+                $table->string('fp_version')->default('v10')->nullable();
+                $table->timestamp('last_seen_at')->nullable();
+                $table->timestamp('last_cleared_at')->nullable();
                 $table->timestamps();
             });
         }
@@ -437,5 +461,174 @@ class DeviceLogApiTest extends TestCase
 
         $this->assertDatabaseHas('device_logs', ['biometric_id' => '9001']);
         $this->assertDatabaseHas('device_logs', ['biometric_id' => '9002']);
+    }
+
+    public function test_manual_punch_view_loads_devices_from_model(): void
+    {
+        Devices::create([
+            'device_name' => 'Main Gate ZK',
+            'serial_number' => 'ZK-SN-001',
+            'ip_address' => '192.168.1.201',
+            'is_active' => 1,
+            'is_hrbliz' => 0,
+        ]);
+
+        $response = $this->get('/manual-punch');
+
+        $response->assertStatus(200);
+        $response->assertViewHas('devices');
+        $response->assertSee('Main Gate ZK');
+        $response->assertSee('ZK-SN-001');
+    }
+
+    public function test_manual_punch_saves_device_name_in_umis_and_serial_number_to_8080(): void
+    {
+        $device = Devices::create([
+            'device_name' => 'OPD Entrance Biometric',
+            'serial_number' => 'OPD-SN-9999',
+            'ip_address' => '192.168.1.150',
+            'is_active' => 1,
+            'is_hrbliz' => 0,
+        ]);
+
+        $forwardedPayload = null;
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => function (\Illuminate\Http\Client\Request $req) use (&$forwardedPayload) {
+                $forwardedPayload = $req->data();
+                return \Illuminate\Support\Facades\Http::response(['success' => true], 200);
+            },
+        ]);
+
+        $payload = [
+            'biometric_id' => '1234',
+            'date_time' => '2026-11-10 08:00:00',
+            'status' => 0,
+            'device_id' => $device->id,
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201)
+            ->assertJson([
+                'success' => true,
+                'data' => [
+                    'biometric_id' => '1234',
+                    'device_name' => 'OPD Entrance Biometric',
+                    'serial_number' => 'OPD-SN-9999',
+                ],
+            ]);
+
+        // 1. In UMIS device logs: save device name
+        $this->assertDatabaseHas('device_logs', [
+            'biometric_id' => '1234',
+            'date_time' => '2026-11-10 08:00:00',
+            'device_name' => 'OPD Entrance Biometric',
+        ]);
+
+        // 2. In 8080 server for hrbliz: save serial number
+        $this->assertNotNull($forwardedPayload);
+        $this->assertEquals('OPD-SN-9999', $forwardedPayload['device_sn']);
+    }
+
+    public function test_manual_punch_with_hrbliz_device_saves_name_in_umis_and_serial_to_8080(): void
+    {
+        $hrblizDevice = Devices::create([
+            'device_name' => 'HRBLIZ Special Terminal',
+            'serial_number' => 'HRBLIZ-SN-777',
+            'ip_address' => '192.168.1.180',
+            'is_active' => 1,
+            'is_hrbliz' => 1,
+        ]);
+
+        $forwardedPayload = null;
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => function (\Illuminate\Http\Client\Request $req) use (&$forwardedPayload) {
+                $forwardedPayload = $req->data();
+                return \Illuminate\Support\Facades\Http::response(['success' => true], 200);
+            },
+        ]);
+
+        $payload = [
+            'biometric_id' => '5678',
+            'date_time' => '2026-11-10 17:00:00',
+            'status' => 1,
+            'device_id' => $hrblizDevice->id,
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201);
+
+        // 1. In UMIS device logs: save device name into device_logs_hrbliz
+        $this->assertDatabaseHas('device_logs_hrbliz', [
+            'biometric_id' => '5678',
+            'date_time' => '2026-11-10 17:00:00',
+            'device_name' => 'HRBLIZ Special Terminal',
+        ]);
+
+        // 2. In 8080 server for hrbliz: save serial number
+        $this->assertNotNull($forwardedPayload);
+        $this->assertEquals('HRBLIZ-SN-777', $forwardedPayload['device_sn']);
+    }
+
+    public function test_manual_punch_batch_saves_device_name_in_umis_and_serial_to_8080(): void
+    {
+        $device = Devices::create([
+            'device_name' => 'Batch Test Terminal',
+            'serial_number' => 'BATCH-SN-888',
+            'ip_address' => '192.168.1.199',
+            'is_active' => 1,
+            'is_hrbliz' => 0,
+        ]);
+
+        $forwardedBatch = null;
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => function (\Illuminate\Http\Client\Request $req) use (&$forwardedBatch) {
+                $forwardedBatch = $req->data();
+                return \Illuminate\Support\Facades\Http::response([
+                    'success' => true,
+                    'inserted_count' => count($req->data()),
+                ], 200);
+            },
+        ]);
+
+        $payload = [
+            'punches' => [
+                [
+                    'biometric_id' => '4441',
+                    'date_time' => '2026-11-10 08:00:00',
+                    'status' => 0,
+                    'device_id' => $device->id,
+                ],
+                [
+                    'biometric_id' => '4442',
+                    'date_time' => '2026-11-10 08:05:00',
+                    'status' => 0,
+                    'device_id' => $device->id,
+                ],
+            ],
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201);
+
+        // 1. In UMIS device logs: save device name
+        $this->assertDatabaseHas('device_logs', [
+            'biometric_id' => '4441',
+            'device_name' => 'Batch Test Terminal',
+        ]);
+        $this->assertDatabaseHas('device_logs', [
+            'biometric_id' => '4442',
+            'device_name' => 'Batch Test Terminal',
+        ]);
+
+        // 2. In 8080 server: save serial number
+        $this->assertNotNull($forwardedBatch);
+        $this->assertEquals('BATCH-SN-888', $forwardedBatch[0]['device_sn']);
+        $this->assertEquals('BATCH-SN-888', $forwardedBatch[1]['device_sn']);
     }
 }

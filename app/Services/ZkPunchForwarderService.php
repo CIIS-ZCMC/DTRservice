@@ -292,6 +292,11 @@ class ZkPunchForwarderService
         $sn = $deviceSn;
         if (!$sn && $device instanceof Devices) {
             $sn = $device->serial_number ?: $device->device_name;
+        } elseif (!$sn && is_string($device) && Schema::hasTable('devices')) {
+            $matchedDev = Devices::where('serial_number', $device)
+                ->orWhere('device_name', $device)
+                ->first();
+            $sn = $matchedDev?->serial_number ?: $device;
         } elseif (!$sn && is_string($device)) {
             $sn = $device;
         }
@@ -398,6 +403,11 @@ class ZkPunchForwarderService
         $sn = $deviceSn;
         if (!$sn && $device instanceof Devices) {
             $sn = $device->serial_number ?: $device->device_name;
+        } elseif (!$sn && is_string($device) && Schema::hasTable('devices')) {
+            $matchedDev = Devices::where('serial_number', $device)
+                ->orWhere('device_name', $device)
+                ->first();
+            $sn = $matchedDev?->serial_number ?: $device;
         } elseif (!$sn && is_string($device)) {
             $sn = $device;
         }
@@ -565,11 +575,23 @@ class ZkPunchForwarderService
             $rawStatus = (int)($punch['status'] ?? $punch['dtr_type'] ?? 0);
             $targetStatus = $this->resolveForwardStatus($rawPin, $time, $rawStatus, $accumulatedByPinDate[$pinDateKey]);
 
+            $itemSn = $punch['device_sn'] ?? $punch['serial_number'] ?? null;
+            if (!$itemSn && !empty($punch['device_id']) && Schema::hasTable('devices')) {
+                $devModel = Devices::find($punch['device_id']);
+                $itemSn = $devModel?->serial_number ?: $devModel?->device_name;
+            }
+            if (!$itemSn && !empty($punch['device_name']) && Schema::hasTable('devices')) {
+                $devModel = Devices::where('serial_number', $punch['device_name'])
+                    ->orWhere('device_name', $punch['device_name'])
+                    ->first();
+                $itemSn = $devModel?->serial_number ?: $punch['device_name'];
+            }
+
             $formatted[] = [
                 'pin' => $targetPin,
                 'time' => $time,
                 'status' => $targetStatus,
-                'device_sn' => $punch['device_sn'] ?? $punch['device_name'] ?? $this->defaultDeviceSn,
+                'device_sn' => $itemSn ?: $this->defaultDeviceSn,
             ];
         }
 

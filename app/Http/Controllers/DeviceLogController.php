@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Biometrics;
 use App\Models\DeviceLogs;
 use App\Models\DeviceLogsHrbliz;
+use App\Models\Devices;
 use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -478,9 +479,16 @@ class DeviceLogController extends Controller
         $zkForwarder = app(\App\Services\ZkPunchForwarderService::class);
         $health = $zkForwarder->checkHealth();
 
+        $devices = Schema::hasTable('devices')
+            ? Devices::orderBy('is_active', 'desc')
+                ->orderBy('device_name', 'asc')
+                ->get()
+            : collect();
+
         return view('punches.manual', [
             'zkHost' => $zkHost,
             'zkHealth' => $health,
+            'devices' => $devices,
         ]);
     }
 
@@ -570,12 +578,21 @@ class DeviceLogController extends Controller
                     'dtr_time' => 'string "HH:MM:SS" (optional alternative if date_time is omitted)',
                     'status' => 'int (0=Check-In, 1=Check-Out, 2=Break-Out, 3=Break-In, 4=OT-In, 5=OT-Out, 255=Auto) or string ("in", "out"). Auto-classified using UMIS shift schedule if omitted',
                     'name' => 'string (optional employee name; auto-resolved from biometrics table if omitted)',
-                    'device_name' => 'string (optional, defaults to "' . config('zkteco.device_sn', 'RKQ4242300018') . '")',
+                    'device_id' => 'int (optional device ID from devices table)',
+                    'device_name' => 'string (optional device name to save in UMIS device logs, defaults to "' . config('zkteco.device_sn', 'RKQ4242300018') . '")',
+                    'serial_number' => 'string (optional device serial number for Port 8080)',
+                    'device_sn' => 'string (alias for serial_number)',
                     'sync_zkteco' => 'boolean (default: true) - Synchronously forwards to ZKTeco Port 8080',
                     'prevent_duplicates' => 'boolean (default: true) - Skips insert if punch exists for exact timestamp',
                     'force_forward' => 'boolean (default: false) - When duplicate exists in DTRService, still forwards to ZKTeco',
                     'is_hrbliz' => 'boolean (default: false) - Store into device_logs_hrbliz instead of device_logs',
                 ],
+                'devices' => Schema::hasTable('devices')
+                    ? Devices::select('id', 'device_name', 'serial_number', 'ip_address', 'is_active', 'is_hrbliz')
+                        ->orderBy('is_active', 'desc')
+                        ->orderBy('device_name', 'asc')
+                        ->get()
+                    : [],
                 'punch_status_reference' => [
                     0 => 'Check-In (AM In / Shift Start)',
                     1 => 'Check-Out (PM Out / Shift End)',
@@ -723,7 +740,21 @@ class DeviceLogController extends Controller
             // Normalize and resolve punch status (0=Check-In, 1=Check-Out)
             $rawStatusInput = $item['status'] ?? null;
             $resolvedStatus = $this->normalizeStatus($rawStatusInput, $canonicalBiometricId, $formattedDateTime);
-            $deviceName = !empty($item['device_name']) ? trim($item['device_name']) : config('zkteco.device_sn', 'RKQ4242300018');
+
+            // Resolve device details:
+            // - In UMIS device logs: save device name
+            // - In 8080 server for hrbliz: save serial number
+            $deviceDetails = $this->resolveDeviceLogDetails($item);
+            $matchedDevice = $deviceDetails['device'];
+            $saveDeviceName = $deviceDetails['device_name'];
+            $forwardDeviceSn = $deviceDetails['serial_number'];
+
+            if (!isset($rawPayload['is_hrbliz']) && !isset($item['is_hrbliz']) && $deviceDetails['is_hrbliz']) {
+                $isHrbliz = true;
+                $targetModelClass = (Schema::hasTable('device_logs_hrbliz'))
+                    ? DeviceLogsHrbliz::class
+                    : DeviceLogs::class;
+            }
 
             // Duplicate check
             $existing = null;
@@ -747,6 +778,7 @@ class DeviceLogController extends Controller
                             'status' => (int)$existing->status,
                             'status_label' => $this->getStatusLabel((int)$existing->status),
                             'device_name' => $existing->device_name,
+                            'serial_number' => $forwardDeviceSn,
                         ],
                         'zkteco_sync' => [
                             'success' => true,
@@ -771,7 +803,7 @@ class DeviceLogController extends Controller
                         'is_Shifting'  => isset($item['is_Shifting']) ? (int)$item['is_Shifting'] : 0,
                         'schedule'     => $item['schedule'] ?? null,
                         'active'       => isset($item['active']) ? (int)$item['active'] : 1,
-                        'device_name'  => $deviceName,
+                        'device_name'  => $saveDeviceName,
                     ]);
 
                     if ($hrblizBiometricId !== null) {
@@ -795,8 +827,8 @@ class DeviceLogController extends Controller
                     pin: $canonicalBiometricId,
                     dateTime: $formattedDateTime,
                     status: $resolvedStatus,
-                    device: $deviceName,
-                    deviceSn: $deviceName,
+                    device: $matchedDevice ?: $saveDeviceName,
+                    deviceSn: $forwardDeviceSn,
                     bypassDeviceFilter: true
                 );
             } else {
@@ -821,7 +853,8 @@ class DeviceLogController extends Controller
                     'date_time' => $formattedDateTime,
                     'status' => $resolvedStatus,
                     'status_label' => $this->getStatusLabel($resolvedStatus),
-                    'device_name' => $deviceName,
+                    'device_name' => $saveDeviceName,
+                    'serial_number' => $forwardDeviceSn,
                     'created_at' => $logRecord->created_at ?? now(),
                 ],
                 'zkteco_sync' => $zkSyncResult,
@@ -887,10 +920,21 @@ class DeviceLogController extends Controller
 
             $rawStatusInput = $item['status'] ?? null;
             $resolvedStatus = $this->normalizeStatus($rawStatusInput, $canonicalBiometricId, $formattedDateTime);
-            $deviceName = !empty($item['device_name']) ? trim($item['device_name']) : config('zkteco.device_sn', 'RKQ4242300018');
+
+            // Resolve device details:
+            // - In UMIS device logs: save device name
+            // - In 8080 server for hrbliz: save serial number
+            $deviceDetails = $this->resolveDeviceLogDetails($item);
+            $itemSaveDeviceName = $deviceDetails['device_name'];
+            $itemForwardDeviceSn = $deviceDetails['serial_number'];
+
+            $itemIsHrbliz = $isHrbliz || $deviceDetails['is_hrbliz'];
+            $itemTargetModelClass = ($itemIsHrbliz && Schema::hasTable('device_logs_hrbliz'))
+                ? DeviceLogsHrbliz::class
+                : DeviceLogs::class;
 
             if ($preventDuplicates) {
-                $exists = $targetModelClass::where('biometric_id', $canonicalBiometricId)
+                $exists = $itemTargetModelClass::where('biometric_id', $canonicalBiometricId)
                     ->where('date_time', $formattedDateTime)
                     ->exists();
 
@@ -902,7 +946,7 @@ class DeviceLogController extends Controller
                 }
             }
 
-            $created = $targetModelClass::create([
+            $created = $itemTargetModelClass::create([
                 'biometric_id' => $canonicalBiometricId,
                 'name'         => $employeeName,
                 'dtr_date'     => $formattedDtrDate,
@@ -911,7 +955,7 @@ class DeviceLogController extends Controller
                 'is_Shifting'  => isset($item['is_Shifting']) ? (int)$item['is_Shifting'] : 0,
                 'schedule'     => $item['schedule'] ?? null,
                 'active'       => isset($item['active']) ? (int)$item['active'] : 1,
-                'device_name'  => $deviceName,
+                'device_name'  => $itemSaveDeviceName,
             ]);
 
             if ($hrblizBiometricId !== null) {
@@ -924,7 +968,7 @@ class DeviceLogController extends Controller
                 'pin' => $canonicalBiometricId,
                 'time' => $formattedDateTime,
                 'status' => $resolvedStatus,
-                'device_sn' => $deviceName,
+                'device_sn' => $itemForwardDeviceSn,
             ];
         }
 
@@ -947,6 +991,69 @@ class DeviceLogController extends Controller
             'data'           => $insertedLogs,
             'zkteco_sync'    => $zkBatchResult,
         ], 201);
+    }
+
+    /**
+     * Resolve device details from Devices model.
+     *
+     * In UMIS device logs: save device name.
+     * In 8080 server for hrbliz: save serial number.
+     *
+     * @param array $item
+     * @return array{device: ?Devices, device_name: string, serial_number: string, is_hrbliz: bool}
+     */
+    protected function resolveDeviceLogDetails(array $item): array
+    {
+        $device = null;
+        if (!empty($item['device_id']) && Schema::hasTable('devices')) {
+            $device = Devices::find($item['device_id']);
+        }
+
+        if (!$device && Schema::hasTable('devices')) {
+            $candidate = $item['serial_number'] ?? $item['device_sn'] ?? $item['device_name'] ?? null;
+            if ($candidate && trim((string)$candidate) !== '') {
+                $trimmed = trim((string)$candidate);
+                $device = Devices::where('serial_number', $trimmed)
+                    ->orWhere('device_name', $trimmed)
+                    ->first();
+            }
+        }
+
+        // Determine device_name for UMIS device logs (MUST save device name)
+        $deviceName = null;
+        if ($device && !empty($device->device_name)) {
+            $deviceName = $device->device_name;
+        } elseif (!empty($item['device_name'])) {
+            $deviceName = trim((string)$item['device_name']);
+        } else {
+            $deviceName = config('zkteco.device_sn', 'RKQ4242300018');
+        }
+
+        // Determine serial_number for 8080 server (MUST save serial number)
+        $serialNumber = null;
+        if ($device && !empty($device->serial_number)) {
+            $serialNumber = $device->serial_number;
+        } elseif (!empty($item['serial_number'])) {
+            $serialNumber = trim((string)$item['serial_number']);
+        } elseif (!empty($item['device_sn'])) {
+            $serialNumber = trim((string)$item['device_sn']);
+        } elseif (!empty($item['device_name']) && !$device) {
+            $serialNumber = trim((string)$item['device_name']);
+        } else {
+            $serialNumber = config('zkteco.device_sn', 'RKQ4242300018');
+        }
+
+        $isHrbliz = $device ? (bool)$device->is_hrbliz : false;
+        if (isset($item['is_hrbliz'])) {
+            $isHrbliz = filter_var($item['is_hrbliz'], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        return [
+            'device' => $device,
+            'device_name' => $deviceName,
+            'serial_number' => $serialNumber,
+            'is_hrbliz' => $isHrbliz,
+        ];
     }
 
     /**
