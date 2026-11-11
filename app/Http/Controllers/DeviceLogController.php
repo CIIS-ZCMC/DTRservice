@@ -523,10 +523,11 @@ class DeviceLogController extends Controller
         return response()->json([
             'success' => true,
             'data' => $results->map(function ($b) {
+                $formattedName = $this->resolveFormattedEmployeeName($b->name, (int)$b->biometric_id);
                 return [
                     'biometric_id' => (string)$b->biometric_id,
                     'hrbliz_biometric_id' => $b->hrbliz_biometric_id ? (string)$b->hrbliz_biometric_id : null,
-                    'name' => $b->name ?: 'Employee #' . $b->biometric_id,
+                    'name' => $formattedName ?: 'Employee #' . $b->biometric_id,
                 ];
             }),
         ]);
@@ -733,9 +734,8 @@ class DeviceLogController extends Controller
                 }
             }
 
-            if (empty($employeeName)) {
-                $employeeName = 'Unknown';
-            }
+            // Resolve and format employee name into standard UMIS format (e.g. "Reenjay M. Caimor")
+            $employeeName = $this->resolveFormattedEmployeeName($employeeName, $canonicalBiometricId);
 
             // Normalize and resolve punch status (0=Check-In, 1=Check-Out)
             $rawStatusInput = $item['status'] ?? null;
@@ -779,6 +779,8 @@ class DeviceLogController extends Controller
                             'status_label' => $this->getStatusLabel((int)$existing->status),
                             'device_name' => $existing->device_name,
                             'serial_number' => $forwardDeviceSn,
+                            'created_at' => $existing->created_at ? Carbon::parse($existing->created_at)->format('Y-m-d H:i:s') : $formattedDateTime,
+                            'updated_at' => $existing->updated_at ? Carbon::parse($existing->updated_at)->format('Y-m-d H:i:s') : $formattedDateTime,
                         ],
                         'zkteco_sync' => [
                             'success' => true,
@@ -794,7 +796,8 @@ class DeviceLogController extends Controller
             $createdLog = null;
             if (!$existing) {
                 try {
-                    $createdLog = $targetModelClass::create([
+                    $createdLog = new $targetModelClass();
+                    $createdLog->fill([
                         'biometric_id' => $canonicalBiometricId,
                         'name'         => $employeeName,
                         'dtr_date'     => $formattedDtrDate,
@@ -805,6 +808,11 @@ class DeviceLogController extends Controller
                         'active'       => isset($item['active']) ? (int)$item['active'] : 1,
                         'device_name'  => $saveDeviceName,
                     ]);
+                    // Disable automatic timestamps so created_at and updated_at match the entered date/time
+                    $createdLog->timestamps = false;
+                    $createdLog->created_at = $formattedDateTime;
+                    $createdLog->updated_at = $formattedDateTime;
+                    $createdLog->save();
 
                     if ($hrblizBiometricId !== null) {
                         $createdLog->setAttribute('hrbliz_biometric_id', $hrblizBiometricId);
@@ -855,7 +863,8 @@ class DeviceLogController extends Controller
                     'status_label' => $this->getStatusLabel($resolvedStatus),
                     'device_name' => $saveDeviceName,
                     'serial_number' => $forwardDeviceSn,
-                    'created_at' => $logRecord->created_at ?? now(),
+                    'created_at' => $logRecord->created_at ? Carbon::parse($logRecord->created_at)->format('Y-m-d H:i:s') : $formattedDateTime,
+                    'updated_at' => $logRecord->updated_at ? Carbon::parse($logRecord->updated_at)->format('Y-m-d H:i:s') : $formattedDateTime,
                 ],
                 'zkteco_sync' => $zkSyncResult,
             ], 201);
@@ -914,9 +923,8 @@ class DeviceLogController extends Controller
                 }
             }
 
-            if (empty($employeeName)) {
-                $employeeName = 'Unknown';
-            }
+            // Resolve and format employee name into standard UMIS format (e.g. "Reenjay M. Caimor")
+            $employeeName = $this->resolveFormattedEmployeeName($employeeName, $canonicalBiometricId);
 
             $rawStatusInput = $item['status'] ?? null;
             $resolvedStatus = $this->normalizeStatus($rawStatusInput, $canonicalBiometricId, $formattedDateTime);
@@ -946,7 +954,8 @@ class DeviceLogController extends Controller
                 }
             }
 
-            $created = $itemTargetModelClass::create([
+            $created = new $itemTargetModelClass();
+            $created->fill([
                 'biometric_id' => $canonicalBiometricId,
                 'name'         => $employeeName,
                 'dtr_date'     => $formattedDtrDate,
@@ -957,6 +966,11 @@ class DeviceLogController extends Controller
                 'active'       => isset($item['active']) ? (int)$item['active'] : 1,
                 'device_name'  => $itemSaveDeviceName,
             ]);
+            // Disable automatic timestamps so created_at and updated_at match the entered date/time
+            $created->timestamps = false;
+            $created->created_at = $formattedDateTime;
+            $created->updated_at = $formattedDateTime;
+            $created->save();
 
             if ($hrblizBiometricId !== null) {
                 $created->setAttribute('hrbliz_biometric_id', $hrblizBiometricId);
@@ -969,6 +983,8 @@ class DeviceLogController extends Controller
                 'time' => $formattedDateTime,
                 'status' => $resolvedStatus,
                 'device_sn' => $itemForwardDeviceSn,
+                'created_at' => $formattedDateTime,
+                'updated_at' => $formattedDateTime,
             ];
         }
 
@@ -1122,5 +1138,85 @@ class DeviceLogController extends Controller
             5 => 'Overtime-Out',
             default => "Status {$status}",
         };
+    }
+
+    /**
+     * Resolve and format employee name into standard UMIS format (e.g. "Reenjay M. Caimor").
+     *
+     * Prioritizes:
+     * 1) LogsRepository::getEmployeeNameAndStatus() (EmployeeProfile -> PersonalInformation::employeeName())
+     * 2) ExternalEmployees::getFullNameAttribute() for external employees (PIN >= 8000)
+     * 3) Biometrics table name (normalized from "Lastname, Firstname Middle" to "Firstname Middle Lastname")
+     * 4) Input custom name (normalized from "Lastname, Firstname Middle" to "Firstname Middle Lastname")
+     *
+     * @param string|null $inputName
+     * @param int|string $biometricId
+     * @return string
+     */
+    protected function resolveFormattedEmployeeName(?string $inputName, int|string $biometricId): string
+    {
+        $intPin = (int)$biometricId;
+
+        // 1. Check UMIS LogsRepository (EmployeeProfile -> PersonalInformation -> employeeName())
+        if ($intPin > 0) {
+            try {
+                $logsRepo = app(\App\Repositories\LogsRepository::class);
+                $empData = $logsRepo->getEmployeeNameAndStatus($intPin);
+                if (!empty($empData['name']) && trim($empData['name']) !== '') {
+                    $cleaned = $this->cleanEmployeeName($empData['name']);
+                    if ($cleaned !== '' && $cleaned !== 'Unknown') {
+                        return $cleaned;
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::debug('DeviceLogController::resolveFormattedEmployeeName repo error: ' . $e->getMessage());
+            }
+        }
+
+        // 2. Fall back to input name or Biometrics table if inputName was empty
+        $candidateName = !empty($inputName) ? trim($inputName) : null;
+        if (empty($candidateName) && $intPin > 0 && Schema::hasTable('biometrics')) {
+            $bio = Biometrics::where('biometric_id', $intPin)
+                ->orWhere('hrbliz_biometric_id', $intPin)
+                ->first();
+            if ($bio && !empty($bio->name)) {
+                $candidateName = $bio->name;
+            }
+        }
+
+        if (empty($candidateName)) {
+            return 'Unknown';
+        }
+
+        return $this->cleanEmployeeName($candidateName);
+    }
+
+    /**
+     * Clean and format employee name into "Firstname Middle Lastname" (e.g. "Reenjay M. Caimor").
+     * Converts "Lastname, Firstname Middle" to "Firstname Middle Lastname".
+     *
+     * @param string $name
+     * @return string
+     */
+    protected function cleanEmployeeName(string $name): string
+    {
+        $name = trim($name);
+        if ($name === '') {
+            return 'Unknown';
+        }
+
+        // If the name is in "Last, First Middle" format (contains a comma)
+        if (str_contains($name, ',')) {
+            $parts = explode(',', $name, 2);
+            $last = trim($parts[0]);
+            $firstMiddle = trim($parts[1] ?? '');
+
+            if ($firstMiddle !== '') {
+                $name = $firstMiddle . ' ' . $last;
+            }
+        }
+
+        // Normalize multiple whitespace characters into a single space
+        return trim(preg_replace('/\s+/', ' ', $name));
     }
 }

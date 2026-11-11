@@ -307,6 +307,8 @@ class ZkPunchForwarderService
                 'time' => $dateTime,
                 'status' => $targetStatus,
                 'device_sn' => $sn ?: $this->defaultDeviceSn,
+                'created_at' => $dateTime,
+                'updated_at' => $dateTime,
             ];
 
             $response = $this->client()->post("{$this->host}/api/punches", $payload);
@@ -417,6 +419,8 @@ class ZkPunchForwarderService
             'time' => $dateTime,
             'status' => $targetStatus,
             'device_sn' => $sn ?: $this->defaultDeviceSn,
+            'created_at' => $dateTime,
+            'updated_at' => $dateTime,
         ];
 
         $start = microtime(true);
@@ -592,6 +596,8 @@ class ZkPunchForwarderService
                 'time' => $time,
                 'status' => $targetStatus,
                 'device_sn' => $itemSn ?: $this->defaultDeviceSn,
+                'created_at' => $time,
+                'updated_at' => $time,
             ];
         }
 

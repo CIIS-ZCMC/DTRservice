@@ -242,7 +242,7 @@
                             <span>Employee Name</span>
                             <span class="text-[10px] text-slate-400">(Auto-resolved from database if empty)</span>
                         </label>
-                        <input type="text" id="employeeNameInput" placeholder="Auto-populated or enter custom name..."
+                        <input type="text" id="employeeNameInput" placeholder="Auto-populated or enter custom name (e.g. Reenjay M. Caimor)..."
                             class="w-full px-3 py-2 rounded-lg border text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-teal-500"
                             style="background-color: var(--bg-input); border-color: var(--border-color);">
                     </div>

@@ -631,4 +631,191 @@ class DeviceLogApiTest extends TestCase
         $this->assertEquals('BATCH-SN-888', $forwardedBatch[0]['device_sn']);
         $this->assertEquals('BATCH-SN-888', $forwardedBatch[1]['device_sn']);
     }
+
+    public function test_manual_punch_formats_name_and_sets_created_updated_at_to_entered_time(): void
+    {
+        $forwardedPayload = null;
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => function (\Illuminate\Http\Client\Request $req) use (&$forwardedPayload) {
+                $forwardedPayload = $req->data();
+                return \Illuminate\Support\Facades\Http::response(['success' => true], 200);
+            },
+        ]);
+
+        // Biometric record with "Lastname, Firstname" format
+        Biometrics::create([
+            'biometric_id' => 9988,
+            'name' => 'Caimor, Reenjay',
+        ]);
+
+        $customEnteredTime = '2026-11-09 10:44:47';
+
+        $payload = [
+            'biometric_id' => '9988',
+            'date_time' => $customEnteredTime,
+            'status' => 0,
+            'device_name' => 'TAD_ENTRANCE',
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201)
+            ->assertJson([
+                'success' => true,
+                'data' => [
+                    'biometric_id' => '9988',
+                    'name' => 'Reenjay Caimor',
+                    'date_time' => $customEnteredTime,
+                    'created_at' => $customEnteredTime,
+                    'updated_at' => $customEnteredTime,
+                ],
+            ]);
+
+        // Verify database has formatted name and exact matching timestamps
+        $log = \App\Models\DeviceLogs::where('biometric_id', '9988')
+            ->where('date_time', $customEnteredTime)
+            ->first();
+
+        $this->assertNotNull($log);
+        $this->assertEquals('Reenjay Caimor', $log->name);
+        $this->assertEquals($customEnteredTime, \Carbon\Carbon::parse($log->created_at)->format('Y-m-d H:i:s'));
+        $this->assertEquals($customEnteredTime, \Carbon\Carbon::parse($log->updated_at)->format('Y-m-d H:i:s'));
+
+        // Verify 8080 forwarded payload includes created_at and updated_at
+        $this->assertNotNull($forwardedPayload);
+        $this->assertEquals('9988', $forwardedPayload['pin']);
+        $this->assertEquals($customEnteredTime, $forwardedPayload['time']);
+        $this->assertEquals($customEnteredTime, $forwardedPayload['created_at']);
+        $this->assertEquals($customEnteredTime, $forwardedPayload['updated_at']);
+    }
+
+    public function test_manual_punch_with_employee_profile_resolves_full_umis_name(): void
+    {
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => \Illuminate\Support\Facades\Http::response(['success' => true], 200),
+        ]);
+
+        $mockLogsRepo = \Mockery::mock(\App\Repositories\LogsRepository::class);
+        $mockLogsRepo->shouldReceive('getEmployeeNameAndStatus')
+            ->with(493)
+            ->andReturn(['name' => 'Reenjay M. Caimor ', 'is_external' => false]);
+        $mockLogsRepo->shouldReceive('logExists')->andReturn(false);
+        $this->app->instance(\App\Repositories\LogsRepository::class, $mockLogsRepo);
+
+        $testTime = '2026-11-08 07:45:00';
+
+        $payload = [
+            'biometric_id' => '493',
+            'date_time' => $testTime,
+            'status' => 0,
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201)
+            ->assertJson([
+                'success' => true,
+                'data' => [
+                    'biometric_id' => '493',
+                    'name' => 'Reenjay M. Caimor',
+                    'date_time' => $testTime,
+                    'created_at' => $testTime,
+                    'updated_at' => $testTime,
+                ],
+            ]);
+
+        $log = \App\Models\DeviceLogs::where('biometric_id', '493')
+            ->where('date_time', $testTime)
+            ->first();
+
+        $this->assertNotNull($log);
+        $this->assertEquals('Reenjay M. Caimor', $log->name);
+        $this->assertEquals($testTime, \Carbon\Carbon::parse($log->created_at)->format('Y-m-d H:i:s'));
+        $this->assertEquals($testTime, \Carbon\Carbon::parse($log->updated_at)->format('Y-m-d H:i:s'));
+    }
+
+    public function test_manual_punch_batch_sets_created_and_updated_at_matching_entered_time(): void
+    {
+        $forwardedBatch = null;
+        \Illuminate\Support\Facades\Http::fake([
+            '*/api/punches' => function (\Illuminate\Http\Client\Request $req) use (&$forwardedBatch) {
+                $forwardedBatch = $req->data();
+                return \Illuminate\Support\Facades\Http::response([
+                    'success' => true,
+                    'inserted_count' => count($req->data()),
+                ], 200);
+            },
+        ]);
+
+        $entryTime1 = '2026-11-05 08:00:00';
+        $entryTime2 = '2026-11-05 17:00:00';
+
+        $payload = [
+            'punches' => [
+                [
+                    'biometric_id' => '3311',
+                    'date_time' => $entryTime1,
+                    'status' => 0,
+                    'name' => 'Caimor, Reenjay M.',
+                ],
+                [
+                    'biometric_id' => '3311',
+                    'date_time' => $entryTime2,
+                    'status' => 1,
+                    'name' => 'Caimor, Reenjay M.',
+                ],
+            ],
+            'sync_zkteco' => true,
+        ];
+
+        $response = $this->postJson('/api/manual-punch', $payload);
+
+        $response->assertStatus(201);
+
+        $log1 = \App\Models\DeviceLogs::where('biometric_id', '3311')
+            ->where('date_time', $entryTime1)
+            ->first();
+        $this->assertNotNull($log1);
+        $this->assertEquals('Reenjay M. Caimor', $log1->name);
+        $this->assertEquals($entryTime1, \Carbon\Carbon::parse($log1->created_at)->format('Y-m-d H:i:s'));
+        $this->assertEquals($entryTime1, \Carbon\Carbon::parse($log1->updated_at)->format('Y-m-d H:i:s'));
+
+        $log2 = \App\Models\DeviceLogs::where('biometric_id', '3311')
+            ->where('date_time', $entryTime2)
+            ->first();
+        $this->assertNotNull($log2);
+        $this->assertEquals('Reenjay M. Caimor', $log2->name);
+        $this->assertEquals($entryTime2, \Carbon\Carbon::parse($log2->created_at)->format('Y-m-d H:i:s'));
+        $this->assertEquals($entryTime2, \Carbon\Carbon::parse($log2->updated_at)->format('Y-m-d H:i:s'));
+
+        // Check 8080 batch forwarded payloads
+        $this->assertNotNull($forwardedBatch);
+        $this->assertEquals($entryTime1, $forwardedBatch[0]['created_at']);
+        $this->assertEquals($entryTime1, $forwardedBatch[0]['updated_at']);
+        $this->assertEquals($entryTime2, $forwardedBatch[1]['created_at']);
+        $this->assertEquals($entryTime2, $forwardedBatch[1]['updated_at']);
+    }
+
+    public function test_search_employees_returns_formatted_name(): void
+    {
+        Biometrics::create([
+            'biometric_id' => 9912,
+            'name' => 'Dela Cruz, Juan',
+        ]);
+
+        $response = $this->getJson('/punches/employees?q=9912');
+
+        $response->assertStatus(200)
+            ->assertJson([
+                'success' => true,
+                'data' => [
+                    [
+                        'biometric_id' => '9912',
+                        'name' => 'Juan Dela Cruz',
+                    ],
+                ],
+            ]);
+    }
 }

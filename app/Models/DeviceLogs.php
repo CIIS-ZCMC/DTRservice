@@ -16,6 +16,8 @@ class DeviceLogs extends Model
         'is_Shifting',
         'schedule',
         'active',
-        'device_name'
+        'device_name',
+        'created_at',
+        'updated_at'
     ];
 }

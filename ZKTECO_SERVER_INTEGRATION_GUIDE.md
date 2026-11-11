@@ -185,7 +185,9 @@ Use this endpoint when you need to manually insert punches and have them synchro
       "pin": "5180",
       "time": "2026-11-09 08:00:00",
       "status": 0,
-      "device_sn": "RKQ4242300018"
+      "device_sn": "RKQ4242300018",
+      "created_at": "2026-11-09 08:00:00",
+      "updated_at": "2026-11-09 08:00:00"
     },
     "response": {
       "success": true,
@@ -227,7 +229,9 @@ If you wish to submit a punch directly to the ZKTeco SQLite database (bypassing 
   "pin": "5180",
   "time": "2026-11-09 08:00:00",
   "status": 0,
-  "device_sn": "RKQ4242300018"
+  "device_sn": "RKQ4242300018",
+  "created_at": "2026-11-09 08:00:00",
+  "updated_at": "2026-11-09 08:00:00"
 }
 ```
 *(Note: Submitting directly to 8080 will NOT record into DTRService MySQL database or calculate UMIS DTR reports. Use `POST /api/manual-punch` on DTRService for full dual-system synchronous recording).*
