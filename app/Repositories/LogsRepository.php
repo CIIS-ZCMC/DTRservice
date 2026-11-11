@@ -325,8 +325,26 @@ class LogsRepository implements LogsRepositoryInterface
 
      public function getEmployeeNameAndStatus(int $biometricId): array
     {
-        $isExternal = false;
+        $isExternal = ($biometricId >= 8000);
         $name = null;
+
+        if ($isExternal) {
+            if (\Illuminate\Support\Facades\Schema::hasTable('external_employees')) {
+                $externalEmployee = ExternalEmployees::where('biometric_id', $biometricId)->first();
+                if ($externalEmployee) {
+                    $name = $externalEmployee->getFullNameAttribute();
+                }
+            }
+
+            if (empty($name) && \Illuminate\Support\Facades\Schema::hasTable('biometrics')) {
+                $name = Biometrics::where('biometric_id', $biometricId)->value('name');
+            }
+
+            return [
+                'name' => $name,
+                'is_external' => true,
+            ];
+        }
 
         $profile = EmployeeProfile::where('biometric_id', $biometricId)
             ->whereNull('deleted_at')

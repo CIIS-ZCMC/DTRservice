@@ -21,13 +21,22 @@ class DtrReportRepository implements DtrReportRepositoryInterface
      */
     public function getEmployeeDtrData(int $biometricId, string $dateFrom, string $dateTo): array
     {
-        $employee = Biometrics::where('biometric_id', $biometricId)
-            ->with('employeeProfile', 'externalProfile')
-            ->first();
+        $isExternal = ($biometricId >= 8000);
 
-        $hasInternal = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
-            ->whereNull('deleted_at')
-            ->exists();
+        if ($isExternal) {
+            $employee = Biometrics::where('biometric_id', $biometricId)
+                ->with('externalProfile')
+                ->first();
+            $hasInternal = false;
+        } else {
+            $employee = Biometrics::where('biometric_id', $biometricId)
+                ->with('employeeProfile', 'externalProfile')
+                ->first();
+            $hasInternal = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+                ->whereNull('deleted_at')
+                ->exists();
+        }
+
         $hasExternal = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->exists();
 
         if (!$employee && !$hasInternal && !$hasExternal) {
@@ -95,32 +104,40 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         $department = 'N/A';
         $employeeProfileId = null;
 
-        // Try getting active/latest internal profile
-        $internalProfile = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
-            ->whereNull('deleted_at')
-            ->whereNull('deactivated_at')
-            ->latest('id')
-            ->first();
-
-        if (!$internalProfile) {
+        if ($isExternal) {
+            if ($employee && $employee->externalProfile) {
+                $employeeName = trim(($employee->externalProfile->first_name ?? '') . ' ' . ($employee->externalProfile->last_name ?? '')) ?: 'Unknown';
+                $department = $employee->externalProfile->department ?? 'N/A';
+            } else {
+                $externalEmployee = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->first();
+                if ($externalEmployee) {
+                    $employeeName = trim(($externalEmployee->first_name ?? '') . ' ' . ($externalEmployee->last_name ?? '')) ?: 'Unknown';
+                    $department = $externalEmployee->department ?? 'N/A';
+                } elseif ($employee && !empty($employee->name)) {
+                    $employeeName = $employee->name;
+                }
+            }
+        } else {
+            // Try getting active/latest internal profile
             $internalProfile = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
                 ->whereNull('deleted_at')
+                ->whereNull('deactivated_at')
                 ->latest('id')
                 ->first();
-        }
 
-        if ($internalProfile) {
-            $employeeName = $internalProfile->personalInformation?->employeeName() ?? $internalProfile->name() ?? 'Unknown';
-            $department = $internalProfile->assignArea?->area_name ?? 'N/A';
-            $employeeProfileId = $internalProfile->id;
-        } elseif ($employee && $employee->externalProfile) {
-            $employeeName = trim(($employee->externalProfile->first_name ?? '') . ' ' . ($employee->externalProfile->last_name ?? '')) ?: 'Unknown';
-            $department = $employee->externalProfile->department ?? 'N/A';
-        } else {
-            $externalEmployee = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->first();
-            if ($externalEmployee) {
-                $employeeName = trim(($externalEmployee->first_name ?? '') . ' ' . ($externalEmployee->last_name ?? '')) ?: 'Unknown';
-                $department = $externalEmployee->department ?? 'N/A';
+            if (!$internalProfile) {
+                $internalProfile = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+                    ->whereNull('deleted_at')
+                    ->latest('id')
+                    ->first();
+            }
+
+            if ($internalProfile) {
+                $employeeName = $internalProfile->personalInformation?->employeeName() ?? $internalProfile->name() ?? 'Unknown';
+                $department = $internalProfile->assignArea?->area_name ?? 'N/A';
+                $employeeProfileId = $internalProfile->id;
+            } elseif ($employee && !empty($employee->name)) {
+                $employeeName = $employee->name;
             }
         }
 
@@ -144,27 +161,33 @@ class DtrReportRepository implements DtrReportRepositoryInterface
     {
         $map = [];
         $bioId = $biometricId ?? ($employee?->biometric_id);
+        $isExternal = ($bioId !== null && $bioId >= 8000);
 
-        $profileIds = \App\Models\EmployeeProfile::where('biometric_id', $bioId)
-            ->whereNull('deleted_at')
-            ->pluck('id')
-            ->toArray();
-
-        if (!empty($profileIds)) {
-            $schedules = \App\Models\Schedule::whereBetween('date', [$dateFrom, $dateTo])
+        if (!$isExternal) {
+            $profileIds = \App\Models\EmployeeProfile::where('biometric_id', $bioId)
                 ->whereNull('deleted_at')
-                ->whereHas('employeeSchedules', function ($query) use ($profileIds) {
-                    $query->whereIn('employee_profile_id', $profileIds);
-                })
-                ->with('timeShift')
-                ->orderBy('id', 'asc')
-                ->get()
-                ->keyBy('date');
+                ->pluck('id')
+                ->toArray();
 
-            foreach ($schedules as $date => $schedule) {
-                $map[$date] = $schedule;
+            if (!empty($profileIds)) {
+                $schedules = \App\Models\Schedule::whereBetween('date', [$dateFrom, $dateTo])
+                    ->whereNull('deleted_at')
+                    ->whereHas('employeeSchedules', function ($query) use ($profileIds) {
+                        $query->whereIn('employee_profile_id', $profileIds);
+                    })
+                    ->with('timeShift')
+                    ->orderBy('id', 'asc')
+                    ->get()
+                    ->keyBy('date');
+
+                foreach ($schedules as $date => $schedule) {
+                    $map[$date] = $schedule;
+                }
+                return $map;
             }
-        } elseif ($employee && $employee->externalProfile) {
+        }
+
+        if ($employee && $employee->externalProfile) {
             // External profiles use getSchedules per date — fetch all dates
             $period = new \DatePeriod(
                 new \DateTime($dateFrom),
@@ -206,6 +229,27 @@ class DtrReportRepository implements DtrReportRepositoryInterface
      */
     private function getEmployeeSchedule(int $biometricId, string $date, ?\App\Models\Biometrics $employee = null)
     {
+        if ($biometricId >= 8000) {
+            if ($employee === null) {
+                $employee = Biometrics::where('biometric_id', $biometricId)
+                    ->with('externalProfile')
+                    ->first();
+            }
+
+            if ($employee && $employee->externalProfile) {
+                return $employee->getSchedules($date);
+            }
+
+            $externalEmployee = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->first();
+            if ($externalEmployee) {
+                return \App\Models\ExternalSchedule::where('external_employee_id', $externalEmployee->id)
+                    ->where('dtr_date', $date)
+                    ->first();
+            }
+
+            return null;
+        }
+
         $profileIds = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
             ->whereNull('deleted_at')
             ->pluck('id')
@@ -793,16 +837,20 @@ class DtrReportRepository implements DtrReportRepositoryInterface
         $dailyRecords = [];
         $records = $data['records'];
         $recordCount = count($records);
-        $employeeProfileId = $data['employee']['employee_profile_id'] ?? null;
+        $isExternal = ($biometricId >= 8000);
+        $employeeProfileId = $isExternal ? null : ($data['employee']['employee_profile_id'] ?? null);
 
         // Batch-fetch all applications and holidays for the date range
-        $applicationsMap = $this->batchGetApplications($employeeProfileId, $dateFrom, $dateTo);
+        $applicationsMap = (!$isExternal && $employeeProfileId) ? $this->batchGetApplications($employeeProfileId, $dateFrom, $dateTo) : [];
         $holidaysMap = $this->batchGetHolidays($dateFrom, $dateTo);
 
         // Fetch employee model for prev-day schedule lookup
-        $employeeModel = Biometrics::where('biometric_id', $biometricId)
-            ->with('employeeProfile', 'externalProfile')
-            ->first();
+        $bioQuery = Biometrics::where('biometric_id', $biometricId);
+        if ($isExternal) {
+            $employeeModel = $bioQuery->with('externalProfile')->first();
+        } else {
+            $employeeModel = $bioQuery->with('employeeProfile', 'externalProfile')->first();
+        }
 
         for ($i = 0; $i < $recordCount; $i++) {
             $record = $records[$i];
@@ -1480,13 +1528,22 @@ class DtrReportRepository implements DtrReportRepositoryInterface
      */
     public function getSelfDtr(int $biometricId, string $date): array
     {
-        $employee = Biometrics::where('biometric_id', $biometricId)
-            ->with('employeeProfile', 'externalProfile')
-            ->first();
+        $isExternal = ($biometricId >= 8000);
 
-        $hasInternal = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
-            ->whereNull('deleted_at')
-            ->exists();
+        if ($isExternal) {
+            $employee = Biometrics::where('biometric_id', $biometricId)
+                ->with('externalProfile')
+                ->first();
+            $hasInternal = false;
+        } else {
+            $employee = Biometrics::where('biometric_id', $biometricId)
+                ->with('employeeProfile', 'externalProfile')
+                ->first();
+            $hasInternal = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
+                ->whereNull('deleted_at')
+                ->exists();
+        }
+
         $hasExternal = \App\Models\ExternalEmployee::where('biometric_id', $biometricId)->exists();
 
         if (!$employee && !$hasInternal && !$hasExternal) {

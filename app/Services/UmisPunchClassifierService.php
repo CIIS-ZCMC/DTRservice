@@ -179,6 +179,16 @@ class UmisPunchClassifierService
      */
     protected function resolveEmployeeScheduleTimes(int $biometricId, string $date): array
     {
+        if ($biometricId >= 8000) {
+            // External employees use default 4-slot or external schedules
+            return [
+                config('app.default_first_in', '08:00:00'),
+                config('app.default_first_out', '12:00:00'),
+                config('app.default_last_in', '13:00:00'),
+                config('app.default_last_out', '17:00:00'),
+            ];
+        }
+
         // 1. Check for specific schedule today
         $timeShift = $this->getEmployeeTimeShift($biometricId, $date);
 
@@ -238,7 +248,7 @@ class UmisPunchClassifierService
      */
     protected function getEmployeeTimeShift(int $biometricId, string $date): ?TimeShifts
     {
-        if (!Schema::hasTable('employee_profiles') || !Schema::hasTable('schedules')) {
+        if ($biometricId >= 8000 || !Schema::hasTable('employee_profiles') || !Schema::hasTable('schedules')) {
             return null;
         }
 

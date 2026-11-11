@@ -54,6 +54,10 @@ class TimeRecordRepository implements TimeRecordRepositoryInterface
      */
     public function getEmployeeSchedule(int $biometricId, string $date): ?Schedule
     {
+        if ($biometricId >= 8000) {
+            return null;
+        }
+
         $profileIds = \App\Models\EmployeeProfile::where('biometric_id', $biometricId)
             ->whereNull('deleted_at')
             ->pluck('id')

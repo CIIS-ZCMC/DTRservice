@@ -92,22 +92,30 @@ class OperationLogger
             }
         }
 
-        // 2. Employee profile
-        if (\Illuminate\Support\Facades\Schema::hasTable('employee_profiles')) {
-            $profile = EmployeeProfile::where('biometric_id', $intPin)->first();
-            if ($profile) {
-                $name = $profile->personalInformation?->employeeName() ?? $profile->name();
-                if (!empty($name)) {
-                    return trim($name);
+        // 2. Employee profile / External employee
+        if ($intPin >= 8000) {
+            if (\Illuminate\Support\Facades\Schema::hasTable('external_employees')) {
+                $ext = ExternalEmployees::where('biometric_id', $intPin)->first();
+                if ($ext) {
+                    return trim($ext->getFullNameAttribute());
                 }
             }
-        }
+        } else {
+            if (\Illuminate\Support\Facades\Schema::hasTable('employee_profiles')) {
+                $profile = EmployeeProfile::where('biometric_id', $intPin)->first();
+                if ($profile) {
+                    $name = $profile->personalInformation?->employeeName() ?? $profile->name();
+                    if (!empty($name)) {
+                        return trim($name);
+                    }
+                }
+            }
 
-        // 3. External employee
-        if (\Illuminate\Support\Facades\Schema::hasTable('external_employees')) {
-            $ext = ExternalEmployees::where('biometric_id', $intPin)->first();
-            if ($ext) {
-                return trim($ext->getFullNameAttribute());
+            if (\Illuminate\Support\Facades\Schema::hasTable('external_employees')) {
+                $ext = ExternalEmployees::where('biometric_id', $intPin)->first();
+                if ($ext) {
+                    return trim($ext->getFullNameAttribute());
+                }
             }
         }
 

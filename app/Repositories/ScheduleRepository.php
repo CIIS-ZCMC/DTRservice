@@ -15,6 +15,27 @@ class ScheduleRepository implements ScheduleRepositoryInterface
      */
     public function getScheduleByDate(int $biometricId, string $date): ?array
     {
+        if ($biometricId >= 8000) {
+            $externalEmployee = ExternalEmployee::where('biometric_id', $biometricId)->first();
+            if ($externalEmployee) {
+                $extSched = ExternalSchedule::where('external_employee_id', $externalEmployee->id)
+                    ->where('dtr_date', $date)
+                    ->first();
+
+                if ($extSched) {
+                    return [(object) [
+                        'id' => $extSched->id,
+                        'first_in' => $extSched->first_in,
+                        'first_out' => $extSched->first_out,
+                        'second_in' => $extSched->second_in,
+                        'second_out' => $extSched->second_out,
+                        'date' => $extSched->dtr_date,
+                    ]];
+                }
+            }
+            return [];
+        }
+
         $default = [
             'first_in' => config('app.default_first_in'),
             'first_out' => config('app.default_first_out'),

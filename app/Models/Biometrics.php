@@ -251,21 +251,30 @@ class Biometrics extends Model
 
        if (!$record) {
            $name = null;
-           if (\Illuminate\Support\Facades\Schema::hasTable('employee_profiles')) {
-               $employeeProfile = EmployeeProfile::where('biometric_id', $biometricId)
-                   ->whereNull('deleted_at')
-                   ->latest('id')
-                   ->first();
-
-               if ($employeeProfile) {
-                   $name = $employeeProfile->personalInformation?->employeeName() ?? $employeeProfile->name();
+           if ($biometricId >= 8000) {
+               if (\Illuminate\Support\Facades\Schema::hasTable('external_employees')) {
+                   $externalEmployee = ExternalEmployees::where('biometric_id', $biometricId)->first();
+                   if ($externalEmployee) {
+                       $name = $externalEmployee->getFullNameAttribute();
+                   }
                }
-           }
+           } else {
+               if (\Illuminate\Support\Facades\Schema::hasTable('employee_profiles')) {
+                   $employeeProfile = EmployeeProfile::where('biometric_id', $biometricId)
+                       ->whereNull('deleted_at')
+                       ->latest('id')
+                       ->first();
 
-           if (!$name && \Illuminate\Support\Facades\Schema::hasTable('external_employees')) {
-               $externalEmployee = ExternalEmployees::where('biometric_id', $biometricId)->first();
-               if ($externalEmployee) {
-                   $name = $externalEmployee->getFullNameAttribute();
+                   if ($employeeProfile) {
+                       $name = $employeeProfile->personalInformation?->employeeName() ?? $employeeProfile->name();
+                   }
+               }
+
+               if (!$name && \Illuminate\Support\Facades\Schema::hasTable('external_employees')) {
+                   $externalEmployee = ExternalEmployees::where('biometric_id', $biometricId)->first();
+                   if ($externalEmployee) {
+                       $name = $externalEmployee->getFullNameAttribute();
+                   }
                }
            }
 
