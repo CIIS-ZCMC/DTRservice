@@ -73,15 +73,14 @@ class BiometricSyncService
         $tz = 1;
 
         $entries = [];
+        $command = null;
 
         foreach ($targetDevices as $device) {
             if (method_exists($device, 'canReceiveSync') && !$device->canReceiveSync()) {
                 continue;
             }
 
-            $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
-                : ($bioModel?->biometric_id ?: $pin);
+            $targetPin = $this->resolveTargetPinForDevice($device, $bioModel, $pin);
 
             if (!$targetPin) {
                 continue;
@@ -99,11 +98,11 @@ class BiometricSyncService
         $sourceNeedsTimezoneFix = !empty($sourceSn) && ($isGrpInvalid || $isTzInvalid);
 
         if ($sourceNeedsTimezoneFix && (!$sourceDevice || !method_exists($sourceDevice, 'canReceiveSync') || $sourceDevice->canReceiveSync())) {
-            $sourcePin = $isSourceHrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
-                : ($bioModel?->biometric_id ?: $pin);
-            $fixCommand = "DATA USER PIN={$sourcePin}\tPIN2={$sourcePin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
-            $entries[] = ['device_sn' => $sourceSn, 'command' => $fixCommand];
+            $sourcePin = $this->resolveTargetPinForDevice($sourceDevice, $bioModel, $pin);
+            if ($sourcePin) {
+                $fixCommand = "DATA USER PIN={$sourcePin}\tPIN2={$sourcePin}\tName={$name}\tPri={$devicePri}\tPasswd={$passwd}\tCard={$card}\tGrp={$grp}\tTZ={$tz}";
+                $entries[] = ['device_sn' => $sourceSn, 'command' => $fixCommand];
+            }
         }
 
         $queuedCount = $this->commandService->queueCommandsBatch($entries);
@@ -165,9 +164,7 @@ class BiometricSyncService
                     continue;
                 }
 
-                $targetPin = $device->is_hrbliz
-                    ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
-                    : ($bioModel?->biometric_id ?: $pin);
+                $targetPin = $this->resolveTargetPinForDevice($device, $bioModel, $pin);
 
                 if (!$targetPin) {
                     continue;
@@ -204,9 +201,7 @@ class BiometricSyncService
                 continue;
             }
 
-            $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
-                : ($bioModel?->biometric_id ?: $pin);
+            $targetPin = $this->resolveTargetPinForDevice($device, $bioModel, $pin);
 
             if (!$targetPin) {
                 continue;
@@ -276,10 +271,7 @@ class BiometricSyncService
             return [];
         }
 
-        $isHrbliz = $targetDevice && (bool)$targetDevice->is_hrbliz;
-        $pin = $isHrbliz
-            ? ($bioModel->hrbliz_biometric_id ?: $bioModel->biometric_id)
-            : $bioModel->biometric_id;
+        $pin = $this->resolveTargetPinForDevice($targetDevice, $bioModel);
 
         $pin = (int)$pin;
 
@@ -496,9 +488,7 @@ class BiometricSyncService
                 continue;
             }
 
-            $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
-                : ($bioModel?->biometric_id ?: $pin);
+            $targetPin = $this->resolveTargetPinForDevice($device, $bioModel, $pin);
 
             if (!$targetPin) {
                 continue;
@@ -547,9 +537,7 @@ class BiometricSyncService
                 continue;
             }
 
-            $targetPin = $device->is_hrbliz
-                ? ($bioModel?->hrbliz_biometric_id ?: $bioModel?->biometric_id ?: $pin)
-                : ($bioModel?->biometric_id ?: $pin);
+            $targetPin = $this->resolveTargetPinForDevice($device, $bioModel, $pin);
 
             if (!$targetPin) {
                 continue;
@@ -579,6 +567,20 @@ class BiometricSyncService
     public function getTimezone24x7Command(): string
     {
         return "DATA UPDATE timezone\tTZID=1\tTIME=00002359000023590000235900002359000023590000235900002359";
+    }
+
+    /**
+     * Resolve the target PIN for a device.
+     * HRBLIZ devices (is_hrbliz = 1) strictly require hrbliz_biometric_id and never fall back to biometric_id.
+     */
+    protected function resolveTargetPinForDevice(?Devices $device, ?\App\Models\Biometrics $bioModel, string|int|null $fallbackPin = null): string|int|null
+    {
+        if ($device && (bool)$device->is_hrbliz) {
+            $hrblizPin = $bioModel?->hrbliz_biometric_id;
+            return !empty($hrblizPin) ? $hrblizPin : null;
+        }
+
+        return $bioModel?->biometric_id ?: $fallbackPin;
     }
 
     /**

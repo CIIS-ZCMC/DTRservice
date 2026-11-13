@@ -651,10 +651,9 @@ test('BiometricSyncService generates provision commands for HRBLIZ device when r
     expect($cmdsDual)->not->toBeEmpty();
     expect($cmdsDual[0])->toContain('PIN=7001');
 
-    // 3. HRBLIZ device with receiver_by_default = 1 falls back to biometric_id (3002) when hrbliz_biometric_id is null
+    // 3. HRBLIZ device with receiver_by_default = 1 strictly skips users when hrbliz_biometric_id is null
     $cmdsBioOnly = $syncService->generateUserProvisionCommands($userWithOnlyBioId, true, $hrblizDevSync);
-    expect($cmdsBioOnly)->not->toBeEmpty();
-    expect($cmdsBioOnly[0])->toContain('PIN=3002');
+    expect($cmdsBioOnly)->toBeEmpty();
 });
 
 test('DeviceController allows setting and updating receiver_by_default on HRBLIZ devices', function () {
@@ -1048,5 +1047,77 @@ test('100% zero-touch protection: HRBLIZ device with receiver_by_default = 0 is 
 
     // Final check: Queue remains completely untouched and clean
     expect($commandService->getAllCommands('SN-HRBLIZ-ZEROTOUCH'))->toBeEmpty();
+});
+
+test('HRBLIZ device with receiver_by_default = 1 syncs using hrbliz_biometric_id and strictly skips users without hrbliz_biometric_id', function () {
+    $commandService = app(\App\Services\DeviceCommandService::class);
+    $syncService = app(\App\Services\BiometricSyncService::class);
+
+    $hrblizReceiver = Devices::create([
+        'device_name' => 'HRBLIZ Receiver',
+        'serial_number' => 'SN-HRBLIZ-RECV-01',
+        'ip_address' => '10.0.0.221',
+        'is_active' => true,
+        'is_hrbliz' => true,
+        'receiver_by_default' => true,
+    ]);
+
+    $umisDevice = Devices::create([
+        'device_name' => 'UMIS Receiver',
+        'serial_number' => 'SN-UMIS-RECV-01',
+        'ip_address' => '10.0.0.222',
+        'is_active' => true,
+        'is_hrbliz' => false,
+        'receiver_by_default' => true,
+    ]);
+
+    $empWithHrbliz = Biometrics::create([
+        'biometric_id' => 493,
+        'hrbliz_biometric_id' => 5180,
+        'name' => 'Dual ID Employee',
+        'privilege' => 0,
+    ]);
+
+    $empUmisOnly = Biometrics::create([
+        'biometric_id' => 9901,
+        'hrbliz_biometric_id' => null,
+        'name' => 'UMIS Only Employee',
+        'privilege' => 0,
+    ]);
+
+    // Provisioning commands for employee WITH hrbliz_biometric_id -> uses 5180
+    $cmdsDual = $syncService->generateUserProvisionCommands($empWithHrbliz, false, $hrblizReceiver);
+    expect($cmdsDual)->not->toBeEmpty();
+    expect($cmdsDual[0])->toContain('PIN=5180');
+    expect($cmdsDual[0])->not->toContain('PIN=493');
+
+    // Provisioning commands for employee WITHOUT hrbliz_biometric_id -> strictly skipped
+    $cmdsUmisOnly = $syncService->generateUserProvisionCommands($empUmisOnly, false, $hrblizReceiver);
+    expect($cmdsUmisOnly)->toBeEmpty();
+
+    // Live syncUserToAll for UMIS-only employee -> queued to UMIS device, skipped on HRBLIZ device
+    $syncService->syncUserToAll('SN-REG-01', [
+        'PIN' => '9901',
+        'Name' => 'UMIS Only Employee',
+        'Pri' => '0',
+    ]);
+
+    $hrblizQueue = $commandService->getAllCommands('SN-HRBLIZ-RECV-01');
+    $umisQueue = $commandService->getAllCommands('SN-UMIS-RECV-01');
+    $hrblizCmdStrings = implode("\n", array_column($hrblizQueue, 'command'));
+    expect($hrblizCmdStrings)->toContain('PIN=5180');
+    expect($hrblizCmdStrings)->not->toContain('PIN=493');
+    expect($hrblizCmdStrings)->not->toContain('PIN=9901');
+    expect($umisQueue)->not->toBeEmpty();
+
+    // CommandRunnerController allows biometrics:sync-device when receiver_by_default = 1
+    $runnerController = app(\App\Http\Controllers\CommandRunnerController::class);
+    $req = \Illuminate\Http\Request::create('/api/command-runner/run', 'POST', [
+        'command' => 'biometrics:sync-device',
+        'device_target' => (string)$hrblizReceiver->id,
+        'pin' => 493,
+    ]);
+    $res = $runnerController->runCommand($req);
+    expect($res->getStatusCode())->not->toBe(422);
 });
 
