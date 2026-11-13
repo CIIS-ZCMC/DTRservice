@@ -277,4 +277,42 @@ test('missing slot fix queues template push for both badge PIN and internal term
     expect($cmdStrings)->toContain("DATA UPDATE fingertmp\tPIN=1434\tFID=5\tSize=540\tValid=1\tTMP=TEST_TMP");
 });
 
+test('biometrics:check-device --all-devices probes multiple offline devices concurrently', function () {
+    for ($i = 2; $i <= 6; $i++) {
+        Devices::create([
+            'device_name' => "Test Terminal {$i}",
+            'serial_number' => "TEST_SN_00{$i}",
+            'ip_address' => "192.168.254.1{$i}",
+            'is_active' => 1,
+        ]);
+    }
+
+    $start = microtime(true);
+
+    $this->artisan('biometrics:check-device', [
+        'pin' => 8245,
+        '--all-devices' => true,
+        '--timeout' => 1,
+    ])
+        ->expectsOutputToContain('Querying 6 device(s) in real-time via TAD / SOAP')
+        ->expectsOutputToContain('TEST_SN_006')
+        ->assertExitCode(0);
+
+    $elapsed = microtime(true) - $start;
+    expect($elapsed)->toBeLessThan(4.0);
+});
+
+test('parseBulkTemplatesResponse treats valid empty GetUserTemplateResponse as succeeded', function () {
+    $cmd = app(\App\Console\Commands\CheckDeviceFingerprints::class);
+    $method = new ReflectionMethod($cmd, 'parseBulkTemplatesResponse');
+    $method->setAccessible(true);
+
+    $emptyXml = '<?xml version="1.0"?><SOAP-ENV:Envelope><SOAP-ENV:Body><GetUserTemplateResponse></GetUserTemplateResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>';
+    $res = $method->invoke($cmd, $emptyXml);
+    expect($res)->toBe(['succeeded' => true, 'slots' => []]);
+
+    $failedRes = $method->invoke($cmd, '');
+    expect($failedRes)->toBe(['succeeded' => false, 'slots' => []]);
+});
+
 

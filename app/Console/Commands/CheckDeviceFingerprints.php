@@ -134,6 +134,8 @@ class CheckDeviceFingerprints extends Command
             return 0;
         }
 
+        $timeout = max(1, (int)$this->option('timeout'));
+
         $this->line("Querying " . $devices->count() . " device(s) in real-time via TAD / SOAP...\n");
 
         $hasMissingSlots = false;
@@ -141,18 +143,15 @@ class CheckDeviceFingerprints extends Command
         $ghostsToClean = [];
         $devicesToFix = [];
         $detectedAlgos = [];
+        $tableRows = [];
 
-        foreach ($devices as $dev) {
-            if ($dev->is_hrbliz) {
-                $deviceTargetPin = ($bioUser && !empty($bioUser->hrbliz_biometric_id))
-                    ? (int)$bioUser->hrbliz_biometric_id
-                    : ($bioUser ? null : $pin);
-            } else {
-                $deviceTargetPin = $bioUser ? (int)$bioUser->biometric_id : $pin;
-            }
+        $rows = $this->inspectDevices($devices, $bioUser, $pin, $dbSlots, $timeout);
 
-            $inspectPin = $deviceTargetPin ?? $pin;
-            $row = $this->inspectDevice($dev, $inspectPin, $dbSlots);
+        foreach ($rows as $item) {
+            $dev = $item['device'];
+            $deviceTargetPin = $item['target_pin'];
+            $inspectPin = $item['inspect_pin'];
+            $row = $item['row'];
 
             if ($row['_status'] !== 'OFFLINE' && !empty($row['_algo']) && $row['_algo'] !== 'Unknown') {
                 $detectedAlgos[$row['_algo']] = ($detectedAlgos[$row['_algo']] ?? 0) + 1;
@@ -405,18 +404,246 @@ class CheckDeviceFingerprints extends Command
     }
 
     /**
-     * Connect directly to a physical terminal and inspect user info, fingerprint algorithm, and finger slots 0-9.
+     * Inspect multiple devices concurrently using curl_multi to avoid sequential timeouts.
      */
-    protected function inspectDevice(Devices $device, int $pin, array $dbSlots): array
+    protected function inspectDevices($devices, ?Biometrics $bioUser, int $pin, array $dbSlots, int $timeout = 2): array
     {
-        $deviceName = $device->device_name ?? 'Unknown';
-        $deviceSn = $device->serial_number;
-        $ip = $device->ip_address ?? '0.0.0.0';
+        $entries = [];
+        foreach ($devices as $index => $dev) {
+            if ($dev->is_hrbliz) {
+                $deviceTargetPin = ($bioUser && !empty($bioUser->hrbliz_biometric_id))
+                    ? (int)$bioUser->hrbliz_biometric_id
+                    : ($bioUser ? null : $pin);
+            } else {
+                $deviceTargetPin = $bioUser ? (int)$bioUser->biometric_id : $pin;
+            }
 
-        $emptyRow = [
-            'name' => $deviceName,
-            'sn' => $deviceSn,
-            'ip' => $ip,
+            $inspectPin = $deviceTargetPin ?? $pin;
+            $entries[$index] = [
+                'device' => $dev,
+                'target_pin' => $deviceTargetPin,
+                'inspect_pin' => $inspectPin,
+                'row' => $this->buildEmptyRow($dev, $inspectPin),
+            ];
+        }
+
+        // Single device can use inspectDevice directly (with timeout respected)
+        if (count($entries) === 1) {
+            foreach ($entries as $idx => $entry) {
+                $entries[$idx]['row'] = $this->inspectDevice($entry['device'], $entry['inspect_pin'], $dbSlots, $timeout);
+            }
+            return array_values($entries);
+        }
+
+        // 1. Parallel reachability probe across all valid IPs
+        $probeRequests = [];
+        foreach ($entries as $idx => $entry) {
+            $dev = $entry['device'];
+            $ip = $dev->ip_address ?? '0.0.0.0';
+            if (empty($ip) || $ip === '0.0.0.0' || ($ip === '127.0.0.1' && !app()->runningUnitTests())) {
+                continue;
+            }
+            $soapPort = (int)($dev->soap_port ?: 80);
+            $probeRequests[$idx] = [
+                'url' => "http://{$ip}:{$soapPort}/",
+                'method' => 'GET',
+                'timeout' => $timeout,
+            ];
+        }
+
+        if (empty($probeRequests)) {
+            return array_values($entries);
+        }
+
+        $probeResults = $this->executeCurlMulti($probeRequests);
+        $onlineIndices = [];
+        foreach ($probeResults as $idx => $res) {
+            if (!empty($res['body'])) {
+                $onlineIndices[] = $idx;
+            }
+        }
+
+        if (empty($onlineIndices)) {
+            return array_values($entries);
+        }
+
+        // 2. Parallel GetOption (~ZKFPVersion) for all online devices
+        $algoRequests = [];
+        foreach ($onlineIndices as $idx) {
+            $dev = $entries[$idx]['device'];
+            $comKey = (int)($dev->com_key ?? 0);
+            $algoRequests[$idx] = $this->buildSoapCurlRequest(
+                $dev,
+                "<GetOption><ArgComKey>{$comKey}</ArgComKey><Arg><Name>~ZKFPVersion</Name></Arg></GetOption>",
+                $timeout
+            );
+        }
+        $algoResults = $this->executeCurlMulti($algoRequests);
+
+        $algos = [];
+        $fallbackAlgoRequests = [];
+        foreach ($onlineIndices as $idx) {
+            $val = $this->parseOptionValue($algoResults[$idx]['body'] ?? '');
+            if ($val !== null) {
+                $algos[$idx] = $this->normalizeAlgoVersion($val);
+            } else {
+                $dev = $entries[$idx]['device'];
+                $comKey = (int)($dev->com_key ?? 0);
+                $fallbackAlgoRequests[$idx] = $this->buildSoapCurlRequest(
+                    $dev,
+                    "<GetOption><ArgComKey>{$comKey}</ArgComKey><Arg><Name>ZKFPVersion</Name></Arg></GetOption>",
+                    $timeout
+                );
+            }
+        }
+
+        if (!empty($fallbackAlgoRequests)) {
+            $fallbackAlgoResults = $this->executeCurlMulti($fallbackAlgoRequests);
+            foreach ($fallbackAlgoResults as $idx => $res) {
+                $val = $this->parseOptionValue($res['body'] ?? '');
+                $algos[$idx] = $val !== null ? $this->normalizeAlgoVersion($val) : 'Unknown';
+            }
+        }
+
+        // 3. Parallel GetUserInfo for all online devices
+        $userRequests = [];
+        foreach ($onlineIndices as $idx) {
+            $dev = $entries[$idx]['device'];
+            $comKey = (int)($dev->com_key ?? 0);
+            $inspectPin = $entries[$idx]['inspect_pin'];
+            $userRequests[$idx] = $this->buildSoapCurlRequest(
+                $dev,
+                "<GetUserInfo><ArgComKey>{$comKey}</ArgComKey><Arg><PIN>{$inspectPin}</PIN></Arg></GetUserInfo>",
+                $timeout
+            );
+        }
+        $userResults = $this->executeCurlMulti($userRequests);
+
+        $userRows = [];
+        $candidatePinsMap = [];
+        $templateRequestsPrimary = [];
+
+        foreach ($onlineIndices as $idx) {
+            $dev = $entries[$idx]['device'];
+            $inspectPin = $entries[$idx]['inspect_pin'];
+            $algoVersion = $algos[$idx] ?? 'Unknown';
+
+            if ($algoVersion !== 'Unknown' && $dev->fp_version !== $algoVersion) {
+                try {
+                    if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'fp_version')) {
+                        $dev->update(['fp_version' => $algoVersion]);
+                    }
+                } catch (\Throwable) {
+                    // Safe fallback if column is not yet present on active DB
+                }
+            }
+
+            $uBody = $userResults[$idx]['body'] ?? '';
+            $userRow = $this->parseUserInfoRow($uBody);
+            if (empty($userRow)) {
+                $tad = $this->createTadInstance($dev, $timeout);
+                $entries[$idx]['row'] = $this->buildMissingUserRow($dev, $inspectPin, $algoVersion, $dbSlots, $tad);
+                continue;
+            }
+
+            $userRows[$idx] = $userRow;
+            $devicePin1 = isset($userRow['PIN']) ? (int)$userRow['PIN'] : null;
+            $devicePin2 = isset($userRow['PIN2']) ? (int)$userRow['PIN2'] : null;
+            $candidatePins = array_values(array_unique(array_filter([$inspectPin, $devicePin1, $devicePin2])));
+            $candidatePinsMap[$idx] = $candidatePins;
+
+            if (!empty($candidatePins[0]) && $candidatePins[0] > 0) {
+                $comKey = (int)($dev->com_key ?? 0);
+                $templateRequestsPrimary[$idx] = $this->buildSoapCurlRequest(
+                    $dev,
+                    "<GetUserTemplate><ArgComKey>{$comKey}</ArgComKey><Arg><PIN>{$candidatePins[0]}</PIN></Arg></GetUserTemplate>",
+                    $timeout
+                );
+            }
+        }
+
+        // 4. Parallel GetUserTemplate for primary candidate PIN (and secondary PINs if present)
+        $templateResultsPrimary = !empty($templateRequestsPrimary) ? $this->executeCurlMulti($templateRequestsPrimary) : [];
+        $deviceSlotsMap = [];
+        $needsFallbackMap = [];
+        $templateRequestsSecondary = [];
+
+        foreach ($userRows as $idx => $userRow) {
+            $deviceSlotsMap[$idx] = [];
+            $needsFallbackMap[$idx] = false;
+            $candidatePins = $candidatePinsMap[$idx] ?? [];
+
+            if (isset($templateResultsPrimary[$idx])) {
+                $parsed = $this->parseBulkTemplatesResponse($templateResultsPrimary[$idx]['body'] ?? '');
+                if ($parsed['succeeded']) {
+                    $deviceSlotsMap[$idx] = $parsed['slots'];
+                } else {
+                    $needsFallbackMap[$idx] = true;
+                }
+            }
+
+            if (count($candidatePins) > 1 && $candidatePins[1] > 0) {
+                $dev = $entries[$idx]['device'];
+                $comKey = (int)($dev->com_key ?? 0);
+                $templateRequestsSecondary[$idx] = $this->buildSoapCurlRequest(
+                    $dev,
+                    "<GetUserTemplate><ArgComKey>{$comKey}</ArgComKey><Arg><PIN>{$candidatePins[1]}</PIN></Arg></GetUserTemplate>",
+                    $timeout
+                );
+            }
+        }
+
+        if (!empty($templateRequestsSecondary)) {
+            $templateResultsSecondary = $this->executeCurlMulti($templateRequestsSecondary);
+            foreach ($templateResultsSecondary as $idx => $res) {
+                $parsed = $this->parseBulkTemplatesResponse($res['body'] ?? '');
+                if ($parsed['succeeded']) {
+                    foreach ($parsed['slots'] as $fid => $size) {
+                        $deviceSlotsMap[$idx][$fid] = $size;
+                    }
+                } else {
+                    $needsFallbackMap[$idx] = true;
+                }
+            }
+        }
+
+        // 5. Assemble final rows for devices with user records
+        foreach ($userRows as $idx => $userRow) {
+            $dev = $entries[$idx]['device'];
+            $inspectPin = $entries[$idx]['inspect_pin'];
+            $algoVersion = $algos[$idx] ?? 'Unknown';
+            $candidatePins = $candidatePinsMap[$idx];
+            $tad = $this->createTadInstance($dev, $timeout);
+            $deviceSlots = $deviceSlotsMap[$idx];
+
+            if (!empty($needsFallbackMap[$idx]) && empty($deviceSlots)) {
+                $deviceSlots = $this->fetchDeviceTemplates($tad, $candidatePins, $dev);
+            }
+
+            $entries[$idx]['row'] = $this->buildInspectedRow(
+                $dev,
+                $inspectPin,
+                $algoVersion,
+                $userRow,
+                $candidatePins,
+                $deviceSlots,
+                $dbSlots,
+                $tad
+            );
+        }
+
+        return array_values($entries);
+    }
+
+    /**
+     * Build a default offline/empty row for a device.
+     */
+    protected function buildEmptyRow(Devices $device, int $pin): array
+    {
+        return [
+            'name' => $device->device_name ?? 'Unknown',
+            'sn' => $device->serial_number,
+            'ip' => $device->ip_address ?? '0.0.0.0',
             'algo' => '<fg=gray>-</>',
             'connection' => '<fg=red>OFFLINE</>',
             'user' => '-',
@@ -431,21 +658,282 @@ class CheckDeviceFingerprints extends Command
             '_status' => 'OFFLINE',
             '_algo' => 'Unknown',
         ];
+    }
+
+    protected function createTadInstance(Devices $device, int $timeout = 2)
+    {
+        $options = [
+            'ip' => $device->ip_address ?? '0.0.0.0',
+            'com_key' => (int)($device->com_key ?? 0),
+            'soap_port' => (int)($device->soap_port ?: 80),
+            'udp_port' => (int)($device->udp_port ?: 4370),
+            'connection_timeout' => $timeout,
+            'encoding' => 'utf-8',
+        ];
+
+        return (new TADFactory($options))->get_instance();
+    }
+
+    protected function buildSoapCurlRequest(Devices $device, string $xmlBody, int $timeout): array
+    {
+        $ip = $device->ip_address ?? '0.0.0.0';
+        $soapPort = (int)($device->soap_port ?: 80);
+        $envelope = '<?xml version="1.0" encoding="utf-8"?>'
+            . '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://www.zksoftware/Service/message/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+            . '<SOAP-ENV:Body>' . $xmlBody . '</SOAP-ENV:Body>'
+            . '</SOAP-ENV:Envelope>';
+
+        return [
+            'url' => "http://{$ip}:{$soapPort}/iWsService",
+            'method' => 'POST',
+            'body' => $envelope,
+            'headers' => [
+                'Content-Type: text/xml; charset=utf-8',
+                'SOAPAction: ""',
+            ],
+            'timeout' => $timeout,
+        ];
+    }
+
+    /**
+     * Execute multiple HTTP requests concurrently via curl_multi.
+     */
+    protected function executeCurlMulti(array $requests): array
+    {
+        $mh = curl_multi_init();
+        $handles = [];
+        $results = [];
+
+        foreach ($requests as $key => $req) {
+            $ch = curl_init($req['url']);
+            $timeout = max(1, (int)($req['timeout'] ?? 2));
+            $opts = [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_CONNECTTIMEOUT => $timeout,
+                CURLOPT_TIMEOUT => $timeout,
+            ];
+
+            if (($req['method'] ?? 'GET') === 'POST') {
+                $opts[CURLOPT_POST] = true;
+                $opts[CURLOPT_POSTFIELDS] = $req['body'] ?? '';
+                if (!empty($req['headers'])) {
+                    $opts[CURLOPT_HTTPHEADER] = $req['headers'];
+                }
+            }
+
+            curl_setopt_array($ch, $opts);
+            curl_multi_add_handle($mh, $ch);
+            $handles[$key] = $ch;
+        }
+
+        do {
+            $status = curl_multi_exec($mh, $active);
+            if ($active && curl_multi_select($mh, 0.2) === -1) {
+                usleep(10000);
+            }
+        } while ($active && $status === CURLM_OK);
+
+        foreach ($handles as $key => $ch) {
+            $body = curl_multi_getcontent($ch);
+            $err = curl_error($ch);
+            $results[$key] = [
+                'body' => is_string($body) ? $body : '',
+                'error' => $err,
+            ];
+            curl_multi_remove_handle($mh, $ch);
+            curl_close($ch);
+        }
+
+        curl_multi_close($mh);
+        return $results;
+    }
+
+    protected function parseOptionValue(string $response): ?string
+    {
+        if (empty($response)) {
+            return null;
+        }
+        try {
+            $arr = (new \TADPHP\TADResponse($response, 'utf-8'))->to_array();
+            $val = $arr['Row']['Value'] ?? null;
+            if (is_array($val) && empty($val)) {
+                return null;
+            }
+            return $val ? trim((string)$val) : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    protected function normalizeAlgoVersion(string $cleanVal): string
+    {
+        if ($cleanVal === '10' || $cleanVal === '10.0') {
+            return 'v10';
+        }
+        if ($cleanVal === '9' || $cleanVal === '9.0') {
+            return 'v9';
+        }
+        return "v{$cleanVal}";
+    }
+
+    protected function parseUserInfoRow(string $response): ?array
+    {
+        if (empty($response)) {
+            return null;
+        }
+        try {
+            $arr = (new \TADPHP\TADResponse($response, 'utf-8'))->to_array();
+            $row = $arr['Row'] ?? null;
+            return !empty($row) && is_array($row) ? $row : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    protected function parseBulkTemplatesResponse(string $resp): array
+    {
+        if (empty($resp) || !str_contains($resp, 'GetUserTemplateResponse')) {
+            return ['succeeded' => false, 'slots' => []];
+        }
+
+        $slots = [];
+        if (preg_match_all('/<FingerID>(\d+)<\/FingerID>.*?<(?:Size>(\d+)<\/Size>.*?)?<(?:Template|TMP)>(.*?)<\/(?:Template|TMP)>/s', $resp, $matches, PREG_SET_ORDER)) {
+            foreach ($matches as $m) {
+                $fid = (int)$m[1];
+                $template = trim($m[3]);
+                if (!empty($template)) {
+                    $size = !empty($m[2]) ? (int)$m[2] : strlen($template);
+                    $slots[$fid] = $size;
+                }
+            }
+        }
+
+        return ['succeeded' => true, 'slots' => $slots];
+    }
+
+    protected function formatAlgoDisplay(string $algoVersion): string
+    {
+        return match ($algoVersion) {
+            'v10' => '<fg=green>v10</>',
+            'v9'  => '<fg=yellow>v9</>',
+            default => "<fg=gray>{$algoVersion}</>",
+        };
+    }
+
+    protected function buildMissingUserRow(Devices $device, int $pin, string $algoVersion, array $dbSlots, $tad): array
+    {
+        return [
+            'name' => $device->device_name ?? 'Unknown',
+            'sn' => $device->serial_number,
+            'ip' => $device->ip_address ?? '0.0.0.0',
+            'algo' => $this->formatAlgoDisplay($algoVersion),
+            'connection' => '<fg=green>ONLINE</>',
+            'user' => '<fg=red>NOT_FOUND</>',
+            'fingers' => '<fg=yellow>None</>',
+            'status' => '<fg=red>MISSING_USER</>',
+            '_has_ghost' => false,
+            '_ghost_fids' => [],
+            '_missing_fids' => array_keys($dbSlots),
+            '_candidate_pins' => [$pin],
+            '_tad' => $tad,
+            '_all_ghosts' => false,
+            '_status' => 'MISSING_USER',
+            '_algo' => $algoVersion,
+        ];
+    }
+
+    protected function buildInspectedRow(
+        Devices $device,
+        int $pin,
+        string $algoVersion,
+        array $userRow,
+        array $candidatePins,
+        array $deviceSlots,
+        array $dbSlots,
+        $tad
+    ): array {
+        $privilege = (int)($userRow['Privilege'] ?? 0);
+        $userRoleLabel = ($privilege === 14) ? 'SuperAdmin' : ($privilege === 1 ? 'Admin' : 'User');
+        $group = (int)($userRow['Group'] ?? 1);
+        $tz1 = (int)($userRow['TZ1'] ?? 1);
+        $isTimezoneValid = ($group === 1 && $tz1 === 1);
+
+        $devicePin1 = isset($userRow['PIN']) ? (int)$userRow['PIN'] : null;
+        $tzTag = $isTimezoneValid ? "<fg=green>Grp:{$group} TZ:{$tz1}</>" : "<fg=red;options=bold>Grp:{$group} TZ:{$tz1} (INVALID)</>";
+        $pinTag = ($devicePin1 && $devicePin1 !== $pin) ? " <fg=gray>IntPIN:{$devicePin1}</>" : '';
+        $userDisplay = "<fg=green>YES</>{$pinTag} ({$userRoleLabel}, {$tzTag})";
+
+        $fingerLabels = [];
+        foreach ($deviceSlots as $slot => $size) {
+            $label = self::FINGER_NAMES[$slot] ?? "Slot {$slot}";
+            $fingerLabels[] = "Slot {$slot} ({$label})";
+        }
+        $fingersDisplay = !empty($fingerLabels) ? implode(', ', $fingerLabels) : '<fg=yellow>None</>';
+
+        $dbFids = array_keys($dbSlots);
+        $devFids = array_keys($deviceSlots);
+        sort($dbFids);
+        sort($devFids);
+
+        $ghostFids = array_values(array_diff($devFids, $dbFids));
+        $missingFids = array_values(array_diff($dbFids, $devFids));
+
+        $hasGhost = !empty($ghostFids);
+        $allGhosts = !empty($devFids) && empty($dbFids);
+        $statusCol = '<fg=green>IN_SYNC</>';
+        $statusCode = 'IN_SYNC';
+
+        if (!$isTimezoneValid) {
+            $statusCol = "<fg=red;options=bold>INVALID_TIME_PERIOD (Grp:{$group}, TZ:{$tz1})</>";
+            $statusCode = 'INVALID_TIME_PERIOD';
+        } elseif (!empty($ghostFids) && !empty($missingFids)) {
+            $statusCol = "<fg=yellow>MISMATCH (Ghost: " . implode(',', $ghostFids) . ", Missing: " . implode(',', $missingFids) . ")</>";
+            $statusCode = 'MISMATCH';
+        } elseif (!empty($ghostFids)) {
+            $statusCol = "<fg=yellow;options=bold>EXTRA_GHOST (Slot " . implode(',', $ghostFids) . ")</>";
+            $statusCode = 'EXTRA_GHOST';
+        } elseif (!empty($missingFids)) {
+            $statusCol = "<fg=red>MISSING (Slot " . implode(',', $missingFids) . ")</>";
+            $statusCode = 'MISSING_SLOT';
+        }
+
+        return [
+            'name' => $device->device_name ?? 'Unknown',
+            'sn' => $device->serial_number,
+            'ip' => $device->ip_address ?? '0.0.0.0',
+            'algo' => $this->formatAlgoDisplay($algoVersion),
+            'connection' => '<fg=green>ONLINE</>',
+            'user' => $userDisplay,
+            'fingers' => $fingersDisplay,
+            'status' => $statusCol,
+            '_has_ghost' => $hasGhost,
+            '_ghost_fids' => $ghostFids,
+            '_missing_fids' => $missingFids,
+            '_candidate_pins' => $candidatePins,
+            '_tad' => $tad,
+            '_all_ghosts' => $allGhosts,
+            '_status' => $statusCode,
+            '_algo' => $algoVersion,
+        ];
+    }
+
+    /**
+     * Connect directly to a physical terminal and inspect user info, fingerprint algorithm, and finger slots 0-9.
+     */
+    protected function inspectDevice(Devices $device, int $pin, array $dbSlots, int $timeout = 2): array
+    {
+        $deviceName = $device->device_name ?? 'Unknown';
+        $deviceSn = $device->serial_number;
+        $ip = $device->ip_address ?? '0.0.0.0';
+
+        $emptyRow = $this->buildEmptyRow($device, $pin);
 
         if (empty($ip) || $ip === '0.0.0.0' || ($ip === '127.0.0.1' && !app()->runningUnitTests())) {
             return $emptyRow;
         }
 
         try {
-            $options = [
-                'ip' => $ip,
-                'com_key' => (int)($device->com_key ?? 0),
-                'soap_port' => (int)($device->soap_port ?: 80),
-                'udp_port' => (int)($device->udp_port ?: 4370),
-                'encoding' => 'utf-8',
-            ];
-
-            $tad = (new TADFactory($options))->get_instance();
+            $tad = $this->createTadInstance($device, $timeout);
 
             if (!$tad->is_alive()) {
                 return $emptyRow;
@@ -463,109 +951,32 @@ class CheckDeviceFingerprints extends Command
                 }
             }
 
-            $algoDisplay = match ($algoVersion) {
-                'v10' => '<fg=green>v10</>',
-                'v9'  => '<fg=yellow>v9</>',
-                default => "<fg=gray>{$algoVersion}</>",
-            };
-
             // 2. Fetch User Info
             $uRes = $tad->get_user_info(['pin' => $pin]);
             $uArr = $uRes->to_array();
             $userRow = $uArr['Row'] ?? null;
 
             if (empty($userRow)) {
-                return [
-                    'name' => $deviceName,
-                    'sn' => $deviceSn,
-                    'ip' => $ip,
-                    'algo' => $algoDisplay,
-                    'connection' => '<fg=green>ONLINE</>',
-                    'user' => '<fg=red>NOT_FOUND</>',
-                    'fingers' => '<fg=yellow>None</>',
-                    'status' => '<fg=red>MISSING_USER</>',
-                    '_has_ghost' => false,
-                    '_ghost_fids' => [],
-                    '_missing_fids' => array_keys($dbSlots),
-                    '_candidate_pins' => [$pin],
-                    '_tad' => $tad,
-                    '_all_ghosts' => false,
-                    '_status' => 'MISSING_USER',
-                    '_algo' => $algoVersion,
-                ];
+                return $this->buildMissingUserRow($device, $pin, $algoVersion, $dbSlots, $tad);
             }
-
-            $privilege = (int)($userRow['Privilege'] ?? 0);
-            $userRoleLabel = ($privilege === 14) ? 'SuperAdmin' : ($privilege === 1 ? 'Admin' : 'User');
-            $group = (int)($userRow['Group'] ?? 1);
-            $tz1 = (int)($userRow['TZ1'] ?? 1);
-            $isTimezoneValid = ($group === 1 && $tz1 === 1);
 
             $devicePin1 = isset($userRow['PIN']) ? (int)$userRow['PIN'] : null;
             $devicePin2 = isset($userRow['PIN2']) ? (int)$userRow['PIN2'] : null;
             $candidatePins = array_values(array_unique(array_filter([$pin, $devicePin1, $devicePin2])));
 
-            $tzTag = $isTimezoneValid ? "<fg=green>Grp:{$group} TZ:{$tz1}</>" : "<fg=red;options=bold>Grp:{$group} TZ:{$tz1} (INVALID)</>";
-            $pinTag = ($devicePin1 && $devicePin1 !== $pin) ? " <fg=gray>IntPIN:{$devicePin1}</>" : '';
-            $userDisplay = "<fg=green>YES</>{$pinTag} ({$userRoleLabel}, {$tzTag})";
-
             // 3. Scan Finger Slots (via bulk query and candidate PIN resolution)
             $deviceSlots = $this->fetchDeviceTemplates($tad, $candidatePins, $device);
 
-            // Format enrolled slots for display
-            $fingerLabels = [];
-            foreach ($deviceSlots as $slot => $size) {
-                $label = self::FINGER_NAMES[$slot] ?? "Slot {$slot}";
-                $fingerLabels[] = "Slot {$slot} ({$label})";
-            }
-            $fingersDisplay = !empty($fingerLabels) ? implode(', ', $fingerLabels) : '<fg=yellow>None</>';
-
-            // 4. Compare with DB
-            $dbFids = array_keys($dbSlots);
-            $devFids = array_keys($deviceSlots);
-            sort($dbFids);
-            sort($devFids);
-
-            $ghostFids = array_values(array_diff($devFids, $dbFids));
-            $missingFids = array_values(array_diff($dbFids, $devFids));
-
-            $hasGhost = !empty($ghostFids);
-            $allGhosts = !empty($devFids) && empty($dbFids);
-            $statusCol = '<fg=green>IN_SYNC</>';
-            $statusCode = 'IN_SYNC';
-
-            if (!$isTimezoneValid) {
-                $statusCol = "<fg=red;options=bold>INVALID_TIME_PERIOD (Grp:{$group}, TZ:{$tz1})</>";
-                $statusCode = 'INVALID_TIME_PERIOD';
-            } elseif (!empty($ghostFids) && !empty($missingFids)) {
-                $statusCol = "<fg=yellow>MISMATCH (Ghost: " . implode(',', $ghostFids) . ", Missing: " . implode(',', $missingFids) . ")</>";
-                $statusCode = 'MISMATCH';
-            } elseif (!empty($ghostFids)) {
-                $statusCol = "<fg=yellow;options=bold>EXTRA_GHOST (Slot " . implode(',', $ghostFids) . ")</>";
-                $statusCode = 'EXTRA_GHOST';
-            } elseif (!empty($missingFids)) {
-                $statusCol = "<fg=red>MISSING (Slot " . implode(',', $missingFids) . ")</>";
-                $statusCode = 'MISSING_SLOT';
-            }
-
-            return [
-                'name' => $deviceName,
-                'sn' => $deviceSn,
-                'ip' => $ip,
-                'algo' => $algoDisplay,
-                'connection' => '<fg=green>ONLINE</>',
-                'user' => $userDisplay,
-                'fingers' => $fingersDisplay,
-                'status' => $statusCol,
-                '_has_ghost' => $hasGhost,
-                '_ghost_fids' => $ghostFids,
-                '_missing_fids' => $missingFids,
-                '_candidate_pins' => $candidatePins,
-                '_tad' => $tad,
-                '_all_ghosts' => $allGhosts,
-                '_status' => $statusCode,
-                '_algo' => $algoVersion,
-            ];
+            return $this->buildInspectedRow(
+                $device,
+                $pin,
+                $algoVersion,
+                $userRow,
+                $candidatePins,
+                $deviceSlots,
+                $dbSlots,
+                $tad
+            );
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::channel('device_logs')->error("inspectDevice error for {$deviceName} ({$deviceSn}): " . $e->getMessage());
             $emptyRow['status'] = '<fg=red>ERROR: ' . substr($e->getMessage(), 0, 45) . '</>';
@@ -588,30 +999,27 @@ class CheckDeviceFingerprints extends Command
                 continue;
             }
 
-            $bulkFound = false;
+            $bulkSucceeded = false;
+            $soapPort = (int)($device->soap_port ?: 80);
 
             // 1. Bulk SOAP query for PIN (retrieves all slots in one instantaneous call)
             if (!empty($ip) && $ip !== '0.0.0.0' && ($ip !== '127.0.0.1' || app()->runningUnitTests())) {
                 try {
                     $soapClient = new \SoapClient(null, [
-                        'location' => "http://{$ip}/iWsService",
+                        'location' => "http://{$ip}:{$soapPort}/iWsService",
                         'uri' => 'http://www.zksoftware/Service/message/',
                         'connection_timeout' => 2,
                         'exceptions' => true,
                     ]);
 
                     $xml = "<GetUserTemplate><ArgComKey>{$comKey}</ArgComKey><Arg><PIN>{$cPin}</PIN></Arg></GetUserTemplate>";
-                    $resp = $soapClient->__doRequest($xml, "http://{$ip}/iWsService", '', SOAP_1_1);
+                    $resp = $soapClient->__doRequest($xml, "http://{$ip}:{$soapPort}/iWsService", '', SOAP_1_1);
 
-                    if (!empty($resp) && preg_match_all('/<FingerID>(\d+)<\/FingerID>.*?<(?:Size>(\d+)<\/Size>.*?)?<(?:Template|TMP)>(.*?)<\/(?:Template|TMP)>/s', $resp, $matches, PREG_SET_ORDER)) {
-                        foreach ($matches as $m) {
-                            $fid = (int)$m[1];
-                            $template = trim($m[3]);
-                            if (!empty($template)) {
-                                $size = !empty($m[2]) ? (int)$m[2] : strlen($template);
-                                $deviceSlots[$fid] = $size;
-                                $bulkFound = true;
-                            }
+                    $parsed = $this->parseBulkTemplatesResponse((string)$resp);
+                    if ($parsed['succeeded']) {
+                        $bulkSucceeded = true;
+                        foreach ($parsed['slots'] as $fid => $size) {
+                            $deviceSlots[$fid] = $size;
                         }
                     }
                 } catch (\Throwable) {
@@ -619,8 +1027,8 @@ class CheckDeviceFingerprints extends Command
                 }
             }
 
-            // 2. If bulk query didn't find templates, fallback to per-slot TAD queries
-            if (!$bulkFound) {
+            // 2. If bulk query failed/errored, fallback to per-slot TAD queries
+            if (!$bulkSucceeded) {
                 for ($slot = 0; $slot <= 9; $slot++) {
                     if (isset($deviceSlots[$slot])) {
                         continue;
