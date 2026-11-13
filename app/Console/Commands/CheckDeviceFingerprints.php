@@ -678,15 +678,13 @@ class CheckDeviceFingerprints extends Command
     {
         $ip = $device->ip_address ?? '0.0.0.0';
         $soapPort = (int)($device->soap_port ?: 80);
-        $envelope = '<?xml version="1.0" encoding="utf-8"?>'
-            . '<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://www.zksoftware/Service/message/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
-            . '<SOAP-ENV:Body>' . $xmlBody . '</SOAP-ENV:Body>'
-            . '</SOAP-ENV:Envelope>';
+        $payload = '<?xml version="1.0" encoding="utf-8" standalone="no"?>'
+            . trim(str_replace(["\n", "\r"], '', $xmlBody));
 
         return [
             'url' => "http://{$ip}:{$soapPort}/iWsService",
             'method' => 'POST',
-            'body' => $envelope,
+            'body' => $payload,
             'headers' => [
                 'Content-Type: text/xml; charset=utf-8',
                 'SOAPAction: ""',
