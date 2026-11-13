@@ -231,7 +231,11 @@ class CommandRunnerController extends Controller
                 ], 404);
             }
 
-            if ((bool)$device->is_hrbliz && in_array($commandKey, [
+            $canReceiveSync = method_exists($device, 'canReceiveSync')
+                ? $device->canReceiveSync()
+                : (bool)$device->receiver_by_default;
+
+            if ((bool)$device->is_hrbliz && !$canReceiveSync && in_array($commandKey, [
                 'biometrics:sync-device',
                 'biometrics:check-device',
                 'biometrics:check-device-match',
