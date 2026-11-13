@@ -1121,3 +1121,58 @@ test('HRBLIZ device with receiver_by_default = 1 syncs using hrbliz_biometric_id
     expect($res->getStatusCode())->not->toBe(422);
 });
 
+test('devices:clear-logs --all and catch-up exclude HRBLIZ devices even when receiver_by_default is 1', function () {
+    $commandService = app(\App\Services\DeviceCommandService::class);
+    $deviceService = app(\App\Services\DeviceService::class);
+
+    $hrblizReceiver = Devices::create([
+        'device_name' => 'HRBLIZ Receiver Terminal',
+        'serial_number' => 'SN-HRBLIZ-CLEAR-SKIP',
+        'ip_address' => '127.0.0.1',
+        'is_active' => 1,
+        'is_hrbliz' => true,
+        'receiver_by_default' => true,
+        'last_seen_at' => now(),
+        'last_cleared_at' => now()->subDays(10),
+    ]);
+
+    $standardDev = Devices::create([
+        'device_name' => 'Standard Terminal',
+        'serial_number' => 'SN-STD-CLEAR-OK',
+        'ip_address' => '127.0.0.1',
+        'is_active' => 1,
+        'is_hrbliz' => false,
+        'receiver_by_default' => true,
+        'last_seen_at' => now(),
+        'last_cleared_at' => now()->subDays(10),
+    ]);
+
+    // 1. Standard --all run (Sunday 23:55 schedule) excludes HRBLIZ
+    $batchAll = $deviceService->clearAttendanceLogsFromActiveDevices([
+        'method' => 'adms',
+        'force' => true,
+        'skip_sync' => true,
+    ]);
+
+    $targetedIdsAll = array_column($batchAll['devices'], 'device_id');
+    expect($targetedIdsAll)->toContain($standardDev->id)
+        ->and($targetedIdsAll)->not->toContain($hrblizReceiver->id);
+
+    // 2. Catch-up run (Daily 12:00 schedule) also excludes HRBLIZ
+    $commandService->clearCommands();
+    $standardDev->refresh()->update(['last_cleared_at' => now()->subDays(10)]);
+
+    $this->artisan('devices:clear-logs', [
+        '--all' => true,
+        '--catch-up' => true,
+        '--older-than' => 7,
+        '--force' => true,
+        '--skip-sync' => true,
+        '--method' => 'adms',
+    ])->assertSuccessful();
+
+    expect($commandService->getPendingCommands('SN-HRBLIZ-CLEAR-SKIP'))->toBeEmpty();
+    expect($commandService->getPendingCommands('SN-STD-CLEAR-OK'))->not->toBeEmpty();
+});
+
+

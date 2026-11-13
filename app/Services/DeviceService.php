@@ -1265,6 +1265,10 @@ class DeviceService
             $query = Devices::needingLogClear($days)->canReceiveSync();
         }
 
+        if (\Illuminate\Support\Facades\Schema::hasColumn('devices', 'is_hrbliz')) {
+            $query->standard();
+        }
+
         $devices = $query->get();
         $results = [];
         $clearedCount = 0;
