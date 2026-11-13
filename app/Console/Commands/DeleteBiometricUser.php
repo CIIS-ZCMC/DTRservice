@@ -53,9 +53,7 @@ class DeleteBiometricUser extends Command
         }
 
         if ($allDevices) {
-            $query = Devices::where('is_active', 1)->where(function ($q) {
-                $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
-            });
+            $query = Devices::where('is_active', 1)->canReceiveSync();
             $devices = $query->get()->unique(fn($d) => $d->serial_number ?: $d->ip_address);
         } else {
             $device = Devices::where('serial_number', $deviceSn)
@@ -65,8 +63,8 @@ class DeleteBiometricUser extends Command
                 $this->error("Device with serial number / IP {$deviceSn} not found.");
                 return 1;
             }
-            if ($device->is_hrbliz) {
-                $this->error("Cannot delete user from device [{$device->serial_number}]: Device is an HRBLIZ terminal (read-only attendance sender).");
+            if (!$device->canReceiveSync()) {
+                $this->error("Cannot delete user from device [{$device->serial_number}]: Device has receiver_by_default = 0 (send-only attendance mode).");
                 return 1;
             }
             $devices = collect([$device]);
@@ -78,7 +76,7 @@ class DeleteBiometricUser extends Command
         $totalQueued = 0;
 
         foreach ($devices as $dev) {
-            if ($dev->is_hrbliz) {
+            if (!$dev->canReceiveSync()) {
                 continue;
             }
 

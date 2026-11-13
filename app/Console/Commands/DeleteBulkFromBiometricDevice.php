@@ -110,8 +110,11 @@ class DeleteBulkFromBiometricDevice extends Command
         $this->info("Targeting " . count($pins) . " PIN(s) across " . $devices->count() . " device(s)...");
 
         foreach ($devices as $device) {
-            if ($device->is_hrbliz) {
-                $this->info("Skipping HRBLIZ device [{$device->device_name} / {$device->ip_address}]: HRBLIZ devices only send attendance and must not have data modified.");
+            if (!$device->canReceiveSync()) {
+                $reason = $device->is_hrbliz
+                    ? 'HRBLIZ device has receiver_by_default = 0 (send-only attendance mode)'
+                    : 'device has receiver_by_default = 0 (send-only mode)';
+                $this->info("Skipping device [{$device->device_name} / {$device->ip_address}]: {$reason}.");
                 continue;
             }
 

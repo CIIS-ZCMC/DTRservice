@@ -153,7 +153,7 @@ class CommandRunnerController extends Controller
      */
     public function getManifest(): JsonResponse
     {
-        $devices = Devices::select('id', 'device_name', 'serial_number', 'ip_address', 'is_active', 'is_registration', 'for_attendance', 'is_hrbliz')
+        $devices = Devices::select('id', 'device_name', 'serial_number', 'ip_address', 'is_active', 'is_registration', 'for_attendance', 'is_hrbliz', 'receiver_by_default')
             ->orderBy('is_active', 'desc')
             ->orderBy('device_name', 'asc')
             ->get();

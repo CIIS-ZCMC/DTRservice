@@ -368,8 +368,11 @@ class CheckDeviceTemplateMatches extends Command
             foreach ($ghostSlotsToClean as $cleanTarget) {
                 $sn = $cleanTarget['device_sn'];
                 $dev = Devices::where('serial_number', $sn)->first();
-                if ($dev && $dev->is_hrbliz) {
-                    $this->line(" • Skipping HRBLIZ device {$cleanTarget['device_name']} ({$sn}): device is send-only attendance terminal.");
+                if ($dev && !$dev->canReceiveSync()) {
+                    $reason = $dev->is_hrbliz
+                        ? 'HRBLIZ device has receiver_by_default = 0 (send-only attendance terminal)'
+                        : 'device has receiver_by_default = 0 (send-only mode)';
+                    $this->line(" • Skipping {$cleanTarget['device_name']} ({$sn}): {$reason}.");
                     continue;
                 }
                 $fid = $cleanTarget['finger_id'];

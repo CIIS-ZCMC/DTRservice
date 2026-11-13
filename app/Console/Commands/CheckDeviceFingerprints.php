@@ -198,8 +198,11 @@ class CheckDeviceFingerprints extends Command
 
             foreach ($devicesToFix as $fixTarget) {
                 $targetDev = $fixTarget['device'];
-                if ($targetDev->is_hrbliz) {
-                    $this->line(" • Skipping HRBLIZ device {$targetDev->device_name} ({$targetDev->serial_number}): device is send-only attendance terminal.");
+                if (!$targetDev->canReceiveSync()) {
+                    $reason = $targetDev->is_hrbliz
+                        ? 'HRBLIZ device has receiver_by_default = 0 (send-only attendance terminal)'
+                        : 'device has receiver_by_default = 0 (send-only mode)';
+                    $this->line(" • Skipping {$targetDev->device_name} ({$targetDev->serial_number}): {$reason}.");
                     continue;
                 }
                 $candPins = $fixTarget['candidate_pins'] ?? [$pin];
@@ -309,7 +312,7 @@ class CheckDeviceFingerprints extends Command
 
             foreach ($ghostsToClean as $target) {
                 $targetDev = $target['device'];
-                if ($targetDev->is_hrbliz) {
+                if (!$targetDev->canReceiveSync()) {
                     continue;
                 }
                 $ghostFids = $target['ghost_fids'];

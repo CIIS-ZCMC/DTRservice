@@ -604,9 +604,7 @@ class DeviceController extends Controller
     {
         try {
             @set_time_limit(180);
-            $devices = Devices::active()->where(function ($q) {
-                $q->whereNull('is_hrbliz')->orWhere('is_hrbliz', 0);
-            })->get();
+            $devices = Devices::active()->canReceiveSync()->get();
             $results = [];
             $successCount = 0;
             $failCount = 0;
