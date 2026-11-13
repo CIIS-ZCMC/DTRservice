@@ -70,8 +70,10 @@ class CheckDeviceFingerprints extends Command
             return 1;
         }
 
-        // 1. Fetch Central Database Record
-        $bioUser = Biometrics::where('biometric_id', $pin)->first();
+        // 1. Fetch Central Database Record (supports canonical biometric_id or hrbliz_biometric_id)
+        $bioUser = Biometrics::where('biometric_id', $pin)
+            ->orWhere('hrbliz_biometric_id', $pin)
+            ->first();
         $dbSlots = [];
 
         if ($bioUser && !empty($bioUser->biometric) && $bioUser->biometric !== 'NOT_YET_REGISTERED') {
@@ -141,7 +143,16 @@ class CheckDeviceFingerprints extends Command
         $detectedAlgos = [];
 
         foreach ($devices as $dev) {
-            $row = $this->inspectDevice($dev, $pin, $dbSlots);
+            if ($dev->is_hrbliz) {
+                $deviceTargetPin = ($bioUser && !empty($bioUser->hrbliz_biometric_id))
+                    ? (int)$bioUser->hrbliz_biometric_id
+                    : ($bioUser ? null : $pin);
+            } else {
+                $deviceTargetPin = $bioUser ? (int)$bioUser->biometric_id : $pin;
+            }
+
+            $inspectPin = $deviceTargetPin ?? $pin;
+            $row = $this->inspectDevice($dev, $inspectPin, $dbSlots);
 
             if ($row['_status'] !== 'OFFLINE' && !empty($row['_algo']) && $row['_algo'] !== 'Unknown') {
                 $detectedAlgos[$row['_algo']] = ($detectedAlgos[$row['_algo']] ?? 0) + 1;
@@ -155,8 +166,9 @@ class CheckDeviceFingerprints extends Command
                 $hasGhostSlots = true;
                 $ghostsToClean[] = [
                     'device' => $dev,
+                    'target_pin' => $deviceTargetPin,
                     'ghost_fids' => $row['_ghost_fids'],
-                    'candidate_pins' => $row['_candidate_pins'] ?? [$pin],
+                    'candidate_pins' => $row['_candidate_pins'] ?? [$inspectPin],
                     'tad' => $row['_tad'],
                     'all_ghosts' => $row['_all_ghosts'],
                 ];
@@ -165,7 +177,8 @@ class CheckDeviceFingerprints extends Command
             if ($row['_status'] !== 'IN_SYNC' && $row['_status'] !== 'OFFLINE') {
                 $devicesToFix[] = [
                     'device' => $dev,
-                    'candidate_pins' => $row['_candidate_pins'] ?? [$pin],
+                    'target_pin' => $deviceTargetPin,
+                    'candidate_pins' => $row['_candidate_pins'] ?? [$inspectPin],
                     'ghost_fids' => $row['_ghost_fids'] ?? [],
                     'missing_fids' => $row['_missing_fids'] ?? [],
                     'tad' => $row['_tad'],
@@ -205,22 +218,28 @@ class CheckDeviceFingerprints extends Command
                     $this->line(" • Skipping {$targetDev->device_name} ({$targetDev->serial_number}): {$reason}.");
                     continue;
                 }
-                $candPins = $fixTarget['candidate_pins'] ?? [$pin];
+                $targetPin = $fixTarget['target_pin'] ?? $pin;
+                if ($targetDev->is_hrbliz && $targetPin === null) {
+                    $this->line(" • <fg=yellow>Skipping HRBLIZ device {$targetDev->device_name} ({$targetDev->serial_number}): employee has no hrbliz_biometric_id mapped.</>");
+                    continue;
+                }
+
+                $candPins = $fixTarget['candidate_pins'] ?? [$targetPin];
                 $ghostFids = $fixTarget['ghost_fids'] ?? [];
                 $missingFids = $fixTarget['missing_fids'] ?? [];
                 $tad = $fixTarget['tad'] ?? null;
 
-                // 1. Sync User profile and DB templates (enforces Grp=1, TZ=1 on badge PIN)
-                $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $pin, false);
+                // 1. Sync User profile and DB templates (enforces Grp=1, TZ=1 on device-resolved PIN)
+                $cmdCount = $this->syncService->syncUserAndTemplatesToDevice($targetDev->serial_number, $bioUser ?? $targetPin, false);
 
-                // 2. If the terminal has an internal PIN distinct from badge PIN, ensure Grp=1 TZ=1 is set on that internal PIN too
+                // 2. If the terminal has an internal PIN distinct from target PIN, ensure Grp=1 TZ=1 is set on that internal PIN too
                 if ($bioUser) {
                     $name = $bioUser->name ?? 'Unknown';
                     $privilege = $bioUser->privilege ?? 0;
                     $devicePri = ((int)$privilege === 1 || (int)$privilege === 14) ? 14 : 0;
                     foreach ($candPins as $cPin) {
-                        if ($cPin !== $pin && $cPin > 0) {
-                            $userCmd = "DATA USER PIN={$cPin}\tPIN2={$pin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
+                        if ($cPin !== $targetPin && $cPin > 0) {
+                            $userCmd = "DATA USER PIN={$cPin}\tPIN2={$targetPin}\tName={$name}\tPri={$devicePri}\tPasswd=\tCard=0\tGrp=1\tTZ=1";
                             $this->commandService->queueCommand($targetDev->serial_number, $userCmd);
                             $cmdCount++;
                         }
@@ -264,7 +283,7 @@ class CheckDeviceFingerprints extends Command
 
                             // Queue ADMS DATA UPDATE for internal PINs
                             foreach ($candPins as $cPin) {
-                                if ($cPin !== $pin && $cPin > 0) {
+                                if ($cPin !== $targetPin && $cPin > 0) {
                                     $cmd = "DATA UPDATE fingertmp\tPIN={$cPin}\tFID={$mfid}\tSize={$size}\tValid={$valid}\tTMP={$tmp}";
                                     $this->commandService->queueCommand($targetDev->serial_number, $cmd);
                                     $cmdCount++;

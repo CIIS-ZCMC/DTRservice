@@ -337,12 +337,10 @@ class BiometricSyncService
             if (is_array($faceData)) {
                 $segments = [];
                 foreach ($faceData as $k => $v) {
-                    if ($k === 'type' || str_starts_with($k, '_') || str_contains($k, ' ')) continue;
+                    if ($k === 'type' || str_starts_with($k, '_') || str_contains($k, ' ') || strtoupper($k) === 'PIN') continue;
                     $segments[] = "{$k}={$v}";
                 }
-                if (!isset($faceData['PIN']) && !isset($faceData['Pin'])) {
-                    array_unshift($segments, "PIN={$pin}");
-                }
+                array_unshift($segments, "PIN={$pin}");
                 $payload = implode("\t", $segments);
                 $commands[] = "DATA UPDATE biodata\t{$payload}";
             }
@@ -375,7 +373,9 @@ class BiometricSyncService
     {
         $bioModel = $pin instanceof \App\Models\Biometrics
             ? $pin
-            : \App\Models\Biometrics::where('biometric_id', $pin)->first();
+            : \App\Models\Biometrics::where('biometric_id', $pin)
+                ->orWhere('hrbliz_biometric_id', $pin)
+                ->first();
 
         if (!$bioModel) {
             return 0;

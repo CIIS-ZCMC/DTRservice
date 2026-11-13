@@ -519,12 +519,22 @@ class DeviceService
         // 2. Queue ADMS Push commands (secondary fallback / audit)
         $pushQueuedCount = 0;
         if ($queuePush && !empty($sn) && $sn !== 'Fail!') {
+            $isHrbliz = !empty($deviceArr['is_hrbliz']);
             foreach ($cleanPins as $pin) {
+                $targetPin = $pin;
+                if ($isHrbliz) {
+                    $bioUser = Biometrics::where('biometric_id', $pin)
+                        ->orWhere('hrbliz_biometric_id', $pin)
+                        ->first();
+                    if (!empty($bioUser?->hrbliz_biometric_id)) {
+                        $targetPin = (string)$bioUser->hrbliz_biometric_id;
+                    }
+                }
                 try {
-                    $this->commandService->queueCommand($sn, "DATA DELETE USER PIN={$pin}");
+                    $this->commandService->queueCommand($sn, "DATA DELETE USER PIN={$targetPin}");
                     $pushQueuedCount++;
                 } catch (\Throwable $e) {
-                    $errors[] = "Push queue PIN {$pin}: " . $e->getMessage();
+                    $errors[] = "Push queue PIN {$targetPin}: " . $e->getMessage();
                 }
             }
         }

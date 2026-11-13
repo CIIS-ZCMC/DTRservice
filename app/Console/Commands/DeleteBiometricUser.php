@@ -83,12 +83,25 @@ class DeleteBiometricUser extends Command
             $devName = $dev->device_name ?? $dev->ip_address;
             $this->line("<fg=yellow>Connecting to {$dev->ip_address} ({$devName})...</>");
 
+            $resolvedPins = [];
+            foreach ($pins as $p) {
+                $bio = Biometrics::where('biometric_id', $p)
+                    ->orWhere('hrbliz_biometric_id', $p)
+                    ->first();
+                if ($dev->is_hrbliz && !empty($bio?->hrbliz_biometric_id)) {
+                    $resolvedPins[] = (string)$bio->hrbliz_biometric_id;
+                } else {
+                    $resolvedPins[] = (string)$p;
+                }
+            }
+            $resolvedPins = array_values(array_unique($resolvedPins));
+
             // Direct TAD SOAP deletion (adapted from DeleteBulkFromBiometricDevice)
             if (!$queueOnly && !empty($dev->ip_address)) {
                 $result = $deviceService->deleteUsersFromDevice($dev, $pins, true);
                 if ($result['tad_success']) {
-                    foreach ($pins as $p) {
-                        $userName = Biometrics::where('biometric_id', $p)->value('name') ?: "PIN {$p}";
+                    foreach ($resolvedPins as $p) {
+                        $userName = Biometrics::where('biometric_id', $p)->orWhere('hrbliz_biometric_id', $p)->value('name') ?: "PIN {$p}";
                         $this->line("  <fg=green>[DIRECT TAD] {$dev->ip_address} Deleted -> {$p} ({$userName}) ✔</>");
                         $totalTadDeleted++;
                     }
@@ -99,7 +112,7 @@ class DeleteBiometricUser extends Command
             } else {
                 // Queue only
                 if (!empty($dev->serial_number) && $dev->serial_number !== 'Fail!') {
-                    foreach ($pins as $p) {
+                    foreach ($resolvedPins as $p) {
                         $commandService->queueCommand($dev->serial_number, "DATA DELETE USER PIN={$p}");
                         $totalQueued++;
                     }
@@ -107,7 +120,7 @@ class DeleteBiometricUser extends Command
             }
 
             if (!empty($dev->serial_number) && $dev->serial_number !== 'Fail!') {
-                foreach ($pins as $p) {
+                foreach ($resolvedPins as $p) {
                     $this->line("  <fg=cyan>[ADMS QUEUE] Queued DATA DELETE USER PIN={$p} to {$dev->serial_number} ✔</>");
                 }
             }

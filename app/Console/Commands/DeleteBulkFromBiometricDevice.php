@@ -157,7 +157,10 @@ class DeleteBulkFromBiometricDevice extends Command
 
                     // Secondary ADMS push queue backup
                     if (!empty($device->serial_number) && $device->serial_number !== 'Fail!') {
-                        $commandService->queueCommand($device->serial_number, "DATA DELETE USER PIN={$pin}");
+                        $queuePin = ($device->is_hrbliz && !empty($emp?->hrbliz_biometric_id))
+                            ? (int)$emp->hrbliz_biometric_id
+                            : (int)$pin;
+                        $commandService->queueCommand($device->serial_number, "DATA DELETE USER PIN={$queuePin}");
                     }
                 }
             } else {

@@ -64,7 +64,9 @@ class CheckDeviceTemplateMatches extends Command
         $dbOnly = (bool)$this->option('db-only');
 
         // 1. Fetch Central Database Record
-        $bioUser = Biometrics::where('biometric_id', $pin)->first();
+        $bioUser = Biometrics::where('biometric_id', $pin)
+            ->orWhere('hrbliz_biometric_id', $pin)
+            ->first();
         $dbTemplates = [];
         $dbSlots = [];
 
@@ -124,7 +126,10 @@ class CheckDeviceTemplateMatches extends Command
         $onlineDevices = [];
 
         foreach ($devices as $dev) {
-            $inspection = $this->inspectDeviceTemplates($dev, $pin, $dbSlots, $comparePin);
+            $devicePin = ($dev->is_hrbliz && !empty($bioUser?->hrbliz_biometric_id))
+                ? (int)$bioUser->hrbliz_biometric_id
+                : $pin;
+            $inspection = $this->inspectDeviceTemplates($dev, $devicePin, $dbSlots, $comparePin);
             $deviceReports[] = $inspection['summary_row'];
 
             if ($inspection['is_online']) {
@@ -377,8 +382,12 @@ class CheckDeviceTemplateMatches extends Command
                 }
                 $fid = $cleanTarget['finger_id'];
 
+                $targetPin = ($dev && $dev->is_hrbliz && !empty($bioUser?->hrbliz_biometric_id))
+                    ? (int)$bioUser->hrbliz_biometric_id
+                    : $pin;
+
                 // 1. Queue ADMS deletion
-                $cmd = "DATA DELETE FINGERTMP\tPIN={$pin}\tFID={$fid}";
+                $cmd = "DATA DELETE FINGERTMP\tPIN={$targetPin}\tFID={$fid}";
                 $this->commandService->queueCommand($sn, $cmd);
                 $purgedCount++;
 
