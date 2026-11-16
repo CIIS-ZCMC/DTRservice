@@ -657,12 +657,14 @@ class DtrReportRepository implements DtrReportRepositoryInterface
             if ($hasBreak) {
                 $firstIn = $firstInTime ? $this->findClosestLog($availableLogs, $date . ' ' . $firstInTime) : null;
                 if ($firstIn) {
-                    $availableLogs = array_values(array_filter($availableLogs, fn($l) => $l['date_time'] !== $firstIn));
+                    $firstInTs = strtotime($firstIn);
+                    $availableLogs = array_values(array_filter($availableLogs, fn($l) => $l['date_time'] !== $firstIn && abs(strtotime($l['date_time']) - $firstInTs) >= 60));
                 }
 
                 $secondOut = ($secondOutTime && !$isCrossMidnight) ? $this->findClosestLog($availableLogs, $date . ' ' . $secondOutTime) : null;
                 if ($secondOut) {
-                    $availableLogs = array_values(array_filter($availableLogs, fn($l) => $l['date_time'] !== $secondOut));
+                    $secondOutTs = strtotime($secondOut);
+                    $availableLogs = array_values(array_filter($availableLogs, fn($l) => $l['date_time'] !== $secondOut && abs(strtotime($l['date_time']) - $secondOutTs) >= 60));
                 }
 
                 // Remaining logs are candidates for break slots (first_out and second_in)
@@ -682,6 +684,32 @@ class DtrReportRepository implements DtrReportRepositoryInterface
 
                 $firstOut = null;
                 $secondIn = null;
+
+                // If second_out was not matched within the normal 3.5h window of second_outTime,
+                // check if the last candidate is an early out (e.g., 8-12, 1-5 schedule with logs
+                // 07:29, 12:11, 12:25, 01:10 -> 01:10 is early second_out, not second_in).
+                if ($secondOut === null && $secondOutTime && !$isCrossMidnight && count($candidates) >= 3) {
+                    $distinctCandidates = [];
+                    foreach ($candidates as $cand) {
+                        $candTs = strtotime($cand['date_time']);
+                        if (empty($distinctCandidates) || ($candTs - strtotime(end($distinctCandidates)['date_time'])) >= 60) {
+                            $distinctCandidates[] = $cand;
+                        }
+                    }
+
+                    if (count($distinctCandidates) >= 3) {
+                        $lastCand = end($distinctCandidates);
+                        $prevCand = $distinctCandidates[count($distinctCandidates) - 2];
+                        $lastCandTs = strtotime($lastCand['date_time']);
+                        $prevCandTs = strtotime($prevCand['date_time']);
+                        $schedOutTs = strtotime($date . ' ' . $secondOutTime);
+
+                        if (($lastCandTs - $prevCandTs) >= 180 && $lastCandTs <= $schedOutTs) {
+                            $secondOut = $lastCand['date_time'];
+                            $candidates = array_values(array_filter($candidates, fn($c) => strtotime($c['date_time']) < $lastCandTs));
+                        }
+                    }
+                }
 
                 if (count($candidates) === 1) {
                     $logTs = strtotime($candidates[0]['date_time']);

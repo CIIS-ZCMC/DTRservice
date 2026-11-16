@@ -188,7 +188,7 @@ class TimeRecordService
             $scheduleTimes[] = $t;
         }
 
-        foreach ($entries as $entry) {
+        foreach ($entries as $entryIdx => $entry) {
             $entryTime = Carbon::parse($entry);
             $matched = false;
             $matchedSchedule = null;
@@ -221,6 +221,40 @@ class TimeRecordService
                             $reason = 'not within ' . $minInterval . ' mins from recent - match schedule but invalid';
                         }
                     }
+                }
+            }
+
+            // Early out fallback for 4-slot schedules: if second_in is matched and second_out is not,
+            // allow an entry after second_in (>= intervalMinutes) and <= scheduled second_out
+            // when no later entry falls within the normal 3.5h window of second_out.
+            if (
+                !$matched
+                && count($scheduleTimes) === 4
+                && in_array(2, $matchedScheduleIndices, true)
+                && !in_array(3, $matchedScheduleIndices, true)
+                && $lastMatchedTime !== null
+                && $entryTime->greaterThan($lastMatchedTime)
+                && abs($entryTime->diffInMinutes($lastMatchedTime)) >= $intervalMinutes
+                && $entryTime->lessThanOrEqualTo($scheduleTimes[3])
+            ) {
+                $outWindowStart = $scheduleTimes[3]->copy()->subMinutes($windowMinutes);
+                $outWindowEnd = $scheduleTimes[3]->copy()->addMinutes($windowMinutes);
+                $hasLaterNormalOut = false;
+
+                for ($nextIdx = $entryIdx + 1; $nextIdx < count($entries); $nextIdx++) {
+                    if (Carbon::parse($entries[$nextIdx])->between($outWindowStart, $outWindowEnd)) {
+                        $hasLaterNormalOut = true;
+                        break;
+                    }
+                }
+
+                if (!$hasLaterNormalOut) {
+                    $matched = true;
+                    $matchedSchedule = $schedule[3];
+                    $status = true;
+                    $reason = 'early out - match schedule';
+                    $matchedScheduleIndices[] = 3;
+                    $lastMatchedTime = $entryTime;
                 }
             }
 

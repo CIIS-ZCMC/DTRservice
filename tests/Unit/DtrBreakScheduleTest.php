@@ -199,3 +199,99 @@ test('DtrReportRepository does not assign duplicate morning arrival punches to b
     expect($result['second_in'])->toBeNull();
     expect($result['second_out'])->toBeNull();
 });
+
+test('DtrReportRepository handles 8-12 1-5 schedule with early out after quick break', function () {
+    $repository = app(DtrReportRepository::class);
+    $reflection = new ReflectionClass(DtrReportRepository::class);
+    $matchMethod = $reflection->getMethod('matchLogsToScheduleSlots');
+    $matchMethod->setAccessible(true);
+    $undertimeMethod = $reflection->getMethod('calculateUndertime');
+    $undertimeMethod->setAccessible(true);
+
+    $scheduleData = [
+        'first_entry' => '08:00:00',
+        'second_entry' => '12:00:00',
+        'third_entry' => '13:00:00',
+        'last_entry' => '17:00:00',
+        'is_cross_midnight' => false,
+    ];
+
+    // Case 1: Nov 10 logs (duplicate 07:29, 12:11, 12:25, 01:10 early out)
+    $nov10Logs = [
+        ['date_time' => '2026-11-10 07:29:00'],
+        ['date_time' => '2026-11-10 07:29:00'],
+        ['date_time' => '2026-11-10 12:11:00'],
+        ['date_time' => '2026-11-10 12:25:00'],
+        ['date_time' => '2026-11-10 13:10:00'],
+    ];
+
+    $nov10Result = $matchMethod->invoke($repository, $nov10Logs, $scheduleData, '2026-11-10');
+    expect($nov10Result['first_in'])->toBe('07:29 AM');
+    expect($nov10Result['first_out'])->toBe('12:11 PM');
+    expect($nov10Result['second_in'])->toBe('12:25 PM');
+    expect($nov10Result['second_out'])->toBe('01:10 PM');
+    expect($undertimeMethod->invoke($repository, $nov10Result, $scheduleData))->toBe(230);
+
+    // Case 2: Nov 11 logs (duplicate 07:46, 12:04, 12:22, 01:03 early out)
+    $nov11Logs = [
+        ['date_time' => '2026-11-11 07:46:00'],
+        ['date_time' => '2026-11-11 07:46:00'],
+        ['date_time' => '2026-11-11 12:04:00'],
+        ['date_time' => '2026-11-11 12:22:00'],
+        ['date_time' => '2026-11-11 13:03:00'],
+    ];
+
+    $nov11Result = $matchMethod->invoke($repository, $nov11Logs, $scheduleData, '2026-11-11');
+    expect($nov11Result['first_in'])->toBe('07:46 AM');
+    expect($nov11Result['first_out'])->toBe('12:04 PM');
+    expect($nov11Result['second_in'])->toBe('12:22 PM');
+    expect($nov11Result['second_out'])->toBe('01:03 PM');
+    expect($undertimeMethod->invoke($repository, $nov11Result, $scheduleData))->toBe(237);
+
+    // Case 3: Duplicate bounce tap on late arrival does not trigger false early out
+    $bounceLogs = [
+        ['date_time' => '2026-11-12 09:00:10'],
+        ['date_time' => '2026-11-12 09:00:25'],
+        ['date_time' => '2026-11-12 12:11:00'],
+        ['date_time' => '2026-11-12 12:25:00'],
+    ];
+
+    $bounceResult = $matchMethod->invoke($repository, $bounceLogs, $scheduleData, '2026-11-12');
+    expect($bounceResult['first_in'])->toBe('09:00 AM');
+    expect($bounceResult['first_out'])->toBe('12:11 PM');
+    expect($bounceResult['second_in'])->toBe('12:25 PM');
+    expect($bounceResult['second_out'])->toBeNull();
+});
+
+test('TimeRecordService handles 8-12 1-5 schedule with early out after quick break', function () {
+    $service = app(TimeRecordService::class);
+    $schedule = ['08:00:00', '12:00:00', '13:00:00', '17:00:00'];
+
+    $entries = [
+        '2026-11-10 07:29:00',
+        '2026-11-10 07:29:00',
+        '2026-11-10 12:11:00',
+        '2026-11-10 12:25:00',
+        '2026-11-10 13:10:00',
+    ];
+
+    $valid = $service->getEntriesWithinSchedule($entries, $schedule);
+    expect($valid['entries'])->toEqual([
+        '2026-11-10 07:29:00',
+        '2026-11-10 12:11:00',
+        '2026-11-10 12:25:00',
+        '2026-11-10 13:10:00',
+    ]);
+
+    $formatted = $service->formatEntries($valid['entries'], $schedule, '2026-11-10');
+    expect($formatted['first_in'])->toBe('2026-11-10 07:29:00');
+    expect($formatted['first_out'])->toBe('2026-11-10 12:11:00');
+    expect($formatted['second_in'])->toBe('2026-11-10 12:25:00');
+    expect($formatted['second_out'])->toBe('2026-11-10 13:10:00');
+
+    $workingHours = $service->ComputeWorkingHours($formatted, $schedule);
+    expect($workingHours['required_working_minutes'])->toBe(480);
+    expect($workingHours['actual_working_minutes'])->toBe(250);
+    expect($workingHours['undertime_minutes'])->toBe(230);
+    expect($workingHours['overtime_minutes'])->toBe(0);
+});
