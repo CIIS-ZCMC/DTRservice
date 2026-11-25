@@ -186,6 +186,106 @@
             </div>
         </div>
 
+        <!-- Advanced Filtering Panel -->
+        <div class="mb-6 themed-bg rounded-xl border themed-border overflow-visible">
+            <div class="panel-header px-4 py-3 border-b themed-border rounded-t-xl flex flex-wrap items-center justify-between gap-3">
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
+                        <i class="fas fa-sliders-h text-white"></i>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-sm font-semibold themed-text-primary">Advanced Filtering</h2>
+                            <span id="advFilterActiveBadge" class="hidden bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">ACTIVE</span>
+                        </div>
+                        <span class="text-xs themed-text-secondary">Filter logs by date range, device(s), and user(s)</span>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="button" onclick="setAdvDatePreset('today')" class="themed-input hover:opacity-80 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors">Today</button>
+                    <button type="button" onclick="setAdvDatePreset('7days')" class="themed-input hover:opacity-80 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors">Last 7 Days</button>
+                    <button type="button" onclick="setAdvDatePreset('month')" class="themed-input hover:opacity-80 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors">This Month</button>
+                    <button type="button" id="advToggleBtn" onclick="toggleAdvancedFilterPanel()" class="themed-input hover:opacity-80 px-2.5 py-1 rounded-lg text-xs transition-colors" title="Collapse/Expand">
+                        <i id="advToggleIcon" class="fas fa-chevron-down"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="advFilterBody" class="p-4 hidden">
+                <div class="grid grid-cols-12 gap-4">
+                    <!-- Date Range -->
+                    <div class="col-span-12 lg:col-span-4">
+                        <label class="text-xs themed-text-secondary font-medium block mb-1.5">
+                            <i class="fas fa-calendar-alt text-orange-400 mr-1"></i> Date Range
+                        </label>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <span class="text-[10px] themed-text-muted block mb-0.5">From</span>
+                                <input id="advStartDate" type="date" class="themed-input text-xs rounded-lg px-2.5 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                            <div>
+                                <span class="text-[10px] themed-text-muted block mb-0.5">To</span>
+                                <input id="advEndDate" type="date" class="themed-input text-xs rounded-lg px-2.5 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Device Filtering -->
+                    <div id="advDeviceContainer" class="col-span-12 lg:col-span-4 relative">
+                        <label class="text-xs themed-text-secondary font-medium block mb-1.5">
+                            <i class="fas fa-server text-blue-400 mr-1"></i> Device Filtering
+                        </label>
+                        <span class="text-[10px] themed-text-muted block mb-0.5">Select one or more devices</span>
+                        <button type="button" id="advDeviceTrigger" onclick="toggleAdvDeviceDropdown()"
+                            class="themed-input text-xs rounded-lg px-3 py-2 w-full text-left flex items-center justify-between focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            <span id="advDeviceTriggerText" class="truncate themed-text-secondary">All Devices</span>
+                            <i class="fas fa-chevron-down text-[10px] themed-text-muted ml-2"></i>
+                        </button>
+                        <div id="advDeviceDropdown" class="hidden absolute left-0 right-0 mt-1 themed-bg themed-border border rounded-lg shadow-xl z-30">
+                            <div class="p-2 border-b themed-border-subtle">
+                                <input id="advDeviceSearch" type="text" placeholder="Search devices..." oninput="renderAdvDeviceList()"
+                                    class="themed-input text-xs rounded px-2.5 py-1.5 w-full focus:outline-none focus:ring-1 focus:ring-indigo-500">
+                            </div>
+                            <div class="px-2.5 py-1.5 border-b themed-border-subtle flex items-center justify-between text-[11px]">
+                                <button type="button" onclick="selectAllAdvDevices(true)" class="text-blue-400 hover:underline">Select All</button>
+                                <button type="button" onclick="selectAllAdvDevices(false)" class="text-red-400 hover:underline">Clear</button>
+                            </div>
+                            <div id="advDeviceList" class="max-h-48 overflow-y-auto scrollbar-thin p-1"></div>
+                        </div>
+                        <div id="advDeviceChips" class="flex flex-wrap gap-1 mt-1.5"></div>
+                    </div>
+
+                    <!-- User Selection -->
+                    <div id="advUserContainer" class="col-span-12 lg:col-span-4 relative">
+                        <label class="text-xs themed-text-secondary font-medium block mb-1.5">
+                            <i class="fas fa-users text-emerald-400 mr-1"></i> User Selection
+                        </label>
+                        <span class="text-[10px] themed-text-muted block mb-0.5">Search by name or biometric ID</span>
+                        <div class="relative">
+                            <input id="advUserSearch" type="text" placeholder="All Users — search name or bio ID..."
+                                onfocus="searchAdvUsers()" oninput="debouncedSearchAdvUsers()" autocomplete="off"
+                                class="themed-input text-xs rounded-lg px-3 py-2 w-full focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                            <div id="advUserDropdown" class="hidden absolute left-0 right-0 mt-1 themed-bg themed-border border rounded-lg shadow-xl max-h-56 overflow-y-auto scrollbar-thin z-30"></div>
+                        </div>
+                        <div id="advUserChips" class="flex flex-wrap gap-1 mt-1.5"></div>
+                    </div>
+                </div>
+
+                <div class="mt-4 pt-3 border-t themed-border-subtle flex flex-wrap items-center justify-between gap-3">
+                    <span id="advFilterHint" class="text-xs themed-text-muted">Leave a filter empty to include all records for that field.</span>
+                    <div class="flex items-center gap-2">
+                        <button type="button" onclick="resetAdvancedFilters()"
+                            class="themed-input hover:opacity-80 text-xs font-medium px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition-colors">
+                            <i class="fas fa-undo"></i> Reset
+                        </button>
+                        <button type="button" id="advApplyBtn" onclick="applyAdvancedFilters()"
+                            class="bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white text-xs font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-all shadow-md">
+                            <i class="fas fa-filter"></i> Apply Filter
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="grid grid-cols-12 gap-6">
             <!-- Calendar -->
             <div class="col-span-5">
@@ -247,13 +347,21 @@
                                     <i class="fas fa-file-alt text-white"></i>
                                 </div>
                                 <div>
-                                    <h2 class="text-sm font-semibold themed-text-primary">Date Details</h2>
+                                    <h2 id="detailTitle" class="text-sm font-semibold themed-text-primary">Date Details</h2>
                                     <span id="detailStatus" class="text-xs themed-text-secondary">Select a date from the calendar</span>
                                 </div>
                             </div>
-                            <button id="printBtn" onclick="openPrintModal()" class="hidden bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors">
-                                <i class="fas fa-print"></i> Print Device Logs
-                            </button>
+                            <div class="flex items-center gap-2">
+                                <button id="printAdvFilterBtn" onclick="printAdvancedFilterResults()" class="hidden bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors">
+                                    <i class="fas fa-print"></i> Print Result
+                                </button>
+                                <button id="clearAdvFilterBtn" onclick="resetAdvancedFilters()" class="hidden themed-input hover:text-red-400 text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors">
+                                    <i class="fas fa-times"></i> Clear Filter
+                                </button>
+                                <button id="printBtn" onclick="openPrintModal()" class="hidden bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg flex items-center gap-2 transition-colors">
+                                    <i class="fas fa-print"></i> Print Device Logs
+                                </button>
+                            </div>
                         </div>
                     </div>
                     <div id="detailContent" class="p-4 min-h-[400px] max-h-[calc(100vh-220px)] overflow-y-auto scrollbar-thin">
@@ -295,6 +403,8 @@
         let selectedDate = null;
         let dataSource = 'db';
         let dbDetailEntries = [];
+        let isAdvancedFilterActive = false;
+        let advFilterEntries = [];
 
         function escapeHtml(text) {
             const div = document.createElement('div');
@@ -375,6 +485,10 @@
         }
 
         function selectDate(dateStr) {
+            isAdvancedFilterActive = false;
+            document.getElementById('detailTitle').textContent = 'Date Details';
+            document.getElementById('clearAdvFilterBtn').classList.add('hidden');
+            document.getElementById('printAdvFilterBtn').classList.add('hidden');
             selectedDate = dateStr;
             renderCalendar();
             renderDetails(dateStr);
@@ -1200,7 +1314,12 @@
             if (e.target.id === 'fileModal') closeFileModal();
         });
         document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') { closeFileModal(); closePrintModal(); }
+            if (e.key === 'Escape') {
+                closeFileModal();
+                closePrintModal();
+                document.getElementById('advDeviceDropdown')?.classList.add('hidden');
+                document.getElementById('advUserDropdown')?.classList.add('hidden');
+            }
         });
 
         // --- Print Modal Logic ---
@@ -1762,7 +1881,466 @@
             if (!e.target.closest('#printEmpSearch') && !e.target.closest('#printEmpDropdown')) {
                 document.getElementById('printEmpDropdown')?.classList.add('hidden');
             }
+            if (!e.target.closest('#advDeviceContainer')) {
+                document.getElementById('advDeviceDropdown')?.classList.add('hidden');
+            }
+            if (!e.target.closest('#advUserContainer')) {
+                document.getElementById('advUserDropdown')?.classList.add('hidden');
+            }
         });
+
+        // --- Advanced Filtering Logic ---
+        let advDevicesList = [];
+        let selectedAdvDevices = new Set();
+        let selectedAdvUsers = new Map(); // biometric_id -> { biometric_id, name, designation }
+        let advUserSearchTimer = null;
+
+        function toggleAdvancedFilterPanel() {
+            const body = document.getElementById('advFilterBody');
+            const icon = document.getElementById('advToggleIcon');
+            const isHidden = body.classList.toggle('hidden');
+            icon.className = isHidden ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
+        }
+
+        function formatLocalDateInput(d) {
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        function setAdvDatePreset(preset) {
+            const now = new Date();
+            const endStr = formatLocalDateInput(now);
+            let startStr = endStr;
+
+            if (preset === '7days') {
+                const start = new Date(now);
+                start.setDate(now.getDate() - 6);
+                startStr = formatLocalDateInput(start);
+            } else if (preset === 'month') {
+                const start = new Date(now.getFullYear(), now.getMonth(), 1);
+                startStr = formatLocalDateInput(start);
+            }
+
+            document.getElementById('advStartDate').value = startStr;
+            document.getElementById('advEndDate').value = endStr;
+        }
+
+        async function loadAdvDevices() {
+            const listDiv = document.getElementById('advDeviceList');
+            if (listDiv) {
+                listDiv.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted"><i class="fas fa-spinner fa-spin mr-1"></i> Loading devices...</div>';
+            }
+            try {
+                const response = await fetch('/logs/alert/devices');
+                advDevicesList = await response.json();
+                renderAdvDeviceList();
+            } catch (error) {
+                if (listDiv) {
+                    listDiv.innerHTML = `<div class="px-3 py-2 text-xs text-red-400">Failed to load devices</div>`;
+                }
+            }
+        }
+
+        function toggleAdvDeviceDropdown() {
+            const dropdown = document.getElementById('advDeviceDropdown');
+            dropdown.classList.toggle('hidden');
+            if (!dropdown.classList.contains('hidden')) {
+                document.getElementById('advDeviceSearch')?.focus();
+                renderAdvDeviceList();
+            }
+        }
+
+        function renderAdvDeviceList() {
+            const listDiv = document.getElementById('advDeviceList');
+            if (!listDiv) return;
+
+            const q = (document.getElementById('advDeviceSearch')?.value || '').toLowerCase().trim();
+            const filtered = advDevicesList.filter(d => !q || d.device_name.toLowerCase().includes(q));
+
+            if (filtered.length === 0) {
+                listDiv.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted">No devices found</div>';
+                return;
+            }
+
+            listDiv.innerHTML = filtered.map(d => {
+                const checked = selectedAdvDevices.has(d.device_name) ? 'checked' : '';
+                return `
+                    <label class="flex items-center justify-between px-2.5 py-1.5 rounded text-xs themed-hover cursor-pointer">
+                        <span class="flex items-center gap-2 truncate">
+                            <input type="checkbox" ${checked} onchange="toggleAdvDevice('${escapeHtml(d.device_name)}')"
+                                class="rounded border-slate-600 text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+                            <span class="themed-text-primary truncate">${escapeHtml(d.device_name)}</span>
+                        </span>
+                        ${d.is_hrbliz ? '<span class="bg-indigo-500/15 text-indigo-500 dark:text-indigo-400 border border-indigo-500/30 text-[10px] px-1.5 py-0.5 rounded font-mono ml-1 font-semibold shrink-0">HRBLIZ</span>' : ''}
+                    </label>`;
+            }).join('');
+        }
+
+        function toggleAdvDevice(deviceName) {
+            if (selectedAdvDevices.has(deviceName)) {
+                selectedAdvDevices.delete(deviceName);
+            } else {
+                selectedAdvDevices.add(deviceName);
+            }
+            renderAdvDeviceSelection();
+        }
+
+        function selectAllAdvDevices(selectAll) {
+            const q = (document.getElementById('advDeviceSearch')?.value || '').toLowerCase().trim();
+            const targets = advDevicesList.filter(d => !q || d.device_name.toLowerCase().includes(q));
+            if (selectAll) {
+                targets.forEach(d => selectedAdvDevices.add(d.device_name));
+            } else {
+                if (q) {
+                    targets.forEach(d => selectedAdvDevices.delete(d.device_name));
+                } else {
+                    selectedAdvDevices.clear();
+                }
+            }
+            renderAdvDeviceList();
+            renderAdvDeviceSelection();
+        }
+
+        function renderAdvDeviceSelection() {
+            const triggerText = document.getElementById('advDeviceTriggerText');
+            const chipsDiv = document.getElementById('advDeviceChips');
+            const arr = Array.from(selectedAdvDevices);
+
+            if (arr.length === 0) {
+                triggerText.textContent = 'All Devices';
+                triggerText.className = 'truncate themed-text-secondary';
+                chipsDiv.innerHTML = '';
+                return;
+            }
+
+            triggerText.textContent = `${arr.length} device(s) selected`;
+            triggerText.className = 'truncate themed-text-primary font-medium';
+
+            chipsDiv.innerHTML = arr.map(name => `
+                <span class="inline-flex items-center gap-1 bg-blue-600/20 border border-blue-500/30 text-blue-400 text-[11px] px-2 py-0.5 rounded-full">
+                    <span class="truncate max-w-[140px]">${escapeHtml(name)}</span>
+                    <button type="button" onclick="toggleAdvDevice('${escapeHtml(name)}'); renderAdvDeviceList();" class="hover:text-red-400 ml-0.5"><i class="fas fa-times text-[10px]"></i></button>
+                </span>`).join('');
+        }
+
+        function debouncedSearchAdvUsers() {
+            clearTimeout(advUserSearchTimer);
+            advUserSearchTimer = setTimeout(searchAdvUsers, 200);
+        }
+
+        async function searchAdvUsers() {
+            const q = (document.getElementById('advUserSearch')?.value || '').trim();
+            const dropdown = document.getElementById('advUserDropdown');
+            dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted flex items-center gap-2"><i class="fas fa-spinner fa-spin text-indigo-500"></i> Searching users...</div>';
+            dropdown.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/logs/alert/employees?q=' + encodeURIComponent(q));
+                const employees = await response.json();
+
+                if (!employees || employees.length === 0) {
+                    dropdown.innerHTML = '<div class="px-3 py-2 text-xs themed-text-muted">No users found</div>';
+                    return;
+                }
+
+                dropdown.innerHTML = employees.map(emp => {
+                    const isSelected = selectedAdvUsers.has(String(emp.biometric_id));
+                    return `
+                        <div onclick="toggleAdvUser('${escapeHtml(String(emp.biometric_id))}', '${escapeHtml(emp.name)}', '${escapeHtml(emp.designation || '')}')"
+                            class="px-3 py-2 text-xs themed-text-primary themed-hover cursor-pointer border-b themed-border-subtle flex items-center justify-between ${isSelected ? 'bg-emerald-500/10' : ''}">
+                            <div class="flex items-center gap-2 truncate">
+                                <i class="fas ${isSelected ? 'fa-check-square text-emerald-400' : 'fa-square themed-text-muted'}"></i>
+                                <span class="font-mono text-blue-400 font-semibold">${escapeHtml(String(emp.biometric_id))}</span>
+                                <span class="font-medium truncate">${escapeHtml(emp.name)}</span>
+                            </div>
+                            ${emp.designation ? `<span class="text-[10px] themed-text-muted ml-2 shrink-0">${escapeHtml(emp.designation)}</span>` : ''}
+                        </div>`;
+                }).join('');
+            } catch (error) {
+                dropdown.innerHTML = `<div class="px-3 py-2 text-xs text-red-400">Error loading users: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        function toggleAdvUser(bioId, name, designation) {
+            if (selectedAdvUsers.has(bioId)) {
+                selectedAdvUsers.delete(bioId);
+            } else {
+                selectedAdvUsers.set(bioId, { biometric_id: bioId, name, designation });
+            }
+            renderAdvUserChips();
+            searchAdvUsers();
+        }
+
+        function removeAdvUser(bioId) {
+            selectedAdvUsers.delete(bioId);
+            renderAdvUserChips();
+            if (!document.getElementById('advUserDropdown').classList.contains('hidden')) {
+                searchAdvUsers();
+            }
+        }
+
+        function renderAdvUserChips() {
+            const chipsDiv = document.getElementById('advUserChips');
+            const arr = Array.from(selectedAdvUsers.values());
+
+            if (arr.length === 0) {
+                chipsDiv.innerHTML = '';
+                return;
+            }
+
+            chipsDiv.innerHTML = arr.map(u => `
+                <span class="inline-flex items-center gap-1 bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 text-[11px] px-2 py-0.5 rounded-full">
+                    <span class="font-mono font-semibold">${escapeHtml(u.biometric_id)}</span>
+                    <span class="truncate max-w-[130px]">${escapeHtml(u.name)}</span>
+                    <button type="button" onclick="removeAdvUser('${escapeHtml(u.biometric_id)}')" class="hover:text-red-400 ml-0.5"><i class="fas fa-times text-[10px]"></i></button>
+                </span>`).join('');
+        }
+
+        async function applyAdvancedFilters() {
+            const startDate = document.getElementById('advStartDate').value;
+            const endDate = document.getElementById('advEndDate').value;
+            const devices = Array.from(selectedAdvDevices);
+            const biometricIds = Array.from(selectedAdvUsers.keys());
+
+            if (!startDate && !endDate && devices.length === 0 && biometricIds.length === 0) {
+                showNotification('Please select at least one filter (date range, device, or user).', 'error');
+                return;
+            }
+
+            isAdvancedFilterActive = true;
+            document.getElementById('advFilterActiveBadge').classList.remove('hidden');
+            document.getElementById('clearAdvFilterBtn').classList.remove('hidden');
+            document.getElementById('printAdvFilterBtn').classList.add('hidden');
+            document.getElementById('detailTitle').textContent = 'Advanced Filter Results';
+            document.getElementById('detailStatus').textContent = 'Filtering logs...';
+            document.getElementById('detailContent').innerHTML = `<div class="text-center py-8"><i class="fas fa-spinner fa-spin text-2xl text-indigo-500 mb-2"></i><p class="themed-text-secondary text-sm">Applying advanced filters...</p></div>`;
+
+            const applyBtn = document.getElementById('advApplyBtn');
+            applyBtn.disabled = true;
+
+            try {
+                const response = await fetch('/logs/alert/filter', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                        'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]')?.content
+                    },
+                    body: JSON.stringify({
+                        start_date: startDate || null,
+                        end_date: endDate || null,
+                        devices,
+                        biometric_ids: biometricIds,
+                        source: dataSource
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Server status ${response.status}`);
+                }
+
+                const data = await response.json();
+                advFilterEntries = data.entries || [];
+                renderAdvancedFilterResults(data);
+            } catch (error) {
+                document.getElementById('detailStatus').textContent = 'Filter error';
+                document.getElementById('detailContent').innerHTML = `<div class="text-red-400 text-center py-8"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><p>Failed to filter: ${escapeHtml(error.message)}</p></div>`;
+            } finally {
+                applyBtn.disabled = false;
+            }
+        }
+
+        function renderAdvancedFilterResults(data) {
+            const detailContent = document.getElementById('detailContent');
+            const detailStatus = document.getElementById('detailStatus');
+
+            const parts = [];
+            if (data.start_date && data.end_date) {
+                parts.push(`${data.start_date} to ${data.end_date}`);
+            } else if (data.start_date) {
+                parts.push(`From ${data.start_date}`);
+            } else if (data.end_date) {
+                parts.push(`Up to ${data.end_date}`);
+            } else {
+                parts.push('All Dates');
+            }
+            if (data.devices?.length) parts.push(`${data.devices.length} device(s)`);
+            if (data.biometric_ids?.length) parts.push(`${data.biometric_ids.length} user(s)`);
+
+            detailStatus.textContent = `${parts.join(' • ')} — ${advFilterEntries.length} entries${data.truncated ? ' (capped at 5,000)' : ''}`;
+
+            const printAdvBtn = document.getElementById('printAdvFilterBtn');
+            if (advFilterEntries.length > 0) {
+                printAdvBtn.classList.remove('hidden');
+            } else {
+                printAdvBtn.classList.add('hidden');
+            }
+
+            let html = '';
+            if (data.truncated) {
+                html += `
+                    <div class="mb-3 p-2.5 rounded-lg bg-orange-500/10 border border-orange-500/30 text-orange-400 text-xs flex items-center gap-2">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <span>Results were capped at 5,000 entries. Narrow your date range, device, or user selection for complete results.</span>
+                    </div>`;
+            }
+
+            html += `
+                <div class="mb-4 grid grid-cols-4 gap-3">
+                    <input id="advLocalBio" type="text" placeholder="Filter Biometric ID" oninput="renderAdvancedFilterTable()"
+                        class="themed-input text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <input id="advLocalName" type="text" placeholder="Filter Name" oninput="renderAdvancedFilterTable()"
+                        class="themed-input text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <input id="advLocalDate" type="text" placeholder="Filter Date (YYYY-MM-DD)" oninput="renderAdvancedFilterTable()"
+                        class="themed-input text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    <input id="advLocalDevice" type="text" placeholder="Filter Device" oninput="renderAdvancedFilterTable()"
+                        class="themed-input text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+                <div id="advFilterTableResults"></div>`;
+
+            detailContent.innerHTML = html;
+            renderAdvancedFilterTable();
+        }
+
+        function renderAdvancedFilterTable() {
+            const resultsDiv = document.getElementById('advFilterTableResults');
+            if (!resultsDiv) return;
+
+            const fBio = (document.getElementById('advLocalBio')?.value || '').toLowerCase().trim();
+            const fName = (document.getElementById('advLocalName')?.value || '').toLowerCase().trim();
+            const fDate = (document.getElementById('advLocalDate')?.value || '').toLowerCase().trim();
+            const fDevice = (document.getElementById('advLocalDevice')?.value || '').toLowerCase().trim();
+
+            const filtered = advFilterEntries.filter(e => {
+                if (fBio && !e.biometric_id.toLowerCase().includes(fBio)) return false;
+                if (fName && !e.name.toLowerCase().includes(fName)) return false;
+                if (fDate && !e.dtr_date.toLowerCase().includes(fDate)) return false;
+                if (fDevice && !e.device_name.toLowerCase().includes(fDevice) && !(e.is_hrbliz && 'hrbliz'.includes(fDevice))) return false;
+                return true;
+            });
+
+            let html = `<div class="mb-3 text-xs themed-text-secondary">Showing ${filtered.length} of ${advFilterEntries.length} filtered entries</div>`;
+
+            if (filtered.length === 0) {
+                html += `<div class="themed-text-muted text-center py-8"><i class="fas fa-search text-2xl mb-2"></i><p>No matching entries</p></div>`;
+            } else {
+                html += `
+                    <div class="overflow-x-auto scrollbar-thin">
+                        <table class="w-full text-xs">
+                            <thead>
+                                <tr class="themed-text-muted border-b themed-border">
+                                    <th class="text-left py-2 px-2 font-semibold">Date</th>
+                                    <th class="text-left py-2 px-2 font-semibold">Biometric ID</th>
+                                    <th class="text-left py-2 px-2 font-semibold">Name</th>
+                                    <th class="text-left py-2 px-2 font-semibold">Time</th>
+                                    <th class="text-left py-2 px-2 font-semibold">Type</th>
+                                    <th class="text-left py-2 px-2 font-semibold">Device</th>
+                                    <th class="text-left py-2 px-2 font-semibold">${dataSource === 'file' ? 'Source File' : 'Synced Time'}</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+
+                filtered.forEach(e => {
+                    html += `
+                        <tr class="border-b themed-border-subtle themed-hover">
+                            <td class="py-2 px-2 font-mono text-indigo-400 font-medium">${escapeHtml(e.dtr_date)}</td>
+                            <td class="py-2 px-2 font-mono themed-text-secondary">${escapeHtml(e.biometric_id)}</td>
+                            <td class="py-2 px-2 themed-text-primary">${escapeHtml(e.name)}</td>
+                            <td class="py-2 px-2 font-mono text-blue-500">${escapeHtml(e.dtr_time)}</td>
+                            <td class="py-2 px-2 themed-text-muted">${escapeHtml(e.dtr_type)}</td>
+                            <td class="py-2 px-2 themed-text-muted">
+                                ${escapeHtml(e.device_name)}
+                                ${e.is_hrbliz ? `<span class="bg-indigo-500/15 text-indigo-500 dark:text-indigo-400 border border-indigo-500/30 text-[10px] px-1.5 py-0.5 rounded font-mono ml-1 font-semibold">HRBLIZ</span>` : ''}
+                            </td>
+                            <td class="py-2 px-2 font-mono themed-text-muted">${escapeHtml(e.created_at)}</td>
+                        </tr>`;
+                });
+
+                html += '</tbody></table></div>';
+            }
+
+            resultsDiv.innerHTML = html;
+        }
+
+        function resetAdvancedFilters() {
+            document.getElementById('advStartDate').value = '';
+            document.getElementById('advEndDate').value = '';
+            document.getElementById('advDeviceSearch').value = '';
+            document.getElementById('advUserSearch').value = '';
+            selectedAdvDevices.clear();
+            selectedAdvUsers.clear();
+            renderAdvDeviceList();
+            renderAdvDeviceSelection();
+            renderAdvUserChips();
+
+            isAdvancedFilterActive = false;
+            advFilterEntries = [];
+            document.getElementById('advFilterActiveBadge').classList.add('hidden');
+            document.getElementById('clearAdvFilterBtn').classList.add('hidden');
+            document.getElementById('printAdvFilterBtn').classList.add('hidden');
+            document.getElementById('detailTitle').textContent = 'Date Details';
+
+            if (selectedDate) {
+                renderDetails(selectedDate);
+            } else {
+                document.getElementById('detailStatus').textContent = 'Select a date from the calendar';
+                document.getElementById('detailContent').innerHTML = `
+                    <div class="themed-text-muted text-center py-16">
+                        <i class="fas fa-hand-pointer text-3xl mb-3 themed-text-muted"></i>
+                        <p>Click a date on the calendar to see which files contain logs for that date</p>
+                    </div>`;
+            }
+        }
+
+        function printAdvancedFilterResults() {
+            if (!isAdvancedFilterActive || advFilterEntries.length === 0) return;
+
+            const startDate = document.getElementById('advStartDate').value;
+            const endDate = document.getElementById('advEndDate').value;
+            const devices = Array.from(selectedAdvDevices);
+            const biometricIds = Array.from(selectedAdvUsers.keys());
+            const localBio = document.getElementById('advLocalBio')?.value || '';
+            const localName = document.getElementById('advLocalName')?.value || '';
+            const localDate = document.getElementById('advLocalDate')?.value || '';
+            const localDevice = document.getElementById('advLocalDevice')?.value || '';
+
+            const tabName = 'print_filtered_tab_' + Date.now();
+            window.open('about:blank', tabName);
+
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = '/logs/alert/print-filtered';
+            form.target = tabName;
+
+            const addField = (name, value) => {
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = name;
+                input.value = value;
+                form.appendChild(input);
+            };
+
+            const csrfToken = document.querySelector('meta[name="csrf-token"]')?.content;
+            if (csrfToken) addField('_token', csrfToken);
+            if (startDate) addField('start_date', startDate);
+            if (endDate) addField('end_date', endDate);
+            addField('source', dataSource);
+            if (localBio) addField('local_bio', localBio);
+            if (localName) addField('local_name', localName);
+            if (localDate) addField('local_date', localDate);
+            if (localDevice) addField('local_device', localDevice);
+
+            devices.forEach(d => addField('devices[]', d));
+            biometricIds.forEach(id => addField('biometric_ids[]', id));
+
+            document.body.appendChild(form);
+            form.submit();
+            document.body.removeChild(form);
+        }
+
+        loadAdvDevices();
     </script>
 </body>
 </html>

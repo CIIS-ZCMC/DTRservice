@@ -40,8 +40,11 @@ Route::get('/logs/alert/scan-db', [DeviceLogAlertController::class, 'scanDatabas
 Route::get('/logs/alert/date/{date}', [DeviceLogAlertController::class, 'dateEntries'])->name('logs.alert.date');
 Route::get('/logs/alert/file/{filename}', [DeviceLogAlertController::class, 'fileContents'])->name('logs.alert.file');
 Route::match(['get', 'post'], '/logs/alert/print', [DeviceLogAlertController::class, 'printDtrLogs'])->name('logs.alert.print');
+Route::match(['get', 'post'], '/logs/alert/print-filtered', [DeviceLogAlertController::class, 'printFilteredLogs'])->name('logs.alert.print-filtered');
 Route::match(['get', 'post'], '/logs/alert/preview-print', [DeviceLogAlertController::class, 'previewPrintLogs'])->name('logs.alert.preview-print');
 Route::get('/logs/alert/employees', [DeviceLogAlertController::class, 'searchEmployees'])->name('logs.alert.employees');
+Route::get('/logs/alert/devices', [DeviceLogAlertController::class, 'getDevices'])->name('logs.alert.devices');
+Route::match(['get', 'post'], '/logs/alert/filter', [DeviceLogAlertController::class, 'advancedFilter'])->name('logs.alert.filter');
 Route::get('/logs/alert/attendance-logs', [DeviceLogAlertController::class, 'fetchAttendanceLogs'])->name('logs.alert.attendance-logs');
 Route::post('/logs/alert/generate-device-logs', [DeviceLogAlertController::class, 'generateDeviceLogs'])->name('logs.alert.generate-device-logs');
 

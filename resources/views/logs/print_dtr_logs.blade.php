@@ -176,8 +176,25 @@
     @php
         $zcmcLogo = public_path('storage/logo/zcmc.jpeg');
         $dohLogo = public_path('storage/logo/doh.jpeg');
+        $sections = $userSections ?? [[
+            'employeeName' => $employeeName,
+            'biometricId' => $biometricId ?? '',
+            'designation' => $designation ?? null,
+            'empId' => $empId ?? '',
+            'logs' => $logs,
+            'isMultipleDates' => !empty($isMultipleDates),
+        ]];
     @endphp
-    <div id="po">
+    @foreach ($sections as $section)
+        @php
+            $secEmployeeName = $section['employeeName'];
+            $secBiometricId = $section['biometricId'] ?? '';
+            $secDesignation = $section['designation'] ?? null;
+            $secEmpId = $section['empId'] ?? '';
+            $secLogs = $section['logs'];
+            $secIsMultipleDates = !empty($section['isMultipleDates']);
+        @endphp
+    <div id="po" style="{{ !$loop->last ? 'page-break-after: always;' : '' }}">
         <table id="headerTable">
             <tr>
                 <td class="logo-cell" >
@@ -218,27 +235,27 @@
 
         <table id="infoTable">
             <tr>
-                <td style="text-align:left;">{{ $employeeName }}</td>
+                <td style="text-align:left;">{{ $secEmployeeName }}</td>
                 <td style="text-align:right;font-size:13px;">Print Date : {{ date('m-d-Y') }}</td>
             </tr>
             <tr>
                 <td style="text-align:left;font-size:12px;">
                   
-                    @if ($designation)
-                        {{ $designation }}<br>
+                    @if ($secDesignation)
+                        {{ $secDesignation }}<br>
                     @endif
-                    @if ($empId)
-                        {{ $empId }}<br>
+                    @if ($secEmpId)
+                        {{ $secEmpId }}<br>
                     @endif
-                    @if ($biometricId)
-                        Biometric ID: {{ $biometricId }}
+                    @if ($secBiometricId)
+                        Biometric ID: {{ $secBiometricId }}
                     @endif
                 </td>
                 <td></td>
             </tr>
         </table>
 
-        @if ($noData || $logs->isEmpty())
+        @if ($noData || $secLogs->isEmpty())
             <div class="no-data">
                 <p>No log entries found for {{ strtotime($date) !== false ? date('F j, Y', strtotime($date)) : $date }}.</p>
             </div>
@@ -253,8 +270,8 @@
                 </thead>
                 <tbody>
                     @php $currentGroupDate = null; @endphp
-                    @foreach ($logs as $item)
-                        @if(!empty($isMultipleDates) && $item->dtr_date !== $currentGroupDate)
+                    @foreach ($secLogs as $item)
+                        @if($secIsMultipleDates && $item->dtr_date !== $currentGroupDate)
                             @php $currentGroupDate = $item->dtr_date; @endphp
                             <tr style="background-color: #e5e7eb;">
                                 <td colspan="3" style="text-align: left; font-weight: bold; font-size: 10px; padding: 5px 8px; color: #1f2937;">
@@ -283,7 +300,7 @@
         </div>
 
         <div class="signature">
-            <span>{{ strtoupper($employeeName) }}</span>
+            <span>{{ strtoupper($secEmployeeName) }}</span>
             <div class="line"></div>
         </div>
 
@@ -300,5 +317,6 @@
             </tr>
         </table>
     </div>
+    @endforeach
 </body>
 </html>

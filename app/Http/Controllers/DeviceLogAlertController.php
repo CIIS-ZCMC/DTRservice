@@ -380,44 +380,7 @@ class DeviceLogAlertController extends Controller
         $empId = '';
 
         if ($biometricId) {
-            if ($biometricId >= 8000) {
-                $biometric = Biometrics::where('biometric_id', $biometricId)
-                    ->with('externalProfile')
-                    ->first();
-
-                if ($biometric && $biometric->externalProfile) {
-                    $employeeName = trim(($biometric->externalProfile->first_name ?? '') . ' ' . ($biometric->externalProfile->last_name ?? '')) ?: $employeeName;
-                    $designation = $biometric->externalProfile->department ?? null;
-                    $empId = $biometric->externalProfile->employee_id ?? '';
-                }
-            } else {
-                $biometric = Biometrics::where('biometric_id', $biometricId)
-                    ->with('employeeProfile.assignArea.department', 'employeeProfile.assignArea.section', 'employeeProfile.assignArea.unit', 'employeeProfile.assignArea.division', 'employeeProfile.personalInformation', 'externalProfile')
-                    ->first();
-
-                if ($biometric && $biometric->employeeProfile) {
-                    $employeeName = $biometric->employeeProfile->personalInformation
-                        ? $biometric->employeeProfile->personalInformation->first_name . ' ' . $biometric->employeeProfile->personalInformation->last_name
-                        : $employeeName;
-                    $assignArea = $biometric->employeeProfile->assignArea;
-                    if ($assignArea) {
-                        if ($assignArea->department) {
-                            $designation = $assignArea->department->name;
-                        } elseif ($assignArea->section) {
-                            $designation = $assignArea->section->name;
-                        } elseif ($assignArea->unit) {
-                            $designation = $assignArea->unit->name;
-                        } elseif ($assignArea->division) {
-                            $designation = $assignArea->division->name;
-                        }
-                    }
-                    $empId = $biometric->employeeProfile->employee_id ?? '';
-                } elseif ($biometric && $biometric->externalProfile) {
-                    $employeeName = trim(($biometric->externalProfile->first_name ?? '') . ' ' . ($biometric->externalProfile->last_name ?? '')) ?: $employeeName;
-                    $designation = $biometric->externalProfile->department ?? null;
-                    $empId = $biometric->externalProfile->employee_id ?? '';
-                }
-            }
+            [$employeeName, $designation, $empId] = $this->resolveEmployeeDetails((string) $biometricId, $employeeName);
         }
 
         $pdf = Pdf::loadView('logs.print_dtr_logs', [
@@ -713,6 +676,499 @@ class DeviceLogAlertController extends Controller
         }
 
         return response()->json($employees);
+    }
+
+    /**
+     * Get list of devices for advanced filtering
+     */
+    public function getDevices(Request $request)
+    {
+        $deviceMap = [];
+
+        $registeredDevices = Devices::orderBy('device_name')
+            ->get(['device_name', 'ip_address', 'is_hrbliz', 'is_active']);
+
+        foreach ($registeredDevices as $dev) {
+            if (empty($dev->device_name)) {
+                continue;
+            }
+            $deviceMap[$dev->device_name] = [
+                'device_name' => $dev->device_name,
+                'ip_address' => $dev->ip_address ?? '',
+                'is_hrbliz' => (bool) $dev->is_hrbliz,
+                'is_active' => (bool) $dev->is_active,
+            ];
+        }
+
+        $stdNames = DeviceLogs::whereNotNull('device_name')
+            ->where('device_name', '!=', '')
+            ->distinct()
+            ->pluck('device_name');
+
+        foreach ($stdNames as $name) {
+            if (!isset($deviceMap[$name])) {
+                $deviceMap[$name] = [
+                    'device_name' => $name,
+                    'ip_address' => '',
+                    'is_hrbliz' => str_contains(strtoupper($name), 'HRBLIZ'),
+                    'is_active' => true,
+                ];
+            }
+        }
+
+        if (\Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')) {
+            $hrbNames = DeviceLogsHrbliz::whereNotNull('device_name')
+                ->where('device_name', '!=', '')
+                ->distinct()
+                ->pluck('device_name');
+
+            foreach ($hrbNames as $name) {
+                if (!isset($deviceMap[$name])) {
+                    $deviceMap[$name] = [
+                        'device_name' => $name,
+                        'ip_address' => '',
+                        'is_hrbliz' => true,
+                        'is_active' => true,
+                    ];
+                }
+            }
+        }
+
+        ksort($deviceMap, SORT_NATURAL | SORT_FLAG_CASE);
+
+        return response()->json(array_values($deviceMap));
+    }
+
+    /**
+     * Advanced filtering by date range, devices, and users (biometric_ids)
+     */
+    public function advancedFilter(Request $request)
+    {
+        $request->validate([
+            'start_date' => 'nullable|date_format:Y-m-d',
+            'end_date' => 'nullable|date_format:Y-m-d',
+            'source' => 'nullable|string|in:db,file',
+        ]);
+
+        $startDate = $request->input('start_date') ?? $request->query('start_date');
+        $endDate = $request->input('end_date') ?? $request->query('end_date');
+        $source = $request->input('source') ?? $request->query('source', 'db');
+
+        if ($startDate && $endDate && $startDate > $endDate) {
+            [$startDate, $endDate] = [$endDate, $startDate];
+        }
+
+        $devices = $request->input('devices') ?? $request->query('devices', []);
+        if (is_string($devices)) {
+            $devices = array_filter(array_map('trim', explode(',', $devices)));
+        } elseif (!is_array($devices)) {
+            $devices = [];
+        }
+        $devices = array_values(array_unique(array_filter($devices)));
+
+        $biometricIds = $request->input('biometric_ids') ?? $request->query('biometric_ids', []);
+        if (is_string($biometricIds)) {
+            $biometricIds = array_filter(array_map('trim', explode(',', $biometricIds)));
+        } elseif (!is_array($biometricIds)) {
+            $biometricIds = [];
+        }
+        $singleBioId = $request->input('biometric_id') ?? $request->query('biometric_id');
+        if ($singleBioId) {
+            $biometricIds[] = (string) $singleBioId;
+        }
+        $biometricIds = array_values(array_unique(array_filter(array_map('strval', $biometricIds))));
+
+        $maxLimit = 5000;
+        $entries = [];
+        $truncated = false;
+
+        if ($source === 'file') {
+            $dir = storage_path($this->logPath);
+            $files = glob($dir . '/device_logs_*.txt') ?: [];
+
+            foreach ($files as $filePath) {
+                $handle = @fopen($filePath, 'r');
+                if (!$handle) {
+                    continue;
+                }
+                while (($line = fgets($handle)) !== false) {
+                    $line = trim($line);
+                    if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, 'biometric_id')) {
+                        continue;
+                    }
+                    $parts = array_map('trim', explode('|', $line));
+                    if (count($parts) < 2) {
+                        continue;
+                    }
+
+                    $bioId = (string) ($parts[0] ?? '');
+                    $dtrDate = $parts[1] ?? '';
+                    $name = $parts[2] ?? '';
+                    $dtrTime = $parts[3] ?? '';
+                    $dtrType = $parts[4] ?? '';
+                    $deviceName = $parts[5] ?? '';
+
+                    if ($startDate && $dtrDate < $startDate) {
+                        continue;
+                    }
+                    if ($endDate && $dtrDate > $endDate) {
+                        continue;
+                    }
+                    if (!empty($devices) && !in_array($deviceName, $devices, true)) {
+                        continue;
+                    }
+                    if (!empty($biometricIds) && !in_array($bioId, $biometricIds, true)) {
+                        continue;
+                    }
+
+                    $entries[] = [
+                        'biometric_id' => $bioId,
+                        'name' => $name,
+                        'dtr_date' => $dtrDate,
+                        'dtr_time' => $dtrTime,
+                        'dtr_type' => (string) $dtrType,
+                        'device_name' => $deviceName,
+                        'is_hrbliz' => str_contains(strtoupper($deviceName), 'HRBLIZ'),
+                        'created_at' => basename($filePath),
+                    ];
+
+                    if (count($entries) >= $maxLimit) {
+                        $truncated = true;
+                        break;
+                    }
+                }
+                fclose($handle);
+                if ($truncated) {
+                    break;
+                }
+            }
+
+            usort($entries, fn($a, $b) => strcmp($a['dtr_date'] . ' ' . $a['dtr_time'], $b['dtr_date'] . ' ' . $b['dtr_time']));
+        } else {
+            $queryStd = DeviceLogs::query();
+            $queryHrb = \Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')
+                ? DeviceLogsHrbliz::query()
+                : null;
+
+            if ($startDate) {
+                $queryStd->where('dtr_date', '>=', $startDate);
+                $queryHrb?->where('dtr_date', '>=', $startDate);
+            }
+            if ($endDate) {
+                $queryStd->where('dtr_date', '<=', $endDate);
+                $queryHrb?->where('dtr_date', '<=', $endDate);
+            }
+            if (!empty($devices)) {
+                $queryStd->whereIn('device_name', $devices);
+                $queryHrb?->whereIn('device_name', $devices);
+            }
+            if (!empty($biometricIds)) {
+                $queryStd->whereIn('biometric_id', $biometricIds);
+                $queryHrb?->whereIn('biometric_id', $biometricIds);
+            }
+
+            $stdLogs = $queryStd->orderBy('date_time', 'asc')->limit($maxLimit + 1)->get();
+            $hrbLogs = $queryHrb ? $queryHrb->orderBy('date_time', 'asc')->limit($maxLimit + 1)->get() : collect();
+
+            $logs = $stdLogs->concat($hrbLogs)
+                ->sortBy('date_time')
+                ->values();
+
+            if ($logs->count() > $maxLimit) {
+                $truncated = true;
+                $logs = $logs->take($maxLimit);
+            }
+
+            foreach ($logs as $log) {
+                $time = $log->date_time ? substr($log->date_time, 11, 8) : '';
+                $isHrbliz = ($log instanceof DeviceLogsHrbliz) || (!empty($log->device_name) && str_contains(strtoupper($log->device_name), 'HRBLIZ'));
+                $entries[] = [
+                    'biometric_id' => (string) $log->biometric_id,
+                    'name' => $log->name ?? '',
+                    'dtr_date' => $log->dtr_date,
+                    'dtr_time' => $time,
+                    'dtr_type' => (string) ($log->status ?? ''),
+                    'device_name' => $log->device_name ?? '',
+                    'is_hrbliz' => (bool) $isHrbliz,
+                    'created_at' => $log->created_at ? $log->created_at->format('Y-m-d h:i a') : '',
+                ];
+            }
+        }
+
+        return response()->json([
+            'entries' => $entries,
+            'total' => count($entries),
+            'truncated' => $truncated,
+            'start_date' => $startDate,
+            'end_date' => $endDate,
+            'devices' => $devices,
+            'biometric_ids' => $biometricIds,
+            'source' => $source,
+        ]);
+    }
+
+    /**
+     * Print advanced filter results separated by user name (each user gets their own DTR Logs section/page)
+     */
+    public function printFilteredLogs(Request $request)
+    {
+        $request->validate([
+            'start_date' => 'nullable|date_format:Y-m-d',
+            'end_date' => 'nullable|date_format:Y-m-d',
+            'source' => 'nullable|string|in:db,file',
+        ]);
+
+        $startDate = $request->input('start_date') ?? $request->query('start_date');
+        $endDate = $request->input('end_date') ?? $request->query('end_date');
+        $source = $request->input('source') ?? $request->query('source', 'db');
+
+        if ($startDate && $endDate && $startDate > $endDate) {
+            [$startDate, $endDate] = [$endDate, $startDate];
+        }
+
+        $devices = $request->input('devices') ?? $request->query('devices', []);
+        if (is_string($devices)) {
+            $devices = array_filter(array_map('trim', explode(',', $devices)));
+        } elseif (!is_array($devices)) {
+            $devices = [];
+        }
+        $devices = array_values(array_unique(array_filter($devices)));
+
+        $biometricIds = $request->input('biometric_ids') ?? $request->query('biometric_ids', []);
+        if (is_string($biometricIds)) {
+            $biometricIds = array_filter(array_map('trim', explode(',', $biometricIds)));
+        } elseif (!is_array($biometricIds)) {
+            $biometricIds = [];
+        }
+        $biometricIds = array_values(array_unique(array_filter(array_map('strval', $biometricIds))));
+
+        $localBio = strtolower(trim((string) ($request->input('local_bio') ?? '')));
+        $localName = strtolower(trim((string) ($request->input('local_name') ?? '')));
+        $localDate = strtolower(trim((string) ($request->input('local_date') ?? '')));
+        $localDevice = strtolower(trim((string) ($request->input('local_device') ?? '')));
+
+        $logs = collect();
+
+        if ($source === 'file') {
+            $dir = storage_path($this->logPath);
+            $files = glob($dir . '/device_logs_*.txt') ?: [];
+            $items = [];
+
+            foreach ($files as $filePath) {
+                $handle = @fopen($filePath, 'r');
+                if (!$handle) {
+                    continue;
+                }
+                while (($line = fgets($handle)) !== false) {
+                    $line = trim($line);
+                    if ($line === '' || str_starts_with($line, '--') || str_starts_with($line, 'biometric_id')) {
+                        continue;
+                    }
+                    $parts = array_map('trim', explode('|', $line));
+                    if (count($parts) < 2) {
+                        continue;
+                    }
+
+                    $bioId = (string) ($parts[0] ?? '');
+                    $dtrDate = $parts[1] ?? '';
+                    $name = $parts[2] ?? '';
+                    $dtrTime = $parts[3] ?? '';
+                    $deviceName = $parts[5] ?? '';
+
+                    if ($startDate && $dtrDate < $startDate) continue;
+                    if ($endDate && $dtrDate > $endDate) continue;
+                    if (!empty($devices) && !in_array($deviceName, $devices, true)) continue;
+                    if (!empty($biometricIds) && !in_array($bioId, $biometricIds, true)) continue;
+
+                    $items[] = (object) [
+                        'biometric_id' => $bioId,
+                        'name' => $name,
+                        'dtr_date' => $dtrDate,
+                        'date_time' => trim($dtrDate . ' ' . $dtrTime),
+                        'created_at' => null,
+                        'device_name' => $deviceName,
+                        'is_hrbliz' => str_contains(strtoupper($deviceName), 'HRBLIZ'),
+                    ];
+                }
+                fclose($handle);
+            }
+
+            $logs = collect($items);
+        } else {
+            $queryStd = DeviceLogs::query();
+            $queryHrb = \Illuminate\Support\Facades\Schema::hasTable('device_logs_hrbliz')
+                ? DeviceLogsHrbliz::query()
+                : null;
+
+            if ($startDate) {
+                $queryStd->where('dtr_date', '>=', $startDate);
+                $queryHrb?->where('dtr_date', '>=', $startDate);
+            }
+            if ($endDate) {
+                $queryStd->where('dtr_date', '<=', $endDate);
+                $queryHrb?->where('dtr_date', '<=', $endDate);
+            }
+            if (!empty($devices)) {
+                $queryStd->whereIn('device_name', $devices);
+                $queryHrb?->whereIn('device_name', $devices);
+            }
+            if (!empty($biometricIds)) {
+                $queryStd->whereIn('biometric_id', $biometricIds);
+                $queryHrb?->whereIn('biometric_id', $biometricIds);
+            }
+
+            $stdLogs = $queryStd->orderBy('date_time', 'asc')->limit(5000)->get();
+            $hrbLogs = $queryHrb ? $queryHrb->orderBy('date_time', 'asc')->limit(5000)->get() : collect();
+            $logs = $stdLogs->concat($hrbLogs);
+        }
+
+        if ($localBio !== '' || $localName !== '' || $localDate !== '' || $localDevice !== '') {
+            $logs = $logs->filter(function ($log) use ($localBio, $localName, $localDate, $localDevice) {
+                $bio = strtolower((string) ($log->biometric_id ?? ''));
+                $name = strtolower((string) ($log->name ?? ''));
+                $dtrDate = strtolower((string) ($log->dtr_date ?? ''));
+                $dev = strtolower((string) ($log->device_name ?? ''));
+                $isHrbliz = ($log instanceof DeviceLogsHrbliz) || (!empty($log->is_hrbliz)) || str_contains(strtoupper($log->device_name ?? ''), 'HRBLIZ');
+
+                if ($localBio !== '' && !str_contains($bio, $localBio)) return false;
+                if ($localName !== '' && !str_contains($name, $localName)) return false;
+                if ($localDate !== '' && !str_contains($dtrDate, $localDate)) return false;
+                if ($localDevice !== '' && !str_contains($dev, $localDevice) && !($isHrbliz && str_contains('hrbliz', $localDevice))) return false;
+                return true;
+            });
+        }
+
+        $logs = $logs->sortBy(fn($x) => ($x->dtr_date ?? '') . ' ' . ($x->date_time ?? ''))->values();
+
+        $datesList = $logs->pluck('dtr_date')->unique()->filter()->sort()->values()->toArray();
+        $dateLabel = 'All Dates';
+        if ($startDate && $endDate) {
+            if ($startDate === $endDate) {
+                $dateLabel = date('F j, Y', strtotime($startDate));
+            } else {
+                $dateLabel = date('F j, Y', strtotime($startDate)) . ' – ' . date('F j, Y', strtotime($endDate));
+            }
+        } elseif ($startDate) {
+            $dateLabel = 'From ' . date('F j, Y', strtotime($startDate));
+        } elseif ($endDate) {
+            $dateLabel = 'Up to ' . date('F j, Y', strtotime($endDate));
+        } elseif (count($datesList) === 1) {
+            $dateLabel = date('F j, Y', strtotime($datesList[0]));
+        } elseif (count($datesList) > 1) {
+            $dateLabel = date('F j, Y', strtotime(min($datesList))) . ' – ' . date('F j, Y', strtotime(max($datesList)));
+        }
+
+        $grouped = $logs->groupBy(function ($item) {
+            $bio = trim((string) ($item->biometric_id ?? ''));
+            return $bio !== '' ? 'bio:' . $bio : 'name:' . strtolower(trim((string) ($item->name ?? 'Unknown')));
+        });
+
+        $userSections = [];
+        foreach ($grouped as $userLogs) {
+            $first = $userLogs->first();
+            $bioId = trim((string) ($first->biometric_id ?? ''));
+            $fallbackName = trim((string) ($first->name ?? '')) ?: 'Unknown Employee';
+
+            if ($bioId !== '') {
+                [$employeeName, $designation, $empId] = $this->resolveEmployeeDetails($bioId, $fallbackName);
+            } else {
+                $employeeName = $fallbackName;
+                $designation = null;
+                $empId = '';
+            }
+
+            $sortedUserLogs = $userLogs->sortBy(fn($x) => ($x->dtr_date ?? '') . ' ' . ($x->date_time ?? ''))->values();
+            $userDatesCount = $sortedUserLogs->pluck('dtr_date')->unique()->filter()->count();
+
+            $userSections[] = [
+                'employeeName' => $employeeName,
+                'biometricId' => $bioId,
+                'designation' => $designation,
+                'empId' => $empId,
+                'logs' => $sortedUserLogs,
+                'isMultipleDates' => $userDatesCount > 1,
+            ];
+        }
+
+        usort($userSections, fn($a, $b) => strcasecmp($a['employeeName'], $b['employeeName']));
+
+        if (empty($userSections)) {
+            $userSections[] = [
+                'employeeName' => 'No Matching Users',
+                'biometricId' => '',
+                'designation' => null,
+                'empId' => '',
+                'logs' => collect(),
+                'isMultipleDates' => false,
+            ];
+        }
+
+        $pdf = Pdf::loadView('logs.print_dtr_logs', [
+            'date' => $dateLabel,
+            'dates' => $datesList,
+            'logs' => $logs,
+            'employeeName' => count($userSections) === 1 ? $userSections[0]['employeeName'] : 'Filtered Users',
+            'biometricId' => count($userSections) === 1 ? $userSections[0]['biometricId'] : '',
+            'designation' => count($userSections) === 1 ? $userSections[0]['designation'] : null,
+            'empId' => count($userSections) === 1 ? $userSections[0]['empId'] : '',
+            'noData' => $logs->isEmpty(),
+            'isMultipleDates' => count($datesList) > 1,
+            'isViaAttendanceLogs' => false,
+            'userSections' => $userSections,
+        ])->setPaper('Letter', 'portrait');
+
+        return $pdf->stream('DTR_Logs_Filtered.pdf');
+    }
+
+    /**
+     * Resolve employee display name, designation, and employee_id from Biometrics
+     */
+    private function resolveEmployeeDetails(string $biometricId, string $fallbackName): array
+    {
+        $employeeName = $fallbackName;
+        $designation = null;
+        $empId = '';
+
+        if ((int) $biometricId >= 8000) {
+            $biometric = Biometrics::where('biometric_id', $biometricId)
+                ->with('externalProfile')
+                ->first();
+
+            if ($biometric && $biometric->externalProfile) {
+                $employeeName = trim(($biometric->externalProfile->first_name ?? '') . ' ' . ($biometric->externalProfile->last_name ?? '')) ?: $employeeName;
+                $designation = $biometric->externalProfile->department ?? null;
+                $empId = $biometric->externalProfile->employee_id ?? '';
+            }
+        } else {
+            $biometric = Biometrics::where('biometric_id', $biometricId)
+                ->with('employeeProfile.assignArea.department', 'employeeProfile.assignArea.section', 'employeeProfile.assignArea.unit', 'employeeProfile.assignArea.division', 'employeeProfile.personalInformation', 'externalProfile')
+                ->first();
+
+            if ($biometric && $biometric->employeeProfile) {
+                $employeeName = $biometric->employeeProfile->personalInformation
+                    ? $biometric->employeeProfile->personalInformation->first_name . ' ' . $biometric->employeeProfile->personalInformation->last_name
+                    : $employeeName;
+                $assignArea = $biometric->employeeProfile->assignArea;
+                if ($assignArea) {
+                    if ($assignArea->department) {
+                        $designation = $assignArea->department->name;
+                    } elseif ($assignArea->section) {
+                        $designation = $assignArea->section->name;
+                    } elseif ($assignArea->unit) {
+                        $designation = $assignArea->unit->name;
+                    } elseif ($assignArea->division) {
+                        $designation = $assignArea->division->name;
+                    }
+                }
+                $empId = $biometric->employeeProfile->employee_id ?? '';
+            } elseif ($biometric && $biometric->externalProfile) {
+                $employeeName = trim(($biometric->externalProfile->first_name ?? '') . ' ' . ($biometric->externalProfile->last_name ?? '')) ?: $employeeName;
+                $designation = $biometric->externalProfile->department ?? null;
+                $empId = $biometric->externalProfile->employee_id ?? '';
+            }
+        }
+
+        return [$employeeName, $designation, $empId];
     }
 
     /**
