@@ -6,7 +6,6 @@ use App\Models\DeviceLogs;
 use App\Models\DeviceLogsHrbliz;
 use App\Models\Devices;
 use App\Services\ZkPunchForwarderService;
-use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Schema;
 
@@ -43,7 +42,7 @@ class ZkSyncPunches extends Command
         $limit = (int)$this->option('limit') ?: 500;
         $deviceIdFilter = $this->option('device-id');
         $source = strtolower($this->option('source') ?: 'all');
-        $dryRun = $this->option('dry-run');
+        $dryRun = (bool)$this->option('dry-run');
 
         if ($isToday || (!$targetDate && !$startDate && !$endDate)) {
             $targetDate = now()->format('Y-m-d');
@@ -60,6 +59,7 @@ class ZkSyncPunches extends Command
         }
         $this->line("Source          : <fg=yellow>{$source}</>");
         $this->line("Limit           : <fg=yellow>{$limit}</>");
+        $this->line("Batch Size      : <fg=yellow>{$service->getBatchSize()}</>");
         if ($deviceIdFilter) {
             $this->line("Device ID CLI   : <fg=yellow>{$deviceIdFilter}</>");
         }
@@ -82,23 +82,31 @@ class ZkSyncPunches extends Command
             $this->line("<fg=green>✓ Server is online.</>");
         }
 
-        // Gather logs
-        $logs = [];
-
-        // Resolve device name filter if device-id is passed
+        // Resolve SQL device_name filter BEFORE applying --limit so logs from other devices don't crowd out ZK_FORWARD_DEVICE_IDS
         $targetDeviceNames = [];
         if ($deviceIdFilter) {
             $dev = Devices::find($deviceIdFilter);
-            if ($dev) {
-                $targetDeviceNames[] = $dev->device_name;
-                $targetDeviceNames[] = $dev->serial_number;
+            if (!$dev) {
+                $this->error("Device ID {$deviceIdFilter} was not found.");
+                return 1;
+            }
+            if (!$service->shouldForwardForDevice($dev)) {
+                $this->warn("Device ID {$deviceIdFilter} ({$dev->device_name}) is not in ZK_FORWARD_DEVICE_IDS (" . implode(', ', $allowedDevices) . ").");
+                return 0;
+            }
+            $targetDeviceNames = array_values(array_filter([$dev->device_name, $dev->serial_number]));
+        } elseif (!empty($allowedDevices)) {
+            $targetDeviceNames = $service->getAllowedDeviceIdentifiers();
+            if (empty($targetDeviceNames)) {
+                $this->warn("No matching devices found in database for ZK_FORWARD_DEVICE_IDS=" . implode(',', $allowedDevices));
+                return 0;
             }
         }
 
-        // 1. Standard DeviceLogs
-        $accumulatedByPinDate = [];
+        // Gather raw canonical logs from DTRService database
+        $rawLogs = [];
 
-        if (in_array($source, ['all', 'standard']) && Schema::hasTable('device_logs')) {
+        if (in_array($source, ['all', 'standard'], true) && Schema::hasTable('device_logs')) {
             $q = DeviceLogs::query();
             if ($targetDate) {
                 $q->where('dtr_date', $targetDate);
@@ -106,51 +114,26 @@ class ZkSyncPunches extends Command
                 $q->whereBetween('dtr_date', [$startDate, $endDate]);
             }
             if (!empty($targetDeviceNames)) {
-                $q->whereIn('device_name', array_filter($targetDeviceNames));
+                $q->whereIn('device_name', $targetDeviceNames);
             }
 
             $standardLogs = $q->orderBy('date_time', 'asc')
                 ->limit($limit)
-                ->get();
+                ->get(['biometric_id', 'date_time', 'status', 'device_name']);
 
             foreach ($standardLogs as $log) {
-                // Device filter check
-                if (!$service->shouldForwardForDevice($log->device_name)) {
-                    continue;
-                }
-
-                $mappedPin = $service->resolveForwardPin($log->biometric_id);
-                $rawStatus = (int)($log->status ?? 0);
-
-                $punchDate = substr((string)$log->date_time, 0, 10);
-                $pinDateKey = "{$log->biometric_id}_{$punchDate}";
-                if (!isset($accumulatedByPinDate[$pinDateKey])) {
-                    $accumulatedByPinDate[$pinDateKey] = [];
-                }
-                $accumulatedByPinDate[$pinDateKey][] = (string)$log->date_time;
-
-                $resolvedStatus = $service->resolveForwardStatus(
-                    $log->biometric_id,
-                    $log->date_time,
-                    $rawStatus,
-                    $accumulatedByPinDate[$pinDateKey]
-                );
-
-                $logs[] = [
-                    'canonical_pin'   => (string)$log->biometric_id,
-                    'pin'             => $mappedPin,
-                    'time'            => $log->date_time,
-                    'raw_status'      => $rawStatus,
-                    'status'          => $resolvedStatus,
-                    'device_sn'       => $log->device_name ?: 'DTR_SERVICE',
-                    'source'          => 'device_logs',
+                $rawLogs[] = [
+                    'canonical_pin' => (string)$log->biometric_id,
+                    'time'          => (string)$log->date_time,
+                    'status'        => (int)($log->status ?? 0),
+                    'device_name'   => $log->device_name,
+                    'source'        => 'device_logs',
                 ];
             }
         }
 
-        // 2. HRBLIZ DeviceLogs
-        if (in_array($source, ['all', 'hrbliz']) && Schema::hasTable('device_logs_hrbliz')) {
-            $remaining = $limit - count($logs);
+        if (in_array($source, ['all', 'hrbliz'], true) && Schema::hasTable('device_logs_hrbliz')) {
+            $remaining = $limit - count($rawLogs);
             if ($remaining > 0) {
                 $q2 = DeviceLogsHrbliz::query();
                 if ($targetDate) {
@@ -159,59 +142,53 @@ class ZkSyncPunches extends Command
                     $q2->whereBetween('dtr_date', [$startDate, $endDate]);
                 }
                 if (!empty($targetDeviceNames)) {
-                    $q2->whereIn('device_name', array_filter($targetDeviceNames));
+                    $q2->whereIn('device_name', $targetDeviceNames);
                 }
 
                 $hrbLogs = $q2->orderBy('date_time', 'asc')
                     ->limit($remaining)
-                    ->get();
+                    ->get(['biometric_id', 'date_time', 'status', 'device_name']);
 
                 foreach ($hrbLogs as $log) {
-                    if (!$service->shouldForwardForDevice($log->device_name)) {
-                        continue;
-                    }
-
-                    $mappedPin = $service->resolveForwardPin($log->biometric_id);
-                    $rawStatus = (int)($log->status ?? 0);
-
-                    $punchDate = substr((string)$log->date_time, 0, 10);
-                    $pinDateKey = "{$log->biometric_id}_{$punchDate}";
-                    if (!isset($accumulatedByPinDate[$pinDateKey])) {
-                        $accumulatedByPinDate[$pinDateKey] = [];
-                    }
-                    $accumulatedByPinDate[$pinDateKey][] = (string)$log->date_time;
-
-                    $resolvedStatus = $service->resolveForwardStatus(
-                        $log->biometric_id,
-                        $log->date_time,
-                        $rawStatus,
-                        $accumulatedByPinDate[$pinDateKey]
-                    );
-
-                    $logs[] = [
-                        'canonical_pin'   => (string)$log->biometric_id,
-                        'pin'             => $mappedPin,
-                        'time'            => $log->date_time,
-                        'raw_status'      => $rawStatus,
-                        'status'          => $resolvedStatus,
-                        'device_sn'       => $log->device_name ?: 'DTR_HRBLIZ',
-                        'source'          => 'device_logs_hrbliz',
+                    $rawLogs[] = [
+                        'canonical_pin' => (string)$log->biometric_id,
+                        'time'          => (string)$log->date_time,
+                        'status'        => (int)($log->status ?? 0),
+                        'device_name'   => $log->device_name,
+                        'source'        => 'device_logs_hrbliz',
                     ];
                 }
             }
         }
 
-        if (empty($logs)) {
+        if (empty($rawLogs)) {
             $this->info("No punch logs found matching the specified criteria.");
             return 0;
         }
 
-        $this->line(sprintf("Found <fg=cyan>%d</> punches ready to sync.", count($logs)));
+        // Prepare batch in a single pass: preloads biometrics + UMIS schedules, classifies 0/1 using
+        // canonical biometric_id, and maps canonical biometric_id -> hrbliz_biometric_id once.
+        $prepared = $service->prepareBatch(
+            $rawLogs,
+            device: null,
+            bypassDeviceFilter: false,
+            forceScheduleClassification: true
+        );
+
+        $previewRows = $prepared['preview'];
+        $payloads = $prepared['payloads'];
+
+        if (empty($payloads)) {
+            $this->info("No punch logs matched the allowed device filter.");
+            return 0;
+        }
+
+        $this->line(sprintf("Found <fg=cyan>%d</> punches ready to sync.", count($payloads)));
 
         // Preview sample
-        $sample = array_slice($logs, 0, 10);
+        $sample = array_slice($previewRows, 0, 10);
         $this->table(
-            ['Canonical PIN', 'HRBLIZ PIN', 'Date Time', 'Raw Code', 'Resolved Status', 'Device'],
+            ['Canonical PIN', 'HRBLIZ PIN', 'Date Time', 'Raw', 'Resolved Status', 'Schedule Source', 'Device SN'],
             array_map(fn($item) => [
                 $item['canonical_pin'],
                 $item['pin'] !== $item['canonical_pin']
@@ -222,17 +199,18 @@ class ZkSyncPunches extends Command
                 $item['status'] === 0
                     ? '<fg=green;options=bold>0 (Check-In)</>'
                     : '<fg=cyan;options=bold>1 (Check-Out)</>',
+                $item['classification_source'] . ($item['classification_slot'] ? " ({$item['classification_slot']})" : ''),
                 $item['device_sn'],
             ], $sample)
         );
 
         if ($dryRun) {
-            $this->info("Dry run complete. " . count($logs) . " records previewed.");
+            $this->info("Dry run complete. " . count($payloads) . " records previewed.");
             return 0;
         }
 
         $this->info("Pushing batches to {$service->getHost()}/api/punches...");
-        $result = $service->forwardBatch($logs);
+        $result = $service->sendPreparedBatch($payloads);
 
         if ($result['success']) {
             $this->newLine();

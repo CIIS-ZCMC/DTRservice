@@ -36,6 +36,9 @@ class AppServiceProvider extends ServiceProvider
             \App\Contracts\DtrReportRepositoryInterface::class,
             \App\Repositories\DtrReportRepository::class
         );
+
+        $this->app->scoped(\App\Services\UmisPunchClassifierService::class);
+        $this->app->scoped(\App\Services\ZkPunchForwarderService::class);
     }
 
     /**

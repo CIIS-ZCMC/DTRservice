@@ -772,6 +772,10 @@ class DeviceService
             $duplicatesSkipped = 0;
             $sampleSaved = [];
 
+            $zkForwarder = app(\App\Services\ZkPunchForwarderService::class);
+            $shouldForwardToZk = $zkForwarder->shouldForwardForDevice($device);
+            $zkPunchesToForward = [];
+
             foreach ($filteredRows as $item) {
                 $rawPin = $item['pin'];
                 $canonicalPin = ($isHrbliz && isset($pinToCanonicalMap[$rawPin])) ? (int)$pinToCanonicalMap[$rawPin] : $rawPin;
@@ -829,17 +833,15 @@ class DeviceService
                 $this->logsRepository->writeToFile($logData);
                 $this->logsRepository->writeStructuredLog($logData, $rawLine);
 
-                // Forward punch to ZKTeco Integration Server (Port 8080) for desktop payroll (Port 4370)
-                try {
-                    app(\App\Services\ZkPunchForwarderService::class)->forwardPunch(
-                        $canonicalPin,
-                        $item['datetime'],
-                        (int)$item['status'],
-                        $device,
-                        $device->serial_number ?: $device->device_name
-                    );
-                } catch (\Throwable $e) {
-                    Log::channel('device_logs')->debug('ZKTeco pull forward skipped or failed: ' . $e->getMessage());
+                // Queue punch for batched forwarding to ZKTeco Integration Server (Port 8080)
+                if ($shouldForwardToZk) {
+                    $zkPunchesToForward[] = [
+                        'canonical_pin' => $canonicalPin,
+                        'time' => $item['datetime'],
+                        'status' => (int)$item['status'],
+                        'device' => $device,
+                        'serial_number' => $device->serial_number ?: null,
+                    ];
                 }
 
                 $newSavedCount++;
@@ -849,6 +851,20 @@ class DeviceService
                         'date_time' => $item['datetime'],
                         'status' => $item['status'],
                     ];
+                }
+            }
+
+            // Forward collected punches for allowed UMIS devices (ZK_FORWARD_DEVICE_IDS) in batched chunks
+            if ($shouldForwardToZk && !empty($zkPunchesToForward)) {
+                try {
+                    $zkForwarder->forwardBatch(
+                        $zkPunchesToForward,
+                        $device,
+                        bypassDeviceFilter: false,
+                        forceScheduleClassification: true
+                    );
+                } catch (\Throwable $e) {
+                    Log::channel('device_logs')->debug('ZKTeco pull batch forward skipped or failed: ' . $e->getMessage());
                 }
             }
 

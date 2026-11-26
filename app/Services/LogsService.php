@@ -36,6 +36,11 @@ class LogsService
 
         $this->deviceRepository->markAsConnected($clientIp);
 
+        $requestDevice = (!empty($sourceSn) ? Devices::where('serial_number', $sourceSn)->first() : null)
+            ?? $this->deviceRepository->findByIP($clientIp);
+        $shouldForwardToZk = $this->zkForwarder?->shouldForwardForDevice($requestDevice) ?? false;
+        $punchesToForward = [];
+
         if (!empty($rawBody)) {
             // Device may push multiple records in a single request, separated by newlines.
             // Process each line individually so past/unsaved logs are not skipped.
@@ -49,13 +54,48 @@ class LogsService
                 }
 
                 try {
-                    $this->processLogLine($line, $clientIp, $sourceSn, $table);
+                    $this->processLogLine(
+                        $line,
+                        $clientIp,
+                        $sourceSn,
+                        $table,
+                        $requestDevice,
+                        $shouldForwardToZk,
+                        $punchesToForward
+                    );
                 } catch (\Throwable $th) {
                     Log::channel('device_logs')->error('Error processing device log line', [
                         'error' => $th->getMessage(),
                         'line' => $line,
                     ]);
                 }
+            }
+        }
+
+        // Forward collected punches for allowed UMIS devices (ZK_FORWARD_DEVICE_IDS) in one batched call
+        if ($shouldForwardToZk && !empty($punchesToForward) && $this->zkForwarder) {
+            try {
+                if (count($punchesToForward) === 1) {
+                    $p = $punchesToForward[0];
+                    $this->zkForwarder->forwardPunch(
+                        $p['canonical_pin'],
+                        $p['time'],
+                        $p['status'],
+                        $p['device'],
+                        $p['serial_number'],
+                        bypassDeviceFilter: false,
+                        forceScheduleClassification: true
+                    );
+                } else {
+                    $this->zkForwarder->forwardBatch(
+                        $punchesToForward,
+                        $requestDevice,
+                        bypassDeviceFilter: false,
+                        forceScheduleClassification: true
+                    );
+                }
+            } catch (\Throwable $e) {
+                Log::channel('device_logs')->debug('ZKTeco punch forward skipped or failed: ' . $e->getMessage());
             }
         }
 
@@ -66,7 +106,15 @@ class LogsService
     /**
      * Parse and persist a single device log line.
      */
-    private function processLogLine(string $line, string $clientIp, ?string $requestSn = null, ?string $table = null)
+    private function processLogLine(
+        string $line,
+        string $clientIp,
+        ?string $requestSn = null,
+        ?string $table = null,
+        ?Devices $requestDevice = null,
+        bool $shouldForwardToZk = false,
+        array &$punchesToForward = []
+    )
     {
         // Check if line is a biometric template push (e.g. FP PIN=493\tFID=3\tSize=612\tValid=1\tTMP=...)
         if (ZkPushParser::isBiometricTemplateLine($line)) {
@@ -251,7 +299,8 @@ class LogsService
             ]);
         }
 
-        $device = (!empty($requestSn) ? Devices::where('serial_number', $requestSn)->first() : null)
+        $device = $requestDevice
+            ?? (!empty($requestSn) ? Devices::where('serial_number', $requestSn)->first() : null)
             ?? $this->deviceRepository->findByIP($clientIp);
         $isHrbliz = $device && (bool)$device->is_hrbliz;
         $rawPin = (int)$biometric_id;
@@ -299,17 +348,16 @@ class LogsService
         //Write to structured log table Daily
         $this->logsRepository->writeStructuredLog($logData, $line);
 
-        // Forward punch to ZKTeco Integration Server (Port 8080) for desktop payroll (Port 4370)
-        try {
-            $this->zkForwarder?->forwardPunch(
-                $targetPin,
-                $dateTimeStr,
-                (int)$dtr_type,
-                $device,
-                $requestSn ?? $device?->serial_number ?? $device?->device_name
-            );
-        } catch (\Throwable $e) {
-            Log::channel('device_logs')->debug('ZKTeco punch forward skipped or failed: ' . $e->getMessage());
+        // Queue punch for batched forwarding to ZKTeco Integration Server (Port 8080)
+        // Uses canonical biometric_id ($targetPin) for UMIS schedule lookup and maps to hrbliz_biometric_id on forward.
+        if ($shouldForwardToZk && !($device && (bool)$device->is_registration)) {
+            $punchesToForward[] = [
+                'canonical_pin' => $targetPin,
+                'time' => $dateTimeStr,
+                'status' => (int)$dtr_type,
+                'device' => $device,
+                'serial_number' => $requestSn ?? $device?->serial_number,
+            ];
         }
 
         return "OK";

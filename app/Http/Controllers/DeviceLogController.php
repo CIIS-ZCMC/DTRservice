@@ -407,10 +407,10 @@ class DeviceLogController extends Controller
         if (!empty($insertedLogs)) {
             try {
                 $forwardPayload = array_map(fn($log) => [
-                    'pin'       => (string)$log->biometric_id,
-                    'time'      => $log->date_time,
-                    'status'    => (int)$log->status,
-                    'device_sn' => $log->device_name ?: 'DTR_API',
+                    'canonical_pin' => (string)$log->biometric_id,
+                    'time'          => $log->date_time,
+                    'status'        => (int)$log->status,
+                    'device_name'   => $log->device_name ?: null,
                 ], $insertedLogs);
 
                 $forceZkForward = filter_var(
@@ -420,7 +420,8 @@ class DeviceLogController extends Controller
 
                 app(\App\Services\ZkPunchForwarderService::class)->forwardBatch(
                     $forwardPayload,
-                    bypassDeviceFilter: $forceZkForward
+                    bypassDeviceFilter: $forceZkForward,
+                    forceScheduleClassification: !$forceZkForward
                 );
             } catch (\Throwable $e) {
                 Log::channel('device_logs')->debug('ZKTeco batch forward skipped or failed: ' . $e->getMessage());
@@ -979,10 +980,11 @@ class DeviceLogController extends Controller
             $insertedLogs[] = $created;
 
             $batchForwardPunches[] = [
-                'pin' => $canonicalBiometricId,
+                'canonical_pin' => $canonicalBiometricId,
                 'time' => $formattedDateTime,
                 'status' => $resolvedStatus,
-                'device_sn' => $itemForwardDeviceSn,
+                'device_name' => $itemSaveDeviceName,
+                'serial_number' => $itemForwardDeviceSn,
                 'created_at' => $formattedDateTime,
                 'updated_at' => $formattedDateTime,
             ];
@@ -990,7 +992,11 @@ class DeviceLogController extends Controller
 
         $zkBatchResult = null;
         if ($syncZkteco && !empty($batchForwardPunches)) {
-            $zkBatchResult = $zkForwarder->forwardBatch($batchForwardPunches, bypassDeviceFilter: true);
+            $zkBatchResult = $zkForwarder->forwardBatch(
+                $batchForwardPunches,
+                bypassDeviceFilter: true,
+                forceScheduleClassification: false
+            );
         }
 
         return response()->json([

@@ -36,7 +36,7 @@ class ZkClassifyTest extends Command
 
         try {
             $parsedTime = Carbon::parse($timeStr)->format('Y-m-d H:i:s');
-        } catch (\Throwable $e) {
+        } catch (\Throwable) {
             $this->error("Invalid timestamp format: {$timeStr}");
             return 1;
         }
@@ -52,9 +52,22 @@ class ZkClassifyTest extends Command
             $knownDayPunches = array_map('trim', explode(',', $priorOpt));
         }
 
-        // Classify
-        $status = $classifier->classifyStatus($pin, $parsedTime, $knownDayPunches);
+        // Classify using canonical biometric_id with 8-12/1-5 fallback (ZK_FORWARD_DEVICE_IDS=27 flow)
+        $details = $classifier->classifyWithDetails($pin, $parsedTime, $knownDayPunches, true);
+        $status = $details['status'];
         $statusText = $status === 0 ? '0 (Check-In)' : '1 (Check-Out)';
+
+        $sourceLabel = match ($details['source']) {
+            'umis_schedule' => 'UMIS Schedule (Assigned)',
+            'external_schedule' => 'External Schedule (Assigned)',
+            'prev_cross_midnight' => 'Previous-Day Cross-Midnight Shift Checkout',
+            'default_8_12_1_5' => 'Default 8-12 / 1-5pm Fallback (Exclusive to ZK_FORWARD_DEVICE_IDS)',
+            default => $details['source'],
+        };
+
+        $scheduleDisplay = !empty($details['schedule_times'])
+            ? implode(' - ', $details['schedule_times'])
+            : 'None';
 
         $this->info("=== UMIS Punch Classification Test ===");
         $this->table(
@@ -63,9 +76,13 @@ class ZkClassifyTest extends Command
                 ['Canonical Biometric ID (UMIS)', $pin],
                 ['Employee Name', $employeeName],
                 ['HRBLIZ Biometric ID', $hrbPin ? "<fg=green>{$hrbPin}</>" : '<fg=yellow>None (Falls back to ' . $pin . ')</>'],
-                ['Target Forwarded PIN', "<fg=cyan;options=bold>{$forwardPin}</>"],
+                ['Target Forwarded PIN (:8080)', "<fg=cyan;options=bold>{$forwardPin}</>"],
                 ['Timestamp', $parsedTime],
+                ['Schedule Reference', $sourceLabel],
+                ['Schedule Times', $scheduleDisplay],
+                ['Matched Slot', $details['slot'] ?? 'Alternation Fallback'],
                 ['Resolved Status for HRBLIZ', $status === 0 ? "<fg=green;options=bold>{$statusText}</>" : "<fg=cyan;options=bold>{$statusText}</>"],
+                ['Allowed Forward Devices', implode(', ', $forwarder->getAllowedDeviceIds()) ?: 'ALL'],
                 ['Target Endpoint', $forwarder->getHost() . '/api/punches'],
             ]
         );
@@ -76,7 +93,9 @@ class ZkClassifyTest extends Command
             'pin' => $forwardPin,
             'time' => $parsedTime,
             'status' => $status,
-            'device_sn' => 'SIMULATION_TEST',
+            'device_sn' => config('zkteco.device_sn', 'RKQ4242300018'),
+            'created_at' => $parsedTime,
+            'updated_at' => $parsedTime,
         ], JSON_PRETTY_PRINT));
 
         return 0;
