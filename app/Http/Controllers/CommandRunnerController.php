@@ -8,6 +8,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Symfony\Component\Console\Output\BufferedOutput;
 
 class CommandRunnerController extends Controller
@@ -153,10 +154,37 @@ class CommandRunnerController extends Controller
      */
     public function getManifest(): JsonResponse
     {
-        $devices = Devices::select('id', 'device_name', 'serial_number', 'ip_address', 'is_active', 'is_registration', 'for_attendance', 'is_hrbliz', 'receiver_by_default')
+        $columns = ['id', 'device_name', 'serial_number', 'ip_address', 'is_active', 'is_registration', 'for_attendance'];
+        if (Schema::hasColumn('devices', 'is_hrbliz')) {
+            $columns[] = 'is_hrbliz';
+        }
+        if (Schema::hasColumn('devices', 'receiver_by_default')) {
+            $columns[] = 'receiver_by_default';
+        }
+
+        $devices = Devices::select($columns)
             ->orderBy('is_active', 'desc')
             ->orderBy('device_name', 'asc')
-            ->get();
+            ->get()
+            ->map(function (Devices $device) {
+                $canReceiveSync = method_exists($device, 'canReceiveSync')
+                    ? $device->canReceiveSync()
+                    : (bool)($device->receiver_by_default ?? true);
+
+                return [
+                    'id' => $device->id,
+                    'device_name' => $device->device_name,
+                    'serial_number' => $device->serial_number,
+                    'ip_address' => $device->ip_address,
+                    'is_active' => (bool)$device->is_active,
+                    'is_registration' => (bool)$device->is_registration,
+                    'for_attendance' => (bool)$device->for_attendance,
+                    'is_hrbliz' => (bool)($device->is_hrbliz ?? false),
+                    'receiver_by_default' => $canReceiveSync,
+                    'can_receive_sync' => $canReceiveSync,
+                ];
+            })
+            ->values();
 
         return response()->json([
             'success' => true,
@@ -219,10 +247,33 @@ class CommandRunnerController extends Controller
         $commandConfig = self::ALLOWED_COMMANDS[$commandKey];
         $params = $request->input('params', []);
 
-        // Resolve device target
-        $deviceTarget = $request->input('device_target', 'all'); // 'all' or device id
-        $device = null;
-        if ($deviceTarget !== 'all' && is_numeric($deviceTarget)) {
+        // Resolve device target(s) - supports single device_target ('all' or ID) and multi-select device_targets ([id1, id2, ...])
+        $rawTargets = $request->input('device_targets');
+        $deviceTarget = $request->input('device_target', 'all');
+        $targetDevices = []; // array of Devices models when specific devices are targeted
+        $isAllDevices = false;
+
+        if (is_array($rawTargets) && count($rawTargets) > 0 && !in_array('all', $rawTargets, true)) {
+            $deviceIds = array_values(array_unique(array_filter(
+                array_map(fn($v) => is_numeric($v) ? (int)$v : null, $rawTargets),
+                fn($v) => $v !== null && $v > 0
+            )));
+
+            if (empty($deviceIds)) {
+                $isAllDevices = true;
+            } else {
+                $foundDevices = Devices::whereIn('id', $deviceIds)->get()->keyBy('id');
+                foreach ($deviceIds as $devId) {
+                    if (!$foundDevices->has($devId)) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => "Device with ID {$devId} not found in database.",
+                        ], 404);
+                    }
+                    $targetDevices[] = $foundDevices->get($devId);
+                }
+            }
+        } elseif ($deviceTarget !== 'all' && is_numeric($deviceTarget)) {
             $device = Devices::find((int)$deviceTarget);
             if (!$device) {
                 return response()->json([
@@ -230,23 +281,32 @@ class CommandRunnerController extends Controller
                     'message' => "Device with ID {$deviceTarget} not found in database.",
                 ], 404);
             }
+            $targetDevices[] = $device;
+        } else {
+            $isAllDevices = true;
+        }
 
-            $canReceiveSync = method_exists($device, 'canReceiveSync')
-                ? $device->canReceiveSync()
-                : (bool)$device->receiver_by_default;
+        // Enforce HRBLIZ send-only protection across every targeted device
+        $restrictedCommands = [
+            'biometrics:sync-device',
+            'biometrics:check-device',
+            'biometrics:check-device-match',
+            'biometrics:delete-user',
+            'app:biometric-delete',
+            'devices:clear-logs',
+        ];
+        if (in_array($commandKey, $restrictedCommands, true)) {
+            foreach ($targetDevices as $dev) {
+                $canReceiveSync = method_exists($dev, 'canReceiveSync')
+                    ? $dev->canReceiveSync()
+                    : (bool)$dev->receiver_by_default;
 
-            if ((bool)$device->is_hrbliz && !$canReceiveSync && in_array($commandKey, [
-                'biometrics:sync-device',
-                'biometrics:check-device',
-                'biometrics:check-device-match',
-                'biometrics:delete-user',
-                'app:biometric-delete',
-                'devices:clear-logs',
-            ])) {
-                return response()->json([
-                    'success' => false,
-                    'message' => "Prohibited operation: Device [{$device->device_name}] is an HRBLIZ device (read-only attendance sender). Updating, modifying, syncing, or deleting data on this device is not permitted.",
-                ], 422);
+                if ((bool)$dev->is_hrbliz && !$canReceiveSync) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => "Prohibited operation: Device [{$dev->device_name}] is an HRBLIZ device (read-only attendance sender). Updating, modifying, syncing, or deleting data on this device is not permitted.",
+                    ], 422);
+                }
             }
         }
 
@@ -265,266 +325,66 @@ class CommandRunnerController extends Controller
             ], 422);
         }
 
-        // Build Artisan arguments and options
-        $artisanParams = [];
+        // Determine execution units: single run (all devices or command with no device target) vs per-device runs
+        $executionTargets = ($commandConfig['device_requirement'] === 'none' || $isAllDevices || empty($targetDevices))
+            ? [null]
+            : $targetDevices;
 
-        try {
-            switch ($commandKey) {
-                case 'biometrics:sync-device':
-                    if ($deviceTarget === 'all') {
-                        $artisanParams['--all-devices'] = true;
-                    } elseif ($device) {
-                        $artisanParams['device_sn'] = $device->serial_number;
-                    } else {
-                        return response()->json(['success' => false, 'message' => 'Target device or --all-devices is required.'], 422);
-                    }
-
-                    if ($pin) {
-                        $artisanParams['--pin'] = (string)$pin;
-                    }
-
-                    if (!empty($params['no_clean'])) {
-                        $artisanParams['--no-clean'] = true;
-                    }
-
-                    if (!empty($params['table'])) {
-                        $artisanParams['--table'] = true;
-                    }
-                    break;
-
-                case 'biometrics:check-device':
-                    $artisanParams['pin'] = (string)$pin;
-
-                    if ($deviceTarget === 'all') {
-                        $artisanParams['--all-devices'] = true;
-                    } elseif ($device) {
-                        $artisanParams['device_sn'] = $device->serial_number;
-                    } else {
-                        return response()->json(['success' => false, 'message' => 'Target device or --all-devices is required.'], 422);
-                    }
-
-                    $mode = $params['mode'] ?? 'inspect';
-                    if ($mode === 'fix') {
-                        $artisanParams['--fix'] = true;
-                        $artisanParams['--force'] = true;
-                    } elseif ($mode === 'clean') {
-                        $artisanParams['--clean'] = true;
-                        $artisanParams['--force'] = true;
-                    }
-                    break;
-
-                case 'biometrics:check-device-match':
-                    $artisanParams['pin'] = (string)$pin;
-
-                    if ($deviceTarget === 'all') {
-                        $artisanParams['--all-devices'] = true;
-                    } elseif ($device) {
-                        $artisanParams['device_sn'] = $device->serial_number;
-                    } else {
-                        return response()->json(['success' => false, 'message' => 'Target device or --all-devices is required.'], 422);
-                    }
-
-                    if (!empty($params['compare_pin'])) {
-                        $artisanParams['--compare-pin'] = (int)$params['compare_pin'];
-                    }
-
-                    if (!empty($params['clean'])) {
-                        $artisanParams['--clean'] = true;
-                        $artisanParams['--force'] = true;
-                    }
-
-                    if (!empty($params['db_only'])) {
-                        $artisanParams['--db-only'] = true;
-                    }
-                    break;
-
-                case 'biometrics:find-duplicates':
-                    if ($pin) {
-                        $artisanParams['pin'] = (string)$pin;
-                    } else {
-                        $artisanParams['--all'] = true;
-                    }
-                    break;
-
-                case 'biometrics:command-status':
-                    if ($device) {
-                        $artisanParams['--device'] = $device->serial_number;
-                    }
-                    if ($pin) {
-                        $artisanParams['--pin'] = (string)$pin;
-                    }
-                    if (!empty($params['status'])) {
-                        $artisanParams['--status'] = strtoupper($params['status']);
-                    }
-                    if (!empty($params['limit'])) {
-                        $artisanParams['--limit'] = (int)$params['limit'];
-                    } else {
-                        $artisanParams['--limit'] = 50;
-                    }
-                    break;
-
-                case 'biometrics:clear-queue':
-                    // No parameters required
-                    break;
-
-                case 'biometrics:delete-user':
-                    $artisanParams['pin'] = (string)$pin;
-
-                    if ($deviceTarget === 'all') {
-                        $artisanParams['--all-devices'] = true;
-                    } elseif ($device) {
-                        $artisanParams['device_sn'] = $device->serial_number;
-                    } else {
-                        return response()->json(['success' => false, 'message' => 'Target device or --all-devices is required.'], 422);
-                    }
-
-                    if (!empty($params['with_db'])) {
-                        $artisanParams['--with-db'] = true;
-                    }
-                    break;
-
-                case 'app:biometric-delete':
-                    if ($pin) {
-                        $artisanParams['pins'] = [(string)$pin];
-                    }
-                    if ($deviceTarget === 'all') {
-                        $artisanParams['--all-devices'] = true;
-                    } elseif ($device) {
-                        if (!empty($device->ip_address)) {
-                            $artisanParams['--ip'] = [$device->ip_address];
-                        } else {
-                            $artisanParams['--device_sn'] = $device->serial_number;
-                        }
-                    }
-                    if (!empty($params['with_db'])) {
-                        $artisanParams['--with-db'] = true;
-                    }
-                    if (!empty($params['test'])) {
-                        $artisanParams['--test'] = true;
-                    }
-                    break;
-
-                case 'biometrics:delete-finger':
-                    $artisanParams['pin'] = (string)$pin;
-                    if (!isset($params['fid']) || $params['fid'] === '') {
-                        return response()->json(['success' => false, 'message' => 'Finger ID slot (0-9) is required.'], 422);
-                    }
-                    $artisanParams['fid'] = (int)$params['fid'];
-                    break;
-
-                case 'biometrics:import-from-logs':
-                    if ($pin) {
-                        $artisanParams['--pin'] = (string)$pin;
-                    }
-                    if (!empty($params['sync_devices'])) {
-                        $artisanParams['--sync-devices'] = true;
-                    }
-                    break;
-
-                case 'devices:pull-logs':
-                    if ($deviceTarget === 'all') {
-                        $artisanParams['--all'] = true;
-                    } elseif ($device) {
-                        $artisanParams['device_id'] = $device->id;
-                    } else {
-                        return response()->json(['success' => false, 'message' => 'Target device or --all is required.'], 422);
-                    }
-
-                    if (!empty($params['resend'])) {
-                        $artisanParams['--resend'] = true;
-                        if (!empty($params['type'])) {
-                            $artisanParams['--type'] = $params['type'];
-                        }
-                    }
-
-                    if (!empty($params['date'])) {
-                        $artisanParams['--date'] = $params['date'];
-                    } elseif (!empty($params['start_date']) || !empty($params['end_date'])) {
-                        if (!empty($params['start_date'])) {
-                            $artisanParams['--start-date'] = $params['start_date'];
-                        }
-                        if (!empty($params['end_date'])) {
-                            $artisanParams['--end-date'] = $params['end_date'];
-                        }
-                    }
-
-                    if ($pin) {
-                        $artisanParams['--pin'] = (string)$pin;
-                    }
-                    break;
-
-                case 'devices:clear-logs':
-                    if ($deviceTarget === 'all') {
-                        $artisanParams['--all'] = true;
-                    } elseif ($device) {
-                        $artisanParams['device_id'] = $device->id;
-                    } else {
-                        return response()->json(['success' => false, 'message' => 'Target device or --all is required.'], 422);
-                    }
-
-                    $artisanParams['--force'] = true; // non-interactive bypass
-
-                    if (!empty($params['method'])) {
-                        $artisanParams['--method'] = $params['method'];
-                    }
-
-                    if (!empty($params['dry_run'])) {
-                        $artisanParams['--dry-run'] = true;
-                    }
-
-                    if (!empty($params['catch_up'])) {
-                        $artisanParams['--catch-up'] = true;
-                        if (!empty($params['older_than'])) {
-                            $artisanParams['--older-than'] = (int)$params['older_than'];
-                        }
-                    }
-
-                    if (!empty($params['skip_sync'])) {
-                        $artisanParams['--skip-sync'] = true;
-                    }
-                    break;
-
-                case 'device-logs:prune':
-                    $artisanParams['--force'] = true;
-
-                    if (!empty($params['older_than'])) {
-                        $artisanParams['--older-than'] = (int)$params['older_than'];
-                    }
-
-                    if (!empty($params['dry_run'])) {
-                        $artisanParams['--dry-run'] = true;
-                    }
-                    break;
-            }
-        } catch (\Throwable $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Parameter error: ' . $e->getMessage(),
-            ], 422);
-        }
-
-        // Build CLI command representation string for display
-        $cliString = $this->buildCliString($commandKey, $artisanParams);
-
-        // Execute command and capture output
+        $isMultiDevice = count($executionTargets) > 1;
         $startTime = microtime(true);
-        $outputBuffer = new BufferedOutput();
+        $cliStrings = [];
+        $outputChunks = [];
+        $overallExitCode = 0;
 
         try {
-            Log::info("CommandRunner executing: php artisan {$cliString}");
-            $exitCode = Artisan::call($commandKey, $artisanParams, $outputBuffer);
-            $outputText = $outputBuffer->fetch();
+            $totalTargets = count($executionTargets);
+            foreach ($executionTargets as $idx => $targetDev) {
+                $mode = $targetDev === null ? 'all' : 'single';
+                $artisanParams = $this->buildArtisanParams($commandKey, $mode, $targetDev, $pin, $params);
+                $cliString = $this->buildCliString($commandKey, $artisanParams);
+                $cliStrings[] = "php artisan {$cliString}";
+
+                $outputBuffer = new BufferedOutput();
+                Log::info("CommandRunner executing: php artisan {$cliString}");
+                $exitCode = Artisan::call($commandKey, $artisanParams, $outputBuffer);
+                $outputText = $outputBuffer->fetch();
+
+                if ($exitCode !== 0 && $overallExitCode === 0) {
+                    $overallExitCode = $exitCode;
+                }
+
+                if ($isMultiDevice && $targetDev !== null) {
+                    $num = $idx + 1;
+                    $snLabel = $targetDev->serial_number ?: 'No SN';
+                    $ipLabel = $targetDev->ip_address ?: 'No IP';
+                    $statusLabel = $exitCode === 0 ? 'OK' : "EXIT {$exitCode}";
+                    $header = str_repeat('=', 72) . "\n"
+                        . "[{$num}/{$totalTargets}] {$targetDev->device_name} ({$ipLabel} | SN: {$snLabel}) [{$statusLabel}]\n"
+                        . "$ php artisan {$cliString}\n"
+                        . str_repeat('=', 72) . "\n";
+                    $outputChunks[] = $header . ($outputText ?: '(Command completed with no terminal output)');
+                } else {
+                    $outputChunks[] = $outputText ?: '(Command completed with no terminal output)';
+                }
+            }
+
             $duration = round(microtime(true) - $startTime, 2);
 
             return response()->json([
-                'success' => $exitCode === 0,
-                'exit_code' => $exitCode,
-                'command' => "php artisan {$cliString}",
-                'output' => $outputText ?: "(Command completed with no terminal output)",
+                'success' => $overallExitCode === 0,
+                'exit_code' => $overallExitCode,
+                'command' => implode("\n", $cliStrings),
+                'output' => implode("\n\n", $outputChunks),
                 'duration' => "{$duration}s",
                 'duration_ms' => (int)($duration * 1000),
                 'executed_at' => now()->toDateTimeString(),
+                'devices_executed' => $isMultiDevice ? count($executionTargets) : ($executionTargets[0] ? 1 : null),
             ]);
+        } catch (\InvalidArgumentException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ], 422);
         } catch (\Throwable $e) {
             $duration = round(microtime(true) - $startTime, 2);
             Log::error("CommandRunner error executing [{$commandKey}]: " . $e->getMessage());
@@ -532,13 +392,256 @@ class CommandRunnerController extends Controller
             return response()->json([
                 'success' => false,
                 'exit_code' => 1,
-                'command' => "php artisan {$cliString}",
+                'command' => implode("\n", $cliStrings) ?: "php artisan {$commandKey}",
                 'output' => "FATAL ERROR:\n" . $e->getMessage() . "\n\nStack trace:\n" . $e->getTraceAsString(),
                 'duration' => "{$duration}s",
                 'duration_ms' => (int)($duration * 1000),
                 'executed_at' => now()->toDateTimeString(),
             ], 500);
         }
+    }
+
+    /**
+     * Build Artisan arguments and options for a single command invocation.
+     */
+    protected function buildArtisanParams(
+        string $commandKey,
+        string $deviceTarget,
+        ?Devices $device,
+        ?int $pin,
+        array $params
+    ): array {
+        $artisanParams = [];
+
+        switch ($commandKey) {
+            case 'biometrics:sync-device':
+                if ($deviceTarget === 'all') {
+                    $artisanParams['--all-devices'] = true;
+                } elseif ($device) {
+                    $artisanParams['device_sn'] = $device->serial_number;
+                } else {
+                    throw new \InvalidArgumentException('Target device or --all-devices is required.');
+                }
+
+                if ($pin) {
+                    $artisanParams['--pin'] = (string)$pin;
+                }
+
+                if (!empty($params['no_clean'])) {
+                    $artisanParams['--no-clean'] = true;
+                }
+
+                if (!empty($params['table'])) {
+                    $artisanParams['--table'] = true;
+                }
+                break;
+
+            case 'biometrics:check-device':
+                $artisanParams['pin'] = (string)$pin;
+
+                if ($deviceTarget === 'all') {
+                    $artisanParams['--all-devices'] = true;
+                } elseif ($device) {
+                    $artisanParams['device_sn'] = $device->serial_number;
+                } else {
+                    throw new \InvalidArgumentException('Target device or --all-devices is required.');
+                }
+
+                $mode = $params['mode'] ?? 'inspect';
+                if ($mode === 'fix') {
+                    $artisanParams['--fix'] = true;
+                    $artisanParams['--force'] = true;
+                } elseif ($mode === 'clean') {
+                    $artisanParams['--clean'] = true;
+                    $artisanParams['--force'] = true;
+                }
+                break;
+
+            case 'biometrics:check-device-match':
+                $artisanParams['pin'] = (string)$pin;
+
+                if ($deviceTarget === 'all') {
+                    $artisanParams['--all-devices'] = true;
+                } elseif ($device) {
+                    $artisanParams['device_sn'] = $device->serial_number;
+                } else {
+                    throw new \InvalidArgumentException('Target device or --all-devices is required.');
+                }
+
+                if (!empty($params['compare_pin'])) {
+                    $artisanParams['--compare-pin'] = (int)$params['compare_pin'];
+                }
+
+                if (!empty($params['clean'])) {
+                    $artisanParams['--clean'] = true;
+                    $artisanParams['--force'] = true;
+                }
+
+                if (!empty($params['db_only'])) {
+                    $artisanParams['--db-only'] = true;
+                }
+                break;
+
+            case 'biometrics:find-duplicates':
+                if ($pin) {
+                    $artisanParams['pin'] = (string)$pin;
+                } else {
+                    $artisanParams['--all'] = true;
+                }
+                break;
+
+            case 'biometrics:command-status':
+                if ($device) {
+                    $artisanParams['--device'] = $device->serial_number;
+                }
+                if ($pin) {
+                    $artisanParams['--pin'] = (string)$pin;
+                }
+                if (!empty($params['status'])) {
+                    $artisanParams['--status'] = strtoupper($params['status']);
+                }
+                if (!empty($params['limit'])) {
+                    $artisanParams['--limit'] = (int)$params['limit'];
+                } else {
+                    $artisanParams['--limit'] = 50;
+                }
+                break;
+
+            case 'biometrics:clear-queue':
+                // No parameters required
+                break;
+
+            case 'biometrics:delete-user':
+                $artisanParams['pin'] = (string)$pin;
+
+                if ($deviceTarget === 'all') {
+                    $artisanParams['--all-devices'] = true;
+                } elseif ($device) {
+                    $artisanParams['device_sn'] = $device->serial_number;
+                } else {
+                    throw new \InvalidArgumentException('Target device or --all-devices is required.');
+                }
+
+                if (!empty($params['with_db'])) {
+                    $artisanParams['--with-db'] = true;
+                }
+                break;
+
+            case 'app:biometric-delete':
+                if ($pin) {
+                    $artisanParams['pins'] = [(string)$pin];
+                }
+                if ($deviceTarget === 'all') {
+                    $artisanParams['--all-devices'] = true;
+                } elseif ($device) {
+                    if (!empty($device->ip_address)) {
+                        $artisanParams['--ip'] = [$device->ip_address];
+                    } else {
+                        $artisanParams['--device_sn'] = $device->serial_number;
+                    }
+                }
+                if (!empty($params['with_db'])) {
+                    $artisanParams['--with-db'] = true;
+                }
+                if (!empty($params['test'])) {
+                    $artisanParams['--test'] = true;
+                }
+                break;
+
+            case 'biometrics:delete-finger':
+                $artisanParams['pin'] = (string)$pin;
+                if (!isset($params['fid']) || $params['fid'] === '') {
+                    throw new \InvalidArgumentException('Finger ID slot (0-9) is required.');
+                }
+                $artisanParams['fid'] = (int)$params['fid'];
+                break;
+
+            case 'biometrics:import-from-logs':
+                if ($pin) {
+                    $artisanParams['--pin'] = (string)$pin;
+                }
+                if (!empty($params['sync_devices'])) {
+                    $artisanParams['--sync-devices'] = true;
+                }
+                break;
+
+            case 'devices:pull-logs':
+                if ($deviceTarget === 'all') {
+                    $artisanParams['--all'] = true;
+                } elseif ($device) {
+                    $artisanParams['device_id'] = $device->id;
+                } else {
+                    throw new \InvalidArgumentException('Target device or --all is required.');
+                }
+
+                if (!empty($params['resend'])) {
+                    $artisanParams['--resend'] = true;
+                    if (!empty($params['type'])) {
+                        $artisanParams['--type'] = $params['type'];
+                    }
+                }
+
+                if (!empty($params['date'])) {
+                    $artisanParams['--date'] = $params['date'];
+                } elseif (!empty($params['start_date']) || !empty($params['end_date'])) {
+                    if (!empty($params['start_date'])) {
+                        $artisanParams['--start-date'] = $params['start_date'];
+                    }
+                    if (!empty($params['end_date'])) {
+                        $artisanParams['--end-date'] = $params['end_date'];
+                    }
+                }
+
+                if ($pin) {
+                    $artisanParams['--pin'] = (string)$pin;
+                }
+                break;
+
+            case 'devices:clear-logs':
+                if ($deviceTarget === 'all') {
+                    $artisanParams['--all'] = true;
+                } elseif ($device) {
+                    $artisanParams['device_id'] = $device->id;
+                } else {
+                    throw new \InvalidArgumentException('Target device or --all is required.');
+                }
+
+                $artisanParams['--force'] = true; // non-interactive bypass
+
+                if (!empty($params['method'])) {
+                    $artisanParams['--method'] = $params['method'];
+                }
+
+                if (!empty($params['dry_run'])) {
+                    $artisanParams['--dry-run'] = true;
+                }
+
+                if (!empty($params['catch_up'])) {
+                    $artisanParams['--catch-up'] = true;
+                    if (!empty($params['older_than'])) {
+                        $artisanParams['--older-than'] = (int)$params['older_than'];
+                    }
+                }
+
+                if (!empty($params['skip_sync'])) {
+                    $artisanParams['--skip-sync'] = true;
+                }
+                break;
+
+            case 'device-logs:prune':
+                $artisanParams['--force'] = true;
+
+                if (!empty($params['older_than'])) {
+                    $artisanParams['--older-than'] = (int)$params['older_than'];
+                }
+
+                if (!empty($params['dry_run'])) {
+                    $artisanParams['--dry-run'] = true;
+                }
+                break;
+        }
+
+        return $artisanParams;
     }
 
     /**

@@ -41,6 +41,7 @@ class DeviceController extends Controller
         $operatingDevices = $totalDevices - $registeringDevices;
         $attendanceDevices = Devices::where('for_attendance', 1)->count();
         $hrblizDevices = Devices::where('is_hrbliz', 1)->count();
+        $receiveSyncDevices = Devices::query()->canReceiveSync()->count();
         $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
 
         return view('devices.index', compact(
@@ -51,6 +52,7 @@ class DeviceController extends Controller
             'operatingDevices',
             'attendanceDevices',
             'hrblizDevices',
+            'receiveSyncDevices',
             'availabilityRate'
         ));
     }
@@ -131,6 +133,20 @@ class DeviceController extends Controller
                 });
             }
 
+            // Receive Sync filter
+            $receiver = $request->input('receiver', $request->input('receive_sync', $request->input('receiver_by_default', 'all')));
+            if ($receiver === '1' || $receiver === 'true' || $receiver === 'yes') {
+                $query->canReceiveSync();
+            } elseif ($receiver === '0' || $receiver === 'false' || $receiver === 'no') {
+                $query->where(function ($q) {
+                    $q->where('receiver_by_default', 0)
+                      ->orWhere(function ($hrb) {
+                          $hrb->where('is_hrbliz', 1)
+                              ->whereNull('receiver_by_default');
+                      });
+                });
+            }
+
             // Dynamic Sorting
             $sortBy = $request->input('sort_by', 'id');
             $sortDir = strtolower($request->input('sort_dir', 'asc')) === 'desc' ? 'desc' : 'asc';
@@ -152,6 +168,7 @@ class DeviceController extends Controller
             $operatingDevices = $totalDevices - $registeringDevices;
             $attendanceDevices = Devices::where('for_attendance', 1)->count();
             $hrblizDevices = Devices::where('is_hrbliz', 1)->count();
+            $receiveSyncDevices = Devices::query()->canReceiveSync()->count();
             $availabilityRate = $totalDevices > 0 ? round(($onlineDevices / $totalDevices) * 100, 1) : 0;
 
             $perPage = $request->input('per_page', 10);
@@ -198,6 +215,7 @@ class DeviceController extends Controller
                     'operating' => $operatingDevices,
                     'attendance' => $attendanceDevices,
                     'hrbliz' => $hrblizDevices,
+                    'receive_sync' => $receiveSyncDevices,
                     'availability_rate' => $availabilityRate,
                 ],
             ]);

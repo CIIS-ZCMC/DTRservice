@@ -553,6 +553,9 @@
                         <button type="button" id="kpiBtnHrbliz" class="text-xs px-2 py-1 rounded pill-indigo font-semibold cursor-pointer hover:opacity-85 transition-all active:scale-95" title="Click to filter HRBLIZ devices">
                             <i class="fas fa-fingerprint mr-1"></i> <span id="statHrbliz">{{ $hrblizDevices ?? 0 }}</span> HRBLIZ
                         </button>
+                        <button type="button" id="kpiBtnReceiveSync" class="text-xs px-2 py-1 rounded pill-emerald font-semibold cursor-pointer hover:opacity-85 transition-all active:scale-95" title="Click to filter Receive Sync devices">
+                            <i class="fas fa-cloud-download-alt mr-1"></i> <span id="statReceiveSync">{{ $receiveSyncDevices ?? 0 }}</span> Receive Sync
+                        </button>
                     </div>
                     <p class="text-xs themed-text-muted mt-1.5">Click any role to filter inventory</p>
                 </div>
@@ -635,6 +638,16 @@
                             <option value="all" selected>All Fleets</option>
                             <option value="1">HRBLIZ Only</option>
                             <option value="0">Standard Only</option>
+                        </select>
+                    </div>
+
+                    <!-- Sync Receiver Filter -->
+                    <div class="flex items-center gap-1.5 text-xs">
+                        <span class="themed-text-muted font-medium">Sync:</span>
+                        <select id="filterReceiver" class="themed-input rounded-lg px-2.5 py-1.5 text-xs font-medium cursor-pointer">
+                            <option value="all" selected>All Sync Modes</option>
+                            <option value="1">Receive Sync</option>
+                            <option value="0">Send-Only</option>
                         </select>
                     </div>
 
@@ -1271,14 +1284,75 @@
                         </div>
                     </div>
 
-                    <!-- 2. Target Device -->
-                    <div id="cmdDeviceGroup" class="space-y-1.5">
-                        <label class="block text-xs font-bold uppercase tracking-wider themed-text-secondary">
-                            <i class="fas fa-network-wired text-indigo-500 mr-1"></i> Target Device
-                        </label>
-                        <select id="cmdDeviceTarget" class="w-full themed-input rounded-xl px-3 py-2 text-xs font-semibold focus:ring-2 focus:ring-blue-500 focus:outline-none">
-                            <option value="all">⚡ All Active Registered Devices</option>
-                        </select>
+                    <!-- 2. Target Device (Searchable Multi-Select) -->
+                    <div id="cmdDeviceGroup" class="space-y-1.5 relative">
+                        <div class="flex items-center justify-between">
+                            <label class="block text-xs font-bold uppercase tracking-wider themed-text-secondary">
+                                <i class="fas fa-network-wired text-indigo-500 mr-1"></i> Target Device(s)
+                            </label>
+                            <span id="cmdDeviceCountBadge" class="text-[10px] font-semibold px-2 py-0.5 rounded pill-emerald">
+                                All Devices
+                            </span>
+                        </div>
+
+                        <!-- Multi-Select Dropdown Trigger -->
+                        <button type="button" id="cmdDeviceTrigger"
+                            class="w-full themed-input rounded-xl px-3 py-2 text-xs font-semibold text-left flex items-center justify-between gap-2 focus:ring-2 focus:ring-blue-500 focus:outline-none cursor-pointer">
+                            <span id="cmdDeviceTriggerText" class="truncate">⚡ All Active Registered Devices</span>
+                            <i id="cmdDeviceChevron" class="fas fa-chevron-down text-[10px] themed-text-muted shrink-0 transition-transform"></i>
+                        </button>
+
+                        <!-- Dropdown Panel -->
+                        <div id="cmdDeviceDropdown" class="hidden absolute left-0 right-0 top-full mt-1 themed-card border themed-border rounded-xl shadow-2xl z-40 overflow-hidden">
+                            <!-- Searchbar -->
+                            <div class="p-2 border-b themed-border">
+                                <div class="relative">
+                                    <i class="fas fa-search absolute left-2.5 top-1/2 -translate-y-1/2 themed-text-muted text-[11px]"></i>
+                                    <input type="text" id="cmdDeviceSearchInput" placeholder="Search device name, IP, or serial..."
+                                        autocomplete="off"
+                                        class="w-full themed-input rounded-lg pl-7 pr-7 py-1.5 text-xs focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                                    <button type="button" id="cmdDeviceSearchClear" class="hidden absolute right-2 top-1/2 -translate-y-1/2 themed-text-muted hover:text-rose-500 text-xs cursor-pointer" title="Clear search">
+                                        <i class="fas fa-times-circle"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Sync Mode Quick Filter Tabs -->
+                            <div class="px-2 py-1.5 border-b themed-border flex items-center gap-1 text-[10px] font-semibold" style="background: var(--bg-subcard);">
+                                <button type="button" class="cmdDeviceSyncTab px-2 py-1 rounded-md transition-colors cursor-pointer bg-blue-600 text-white" data-filter="all">
+                                    All (<span id="cmdDevCountAll">0</span>)
+                                </button>
+                                <button type="button" class="cmdDeviceSyncTab px-2 py-1 rounded-md transition-colors cursor-pointer themed-text-secondary themed-hover" data-filter="receive_sync">
+                                    Receive Sync (<span id="cmdDevCountSync">0</span>)
+                                </button>
+                                <button type="button" class="cmdDeviceSyncTab px-2 py-1 rounded-md transition-colors cursor-pointer themed-text-secondary themed-hover" data-filter="send_only">
+                                    Send-Only (<span id="cmdDevCountSendOnly">0</span>)
+                                </button>
+                            </div>
+
+                            <!-- Bulk Selection Actions -->
+                            <div class="px-2.5 py-1.5 border-b themed-border flex items-center justify-between text-[11px] font-semibold">
+                                <div class="flex items-center gap-3">
+                                    <button type="button" id="cmdDeviceSelectVisibleBtn" class="text-blue-500 hover:underline cursor-pointer">
+                                        Select Visible
+                                    </button>
+                                    <button type="button" id="cmdDeviceSelectSyncBtn" class="text-emerald-500 hover:underline cursor-pointer">
+                                        All Receive Sync
+                                    </button>
+                                </div>
+                                <button type="button" id="cmdDeviceClearBtn" class="text-rose-500 hover:underline cursor-pointer">
+                                    Reset to All
+                                </button>
+                            </div>
+
+                            <!-- Scrollable Checkbox Device List -->
+                            <div id="cmdDeviceList" class="max-h-60 overflow-y-auto scrollbar-thin divide-y themed-border">
+                                <!-- Populated via JS -->
+                            </div>
+                        </div>
+
+                        <!-- Selected Device Chips -->
+                        <div id="cmdDeviceChips" class="hidden flex flex-wrap gap-1.5 pt-0.5 max-h-24 overflow-y-auto scrollbar-thin"></div>
                     </div>
 
                     <!-- 3. Target User / PIN Selector (Interactive Autocomplete + Manual PIN) -->
@@ -1420,12 +1494,13 @@
             devices: [],
             selectedIds: new Set(),
             meta: { current_page: 1, per_page: 10, total: 0, last_page: 1, from: 0, to: 0 },
-            stats: { total: {{ $totalDevices ?? 0 }}, online: {{ $onlineDevices ?? 0 }}, offline: {{ $offlineDevices ?? 0 }}, registering: {{ $registeringDevices ?? 0 }}, operating: {{ $operatingDevices ?? 0 }}, attendance: {{ $attendanceDevices ?? 0 }}, hrbliz: {{ $hrblizDevices ?? 0 }}, availability_rate: {{ $availabilityRate ?? 0 }} },
+            stats: { total: {{ $totalDevices ?? 0 }}, online: {{ $onlineDevices ?? 0 }}, offline: {{ $offlineDevices ?? 0 }}, registering: {{ $registeringDevices ?? 0 }}, operating: {{ $operatingDevices ?? 0 }}, attendance: {{ $attendanceDevices ?? 0 }}, hrbliz: {{ $hrblizDevices ?? 0 }}, receive_sync: {{ $receiveSyncDevices ?? 0 }}, availability_rate: {{ $availabilityRate ?? 0 }} },
             search: '',
             status: 'all',
             type: 'all',
             active: 'all',
             hrbliz: 'all',
+            receiver: 'all',
             perPage: 10,
             sortBy: 'id',
             sortDir: 'asc',
@@ -1490,6 +1565,7 @@
         const filterType = document.getElementById('filterType');
         const filterActive = document.getElementById('filterActive');
         const filterHrbliz = document.getElementById('filterHrbliz');
+        const filterReceiver = document.getElementById('filterReceiver');
         const filterPerPage = document.getElementById('filterPerPage');
         const selectAllCheckbox = document.getElementById('selectAllCheckbox');
         const batchActionBar = document.getElementById('batchActionBar');
@@ -1633,6 +1709,7 @@
                     type: state.type,
                     active: state.active,
                     hrbliz: state.hrbliz,
+                    receiver: state.receiver,
                     sort_by: state.sortBy,
                     sort_dir: state.sortDir,
                 });
@@ -1649,7 +1726,6 @@
                     renderTable();
                     renderPagination();
                     updateLastUpdated();
-                    if (typeof updateCmdRunnerDevices === 'function') updateCmdRunnerDevices(state.devices);
                 } else {
                     showToast(result.message || 'Failed to fetch device data', 'error');
                 }
@@ -1674,6 +1750,10 @@
             const statHrbliz = document.getElementById('statHrbliz');
             if (statHrbliz) {
                 statHrbliz.textContent = state.stats.hrbliz || 0;
+            }
+            const statReceiveSync = document.getElementById('statReceiveSync');
+            if (statReceiveSync) {
+                statReceiveSync.textContent = state.stats.receive_sync ?? 0;
             }
 
             const rate = state.stats.availability_rate || 0;
@@ -1760,6 +1840,17 @@
                         <i class="fas fa-plus text-[8px]"></i> HRBLIZ
                        </button>`;
 
+                const canReceiveSync = d.receiver_by_default !== false && d.receiver_by_default != 0;
+                const syncBadge = canReceiveSync
+                    ? `<button class="btnToggleRole px-1.5 py-0.5 rounded text-[9px] font-semibold pill-emerald hover:opacity-80 active:scale-95 transition-all flex items-center gap-1 shadow-2xs cursor-pointer" 
+                        data-id="${d.id}" data-field="receiver_by_default" data-val="0" title="Receive Sync enabled. Click to switch to Send-Only mode">
+                        <i class="fas fa-cloud-download-alt text-[9px]"></i> Receive Sync
+                       </button>`
+                    : `<button class="btnToggleRole px-1.5 py-0.5 rounded text-[9px] font-semibold pill-amber hover:opacity-80 active:scale-95 transition-all flex items-center gap-1 shadow-2xs cursor-pointer" 
+                        data-id="${d.id}" data-field="receiver_by_default" data-val="1" title="Send-Only mode (skipped from sync). Click to enable Receive Sync">
+                        <i class="fas fa-upload text-[9px]"></i> Send-Only
+                       </button>`;
+
                 html += `
                     <tr class="themed-hover transition-colors ${isSelected ? 'bg-blue-500/5' : ''}" data-device-id="${d.id}">
                         <!-- Checkbox -->
@@ -1822,6 +1913,7 @@
                                 <div class="flex items-center gap-1 flex-wrap">
                                     ${attBadge}
                                     ${hrblizBadge}
+                                    ${syncBadge}
                                 </div>
                             </div>
                         </td>
@@ -2132,6 +2224,7 @@
                     showToast(result.message || 'Device configuration updated successfully', 'success');
                     closeModal(editNameModal);
                     renderTable();
+                    if (typeof refreshCommandRunnerDevices === 'function') refreshCommandRunnerDevices();
                 } else {
                     editNameError.textContent = result.message || 'Failed to update device.';
                     editNameError.classList.remove('hidden');
@@ -2168,11 +2261,13 @@
                         dev.for_attendance = result.data.for_attendance;
                         dev.is_active = result.data.is_active;
                         dev.is_hrbliz = result.data.is_hrbliz;
+                        dev.receiver_by_default = result.data.receiver_by_default;
                     }
 
                     recalculateStats();
                     renderStats();
                     renderTable();
+                    if (typeof refreshCommandRunnerDevices === 'function') refreshCommandRunnerDevices();
                     showToast(result.message || `Updated configuration for ${devName}`, 'success', 3000);
                 } else {
                     showToast(result.message || 'Failed to update role', 'error');
@@ -2566,6 +2661,7 @@
         const kpiBtnRegistering = document.getElementById('kpiBtnRegistering');
         const kpiBtnAttendance = document.getElementById('kpiBtnAttendance');
         const kpiBtnHrbliz = document.getElementById('kpiBtnHrbliz');
+        const kpiBtnReceiveSync = document.getElementById('kpiBtnReceiveSync');
 
         if (kpiBtnOperating) {
             kpiBtnOperating.addEventListener('click', () => {
@@ -2603,6 +2699,15 @@
                 fetchDevices();
             });
         }
+        if (kpiBtnReceiveSync && filterReceiver) {
+            kpiBtnReceiveSync.addEventListener('click', () => {
+                const nextVal = filterReceiver.value === '1' ? 'all' : '1';
+                filterReceiver.value = nextVal;
+                state.receiver = nextVal;
+                state.meta.current_page = 1;
+                fetchDevices();
+            });
+        }
 
         filterActive.addEventListener('change', (e) => {
             state.active = e.target.value;
@@ -2615,6 +2720,14 @@
             state.meta.current_page = 1;
             fetchDevices();
         });
+
+        if (filterReceiver) {
+            filterReceiver.addEventListener('change', (e) => {
+                state.receiver = e.target.value;
+                state.meta.current_page = 1;
+                fetchDevices();
+            });
+        }
 
         filterPerPage.addEventListener('change', (e) => {
             state.perPage = e.target.value;
@@ -2738,6 +2851,7 @@
                         showToast(result.message || 'Device created successfully', 'success');
                         closeModal(addDeviceModal);
                         fetchDevices();
+                        if (typeof refreshCommandRunnerDevices === 'function') refreshCommandRunnerDevices();
                     } else {
                         addDeviceError.textContent = result.message || 'Failed to create device.';
                         addDeviceError.classList.remove('hidden');
@@ -2761,6 +2875,9 @@
         const cmdRunner = {
             manifest: null,
             devices: [],
+            selectedDeviceIds: new Set(),
+            deviceSearch: '',
+            deviceSyncFilter: 'all', // 'all' | 'receive_sync' | 'send_only'
             fingerNames: {},
             selectedPin: null,
             selectedEmployeeName: null,
@@ -2776,7 +2893,21 @@
         const cmdDescriptionText = document.getElementById('cmdDescriptionText');
         const cmdGuideBadge = document.getElementById('cmdGuideBadge');
         const cmdDeviceGroup = document.getElementById('cmdDeviceGroup');
-        const cmdDeviceTarget = document.getElementById('cmdDeviceTarget');
+        const cmdDeviceTrigger = document.getElementById('cmdDeviceTrigger');
+        const cmdDeviceTriggerText = document.getElementById('cmdDeviceTriggerText');
+        const cmdDeviceChevron = document.getElementById('cmdDeviceChevron');
+        const cmdDeviceCountBadge = document.getElementById('cmdDeviceCountBadge');
+        const cmdDeviceDropdown = document.getElementById('cmdDeviceDropdown');
+        const cmdDeviceSearchInput = document.getElementById('cmdDeviceSearchInput');
+        const cmdDeviceSearchClear = document.getElementById('cmdDeviceSearchClear');
+        const cmdDeviceList = document.getElementById('cmdDeviceList');
+        const cmdDeviceChips = document.getElementById('cmdDeviceChips');
+        const cmdDeviceSelectVisibleBtn = document.getElementById('cmdDeviceSelectVisibleBtn');
+        const cmdDeviceSelectSyncBtn = document.getElementById('cmdDeviceSelectSyncBtn');
+        const cmdDeviceClearBtn = document.getElementById('cmdDeviceClearBtn');
+        const cmdDevCountAll = document.getElementById('cmdDevCountAll');
+        const cmdDevCountSync = document.getElementById('cmdDevCountSync');
+        const cmdDevCountSendOnly = document.getElementById('cmdDevCountSendOnly');
         const cmdPinGroup = document.getElementById('cmdPinGroup');
         const cmdPinBadge = document.getElementById('cmdPinBadge');
         const cmdSelectedUserChip = document.getElementById('cmdSelectedUserChip');
@@ -2808,55 +2939,306 @@
         const commandRunnerCard = document.getElementById('commandRunnerCard');
         let isCmdModalFullscreen = true;
 
-        // Fetch manifest and populate devices
-        async function initCommandRunner() {
-            if (cmdRunner.manifest) return;
+        // Helper: Check if a device is eligible to receive sync updates
+        function isDeviceReceiveSync(d) {
+            return d && d.receiver_by_default !== false && d.receiver_by_default != 0;
+        }
+
+        // Fetch manifest and populate ALL devices (never truncated by table pagination)
+        async function initCommandRunner(forceRefresh = false) {
+            if (cmdRunner.manifest && !forceRefresh) return;
             try {
                 const res = await fetchJson('/api/command-runner/manifest');
                 if (res.ok && res.data && res.data.success) {
+                    const isFirstLoad = !cmdRunner.manifest;
                     cmdRunner.manifest = res.data.commands || {};
                     cmdRunner.devices = res.data.devices || [];
                     cmdRunner.fingerNames = res.data.finger_names || {};
-                    populateCmdDeviceDropdown(cmdRunner.devices);
-                    onCommandSelectionChange();
+
+                    // Prune any selected IDs that no longer exist
+                    const validIds = new Set(cmdRunner.devices.map(d => Number(d.id)));
+                    Array.from(cmdRunner.selectedDeviceIds).forEach(id => {
+                        if (!validIds.has(Number(id))) cmdRunner.selectedDeviceIds.delete(id);
+                    });
+
+                    renderCmdDevicePicker();
+                    if (isFirstLoad) {
+                        onCommandSelectionChange();
+                    } else {
+                        updateCliPreview();
+                    }
                 }
             } catch (err) {
                 console.error('Failed to initialize Command Runner manifest:', err);
             }
         }
 
-        // Populate device dropdown
-        function populateCmdDeviceDropdown(devices) {
-            if (!cmdDeviceTarget) return;
-            const currentVal = cmdDeviceTarget.value || 'all';
-            let html = '<option value="all">⚡ All Active Registered Devices</option>';
-            if (Array.isArray(devices) && devices.length > 0) {
-                devices.forEach(d => {
-                    const sn = d.serial_number ? `(${d.serial_number})` : '(No SN)';
-                    const ip = d.ip_address || 'No IP';
-                    const activeTag = d.is_active ? '' : ' [Inactive]';
-                    html += `<option value="${d.id}">${escapeHtml(d.device_name)} - ${escapeHtml(ip)} ${escapeHtml(sn)}${activeTag}</option>`;
-                });
+        // Refresh full device list for Command Runner after edits/additions
+        async function refreshCommandRunnerDevices() {
+            await initCommandRunner(true);
+        }
+
+        // Compute filtered devices based on search query & sync filter tab
+        function getFilteredCmdDevices() {
+            const q = (cmdRunner.deviceSearch || '').trim().toLowerCase();
+            const syncFilter = cmdRunner.deviceSyncFilter || 'all';
+
+            return (cmdRunner.devices || []).filter(d => {
+                const isSync = isDeviceReceiveSync(d);
+                if (syncFilter === 'receive_sync' && !isSync) return false;
+                if (syncFilter === 'send_only' && isSync) return false;
+
+                if (q) {
+                    const hay = [
+                        d.device_name || '',
+                        d.ip_address || '',
+                        d.serial_number || '',
+                        String(d.id || ''),
+                        d.is_hrbliz ? 'hrbliz' : 'standard',
+                        isSync ? 'receive sync' : 'send-only',
+                    ].join(' ').toLowerCase();
+                    if (!hay.includes(q)) return false;
+                }
+                return true;
+            });
+        }
+
+        // Render counts, list, trigger label, and chips for Target Device multi-select
+        function renderCmdDevicePicker() {
+            const allDevices = cmdRunner.devices || [];
+            const syncCount = allDevices.filter(d => isDeviceReceiveSync(d)).length;
+            const sendOnlyCount = allDevices.length - syncCount;
+
+            if (cmdDevCountAll) cmdDevCountAll.textContent = allDevices.length;
+            if (cmdDevCountSync) cmdDevCountSync.textContent = syncCount;
+            if (cmdDevCountSendOnly) cmdDevCountSendOnly.textContent = sendOnlyCount;
+
+            renderCmdDeviceList();
+            renderCmdDeviceSummaryAndChips();
+        }
+
+        function renderCmdDeviceList() {
+            if (!cmdDeviceList) return;
+            const filtered = getFilteredCmdDevices();
+
+            if (filtered.length === 0) {
+                cmdDeviceList.innerHTML = `
+                    <div class="p-4 text-center text-xs themed-text-muted italic">
+                        No devices match "${escapeHtml(cmdRunner.deviceSearch || '')}" in this category.
+                    </div>
+                `;
+                return;
             }
-            cmdDeviceTarget.innerHTML = html;
-            if (currentVal && cmdDeviceTarget.querySelector(`option[value="${currentVal}"]`)) {
-                cmdDeviceTarget.value = currentVal;
+
+            let html = '';
+            filtered.forEach(d => {
+                const id = Number(d.id);
+                const checked = cmdRunner.selectedDeviceIds.has(id);
+                const isSync = isDeviceReceiveSync(d);
+                const sn = d.serial_number || 'No SN';
+                const ip = d.ip_address || 'No IP';
+
+                const syncTag = isSync
+                    ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold pill-emerald shrink-0">Receive Sync</span>`
+                    : `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold pill-amber shrink-0">Send-Only</span>`;
+                const hrblizTag = d.is_hrbliz
+                    ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold pill-indigo shrink-0">HRBLIZ</span>`
+                    : '';
+                const inactiveTag = !d.is_active
+                    ? `<span class="px-1.5 py-0.5 rounded text-[9px] font-bold pill-rose shrink-0">Inactive</span>`
+                    : '';
+
+                html += `
+                    <label class="flex items-start gap-2.5 px-3 py-2 cursor-pointer themed-hover transition-colors ${checked ? 'bg-blue-500/10' : ''}">
+                        <input type="checkbox" class="cmdDeviceCheckbox mt-0.5 rounded border-slate-400 dark:border-slate-600 text-blue-600 focus:ring-0 cursor-pointer"
+                            data-id="${id}" ${checked ? 'checked' : ''}>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center justify-between gap-1.5">
+                                <span class="text-xs font-bold themed-text-primary truncate">${escapeHtml(d.device_name || `Device #${id}`)}</span>
+                                <div class="flex items-center gap-1 shrink-0">
+                                    ${syncTag}
+                                    ${hrblizTag}
+                                    ${inactiveTag}
+                                </div>
+                            </div>
+                            <div class="text-[10px] font-mono themed-text-muted truncate mt-0.5">
+                                ${escapeHtml(ip)} • SN: ${escapeHtml(sn)}
+                            </div>
+                        </div>
+                    </label>
+                `;
+            });
+
+            cmdDeviceList.innerHTML = html;
+            cmdDeviceList.querySelectorAll('.cmdDeviceCheckbox').forEach(cb => {
+                cb.addEventListener('change', (e) => {
+                    const id = Number(e.target.dataset.id);
+                    if (e.target.checked) {
+                        cmdRunner.selectedDeviceIds.add(id);
+                    } else {
+                        cmdRunner.selectedDeviceIds.delete(id);
+                    }
+                    renderCmdDeviceList();
+                    renderCmdDeviceSummaryAndChips();
+                    updateCliPreview();
+                });
+            });
+        }
+
+        function renderCmdDeviceSummaryAndChips() {
+            const selectedIds = Array.from(cmdRunner.selectedDeviceIds);
+            const selectedDevices = selectedIds
+                .map(id => (cmdRunner.devices || []).find(d => Number(d.id) === Number(id)))
+                .filter(Boolean);
+
+            if (selectedDevices.length === 0) {
+                if (cmdDeviceTriggerText) cmdDeviceTriggerText.textContent = '⚡ All Active Registered Devices';
+                if (cmdDeviceCountBadge) {
+                    cmdDeviceCountBadge.textContent = 'All Devices';
+                    cmdDeviceCountBadge.className = 'text-[10px] font-semibold px-2 py-0.5 rounded pill-emerald';
+                }
+                if (cmdDeviceChips) {
+                    cmdDeviceChips.innerHTML = '';
+                    cmdDeviceChips.classList.add('hidden');
+                }
+                return;
+            }
+
+            if (selectedDevices.length === 1) {
+                const d = selectedDevices[0];
+                const sn = d.serial_number ? `(${d.serial_number})` : '(No SN)';
+                if (cmdDeviceTriggerText) cmdDeviceTriggerText.textContent = `${d.device_name} - ${d.ip_address || 'No IP'} ${sn}`;
+                if (cmdDeviceCountBadge) {
+                    cmdDeviceCountBadge.textContent = '1 Selected';
+                    cmdDeviceCountBadge.className = 'text-[10px] font-semibold px-2 py-0.5 rounded pill-blue';
+                }
+            } else {
+                if (cmdDeviceTriggerText) cmdDeviceTriggerText.textContent = `${selectedDevices.length} Devices Selected`;
+                if (cmdDeviceCountBadge) {
+                    cmdDeviceCountBadge.textContent = `${selectedDevices.length} Selected`;
+                    cmdDeviceCountBadge.className = 'text-[10px] font-semibold px-2 py-0.5 rounded pill-indigo';
+                }
+            }
+
+            if (cmdDeviceChips) {
+                let chipsHtml = '';
+                selectedDevices.forEach(d => {
+                    const isSync = isDeviceReceiveSync(d);
+                    const chipClass = isSync ? 'pill-blue' : 'pill-amber';
+                    chipsHtml += `
+                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-[10px] font-semibold ${chipClass}">
+                            <span class="truncate max-w-[160px]" title="${escapeHtml(d.device_name)} (${escapeHtml(d.ip_address || 'No IP')})">${escapeHtml(d.device_name)}</span>
+                            <button type="button" class="cmdRemoveDeviceChip hover:text-rose-500 cursor-pointer" data-id="${d.id}" title="Remove device">
+                                <i class="fas fa-times text-[9px]"></i>
+                            </button>
+                        </span>
+                    `;
+                });
+                cmdDeviceChips.innerHTML = chipsHtml;
+                cmdDeviceChips.classList.remove('hidden');
+
+                cmdDeviceChips.querySelectorAll('.cmdRemoveDeviceChip').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        cmdRunner.selectedDeviceIds.delete(Number(btn.dataset.id));
+                        renderCmdDeviceList();
+                        renderCmdDeviceSummaryAndChips();
+                        updateCliPreview();
+                    });
+                });
             }
         }
 
-        function updateCmdRunnerDevices(devices) {
-            if (devices && devices.length > 0) {
-                cmdRunner.devices = devices;
-                populateCmdDeviceDropdown(devices);
+        function setCmdDeviceDropdownOpen(isOpen) {
+            if (!cmdDeviceDropdown) return;
+            cmdDeviceDropdown.classList.toggle('hidden', !isOpen);
+            if (cmdDeviceChevron) {
+                cmdDeviceChevron.classList.toggle('rotate-180', isOpen);
             }
+            if (isOpen && cmdDeviceSearchInput) {
+                setTimeout(() => cmdDeviceSearchInput.focus(), 30);
+            }
+        }
+
+        // Wire Target Device Multi-Select Events
+        if (cmdDeviceTrigger) {
+            cmdDeviceTrigger.addEventListener('click', () => {
+                const isHidden = cmdDeviceDropdown.classList.contains('hidden');
+                setCmdDeviceDropdownOpen(isHidden);
+            });
+        }
+
+        if (cmdDeviceSearchInput) {
+            cmdDeviceSearchInput.addEventListener('input', (e) => {
+                cmdRunner.deviceSearch = e.target.value;
+                if (cmdDeviceSearchClear) {
+                    cmdDeviceSearchClear.classList.toggle('hidden', !cmdRunner.deviceSearch);
+                }
+                renderCmdDeviceList();
+            });
+        }
+
+        if (cmdDeviceSearchClear) {
+            cmdDeviceSearchClear.addEventListener('click', () => {
+                cmdRunner.deviceSearch = '';
+                cmdDeviceSearchInput.value = '';
+                cmdDeviceSearchClear.classList.add('hidden');
+                renderCmdDeviceList();
+                cmdDeviceSearchInput.focus();
+            });
+        }
+
+        document.querySelectorAll('.cmdDeviceSyncTab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                cmdRunner.deviceSyncFilter = tab.dataset.filter || 'all';
+                document.querySelectorAll('.cmdDeviceSyncTab').forEach(t => {
+                    const active = t === tab;
+                    t.className = active
+                        ? 'cmdDeviceSyncTab px-2 py-1 rounded-md transition-colors cursor-pointer bg-blue-600 text-white'
+                        : 'cmdDeviceSyncTab px-2 py-1 rounded-md transition-colors cursor-pointer themed-text-secondary themed-hover';
+                });
+                renderCmdDeviceList();
+            });
+        });
+
+        if (cmdDeviceSelectVisibleBtn) {
+            cmdDeviceSelectVisibleBtn.addEventListener('click', () => {
+                getFilteredCmdDevices().forEach(d => cmdRunner.selectedDeviceIds.add(Number(d.id)));
+                renderCmdDeviceList();
+                renderCmdDeviceSummaryAndChips();
+                updateCliPreview();
+            });
+        }
+
+        if (cmdDeviceSelectSyncBtn) {
+            cmdDeviceSelectSyncBtn.addEventListener('click', () => {
+                (cmdRunner.devices || []).forEach(d => {
+                    if (isDeviceReceiveSync(d)) {
+                        cmdRunner.selectedDeviceIds.add(Number(d.id));
+                    }
+                });
+                renderCmdDeviceList();
+                renderCmdDeviceSummaryAndChips();
+                updateCliPreview();
+            });
+        }
+
+        if (cmdDeviceClearBtn) {
+            cmdDeviceClearBtn.addEventListener('click', () => {
+                cmdRunner.selectedDeviceIds.clear();
+                renderCmdDeviceList();
+                renderCmdDeviceSummaryAndChips();
+                updateCliPreview();
+            });
         }
 
         // Open modal for a specific device from row action
         function openCommandRunnerForDevice(deviceId) {
             initCommandRunner().then(() => {
-                if (cmdDeviceTarget) {
-                    cmdDeviceTarget.value = String(deviceId);
-                }
+                cmdRunner.selectedDeviceIds.clear();
+                cmdRunner.selectedDeviceIds.add(Number(deviceId));
+                setCmdDeviceDropdownOpen(false);
+                renderCmdDevicePicker();
                 openModal(commandRunnerModal);
                 updateCliPreview();
             });
@@ -2865,6 +3247,8 @@
         if (openCommandRunnerBtn) {
             openCommandRunnerBtn.addEventListener('click', () => {
                 initCommandRunner().then(() => {
+                    setCmdDeviceDropdownOpen(false);
+                    renderCmdDevicePicker();
                     openModal(commandRunnerModal);
                     updateCliPreview();
                 });
@@ -2958,7 +3342,6 @@
         }
 
         cmdSelect.addEventListener('change', onCommandSelectionChange);
-        cmdDeviceTarget.addEventListener('change', updateCliPreview);
 
         // Render Dynamic Options per Command
         function renderDynamicOptions(cmd) {
@@ -3247,24 +3630,16 @@
             }
         }
 
-        // Build Live Command Preview string
-        function updateCliPreview() {
-            const cmd = cmdSelect.value;
-            const target = cmdDeviceTarget.value;
-            const pin = cmdRunner.selectedPin;
+        // Build Live Command Preview string (supports All, Single, and Multi-Select)
+        function buildCliForTarget(cmd, targetDeviceObj, pin) {
             let parts = ['php artisan', cmd];
-
-            // Resolve device target representation
-            let targetDeviceObj = null;
-            if (target !== 'all') {
-                targetDeviceObj = (cmdRunner.devices || []).find(d => String(d.id) === String(target)) || (state.devices || []).find(d => String(d.id) === String(target));
-            }
+            const isAll = !targetDeviceObj;
 
             switch (cmd) {
                 case 'biometrics:sync-device':
-                    if (target === 'all') {
+                    if (isAll) {
                         parts.push('--all-devices');
-                    } else if (targetDeviceObj) {
+                    } else {
                         parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
                     }
                     if (pin) parts.push(`--pin=${pin}`);
@@ -3276,9 +3651,9 @@
 
                 case 'biometrics:check-device':
                     parts.push(pin ? pin : '<PIN>');
-                    if (target === 'all') {
+                    if (isAll) {
                         parts.push('--all-devices');
-                    } else if (targetDeviceObj) {
+                    } else {
                         parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
                     }
                     const checkMode = document.querySelector('input[name="opt_check_mode"]:checked')?.value || 'inspect';
@@ -3288,9 +3663,9 @@
 
                 case 'biometrics:check-device-match':
                     parts.push(pin ? pin : '<PIN>');
-                    if (target === 'all') {
+                    if (isAll) {
                         parts.push('--all-devices');
-                    } else if (targetDeviceObj) {
+                    } else {
                         parts.push(targetDeviceObj.serial_number || `DEV_${targetDeviceObj.id}`);
                     }
                     const comparePin = document.getElementById('opt_compare_pin')?.value;
@@ -3305,7 +3680,7 @@
                     break;
 
                 case 'biometrics:command-status':
-                    if (target !== 'all' && targetDeviceObj) parts.push(`--device=${targetDeviceObj.serial_number}`);
+                    if (!isAll) parts.push(`--device=${targetDeviceObj.serial_number}`);
                     if (pin) parts.push(`--pin=${pin}`);
                     const statusFilter = document.getElementById('opt_status_filter')?.value;
                     if (statusFilter) parts.push(`--status=${statusFilter}`);
@@ -3320,9 +3695,9 @@
                 case 'biometrics:delete-user':
                 case 'app:biometric-delete':
                     parts.push(pin ? pin : '<PIN>');
-                    if (target === 'all') {
+                    if (isAll) {
                         parts.push('--all-devices');
-                    } else if (targetDeviceObj) {
+                    } else {
                         if (cmd === 'app:biometric-delete' && targetDeviceObj.ip_address) {
                             parts.push(`--ip=${targetDeviceObj.ip_address}`);
                         } else {
@@ -3344,9 +3719,9 @@
                     break;
 
                 case 'devices:pull-logs':
-                    if (target === 'all') {
+                    if (isAll) {
                         parts.push('--all');
-                    } else if (targetDeviceObj) {
+                    } else {
                         parts.push(String(targetDeviceObj.id));
                     }
                     const pullMode = document.getElementById('opt_pull_mode')?.value;
@@ -3367,9 +3742,9 @@
                     break;
 
                 case 'devices:clear-logs':
-                    if (target === 'all') {
+                    if (isAll) {
                         parts.push('--all');
-                    } else if (targetDeviceObj) {
+                    } else {
                         parts.push(String(targetDeviceObj.id));
                     }
                     const clearMethod = document.getElementById('opt_clear_method')?.value;
@@ -3392,7 +3767,25 @@
                     break;
             }
 
-            cmdCliPreview.textContent = '$ ' + parts.join(' ');
+            return parts.join(' ');
+        }
+
+        function updateCliPreview() {
+            const cmd = cmdSelect.value;
+            const pin = cmdRunner.selectedPin;
+            const meta = (cmdRunner.manifest && cmdRunner.manifest[cmd]) ? cmdRunner.manifest[cmd] : null;
+            const selectedDevices = Array.from(cmdRunner.selectedDeviceIds)
+                .map(id => (cmdRunner.devices || []).find(d => Number(d.id) === Number(id)))
+                .filter(Boolean);
+
+            if (!meta || meta.device_requirement === 'none' || selectedDevices.length === 0) {
+                cmdCliPreview.textContent = '$ ' + buildCliForTarget(cmd, null, pin);
+            } else if (selectedDevices.length === 1) {
+                cmdCliPreview.textContent = '$ ' + buildCliForTarget(cmd, selectedDevices[0], pin);
+            } else {
+                const lines = selectedDevices.map(dev => '$ ' + buildCliForTarget(cmd, dev, pin));
+                cmdCliPreview.textContent = lines.join(' && ');
+            }
         }
 
         // Copy CLI Command
@@ -3524,10 +3917,13 @@
             updateCliPreview();
         });
 
-        // Hide dropdown on click outside
+        // Hide dropdowns on click outside
         document.addEventListener('click', (e) => {
-            if (!cmdUserSearchWrapper.contains(e.target)) {
+            if (cmdUserSearchWrapper && !cmdUserSearchWrapper.contains(e.target)) {
                 cmdUserDropdown.classList.add('hidden');
+            }
+            if (cmdDeviceGroup && !cmdDeviceGroup.contains(e.target)) {
+                setCmdDeviceDropdownOpen(false);
             }
         });
 
@@ -3638,9 +4034,11 @@
             `;
 
             try {
+                const selectedIds = Array.from(cmdRunner.selectedDeviceIds);
                 const payload = {
                     command: cmd,
-                    device_target: cmdDeviceTarget.value,
+                    device_target: selectedIds.length === 1 ? String(selectedIds[0]) : (selectedIds.length === 0 ? 'all' : 'multiple'),
+                    device_targets: selectedIds.length > 0 ? selectedIds : ['all'],
                     pin: cmdRunner.selectedPin,
                     params: params,
                 };

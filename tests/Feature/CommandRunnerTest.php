@@ -19,8 +19,23 @@ beforeEach(function () {
             $table->boolean('is_active')->default(1);
             $table->boolean('is_registration')->default(0);
             $table->boolean('for_attendance')->default(1);
+            $table->boolean('is_hrbliz')->default(0);
+            $table->boolean('receiver_by_default')->nullable();
             $table->timestamp('last_seen_at')->nullable();
+            $table->timestamp('last_cleared_at')->nullable();
             $table->timestamps();
+        });
+    } else {
+        Schema::table('devices', function (Blueprint $table) {
+            if (!Schema::hasColumn('devices', 'is_hrbliz')) {
+                $table->boolean('is_hrbliz')->default(0);
+            }
+            if (!Schema::hasColumn('devices', 'receiver_by_default')) {
+                $table->boolean('receiver_by_default')->nullable();
+            }
+            if (!Schema::hasColumn('devices', 'last_cleared_at')) {
+                $table->timestamp('last_cleared_at')->nullable();
+            }
         });
     }
 
@@ -166,4 +181,128 @@ test('biometrics:delete-user enforces strict deletion using exact written PIN wi
     expect($queued[0]['command'])->not->toContain('493');
 
     $cmdService->clearCommands('UCR_TEST_DELETE');
+});
+
+test('command runner manifest returns all receive sync devices without pagination limit', function () {
+    for ($i = 1; $i <= 15; $i++) {
+        Devices::create([
+            'device_name' => "Receive Sync Terminal {$i}",
+            'serial_number' => "SN_SYNC_{$i}",
+            'ip_address' => "192.168.10.{$i}",
+            'is_active' => 1,
+            'is_hrbliz' => $i > 12 ? 1 : 0,
+            'receiver_by_default' => 1,
+        ]);
+    }
+
+    Devices::create([
+        'device_name' => 'HRBLIZ Send-Only Terminal',
+        'serial_number' => 'SN_SEND_ONLY',
+        'ip_address' => '192.168.10.200',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 0,
+    ]);
+
+    $response = $this->getJson('/api/command-runner/manifest');
+    $response->assertStatus(200);
+
+    $devices = collect($response->json('devices'));
+    $receiveSync = $devices->filter(fn($d) => $d['receiver_by_default'] === true);
+    $sendOnly = $devices->filter(fn($d) => $d['receiver_by_default'] === false);
+
+    expect($receiveSync->count())->toBeGreaterThanOrEqual(15);
+    expect($sendOnly->pluck('serial_number'))->toContain('SN_SEND_ONLY');
+});
+
+test('command runner supports multiselect device_targets and enforces HRBLIZ send-only guard', function () {
+    $dev1 = Devices::create([
+        'device_name' => 'Multi Target 1',
+        'serial_number' => 'SN_MULTI_1',
+        'ip_address' => '192.168.20.1',
+        'is_active' => 1,
+        'receiver_by_default' => 1,
+    ]);
+    $dev2 = Devices::create([
+        'device_name' => 'Multi Target 2',
+        'serial_number' => 'SN_MULTI_2',
+        'ip_address' => '192.168.20.2',
+        'is_active' => 1,
+        'receiver_by_default' => 1,
+    ]);
+    $sendOnlyHrbliz = Devices::create([
+        'device_name' => 'HRBLIZ ReadOnly',
+        'serial_number' => 'SN_HRB_RO',
+        'ip_address' => '192.168.20.3',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 0,
+    ]);
+
+    // Multi-device execution succeeds and combines output for both devices
+    $res = $this->postJson('/api/command-runner/run', [
+        'command' => 'biometrics:command-status',
+        'device_target' => 'multiple',
+        'device_targets' => [$dev1->id, $dev2->id],
+        'params' => ['limit' => 5],
+    ]);
+
+    $res->assertStatus(200)
+        ->assertJson([
+            'success' => true,
+            'exit_code' => 0,
+            'devices_executed' => 2,
+        ]);
+    expect($res->json('output'))->toContain('Multi Target 1');
+    expect($res->json('output'))->toContain('Multi Target 2');
+
+    // Multi-device write command blocks if any selected device is HRBLIZ send-only
+    $blocked = $this->postJson('/api/command-runner/run', [
+        'command' => 'biometrics:sync-device',
+        'device_target' => 'multiple',
+        'device_targets' => [$dev1->id, $sendOnlyHrbliz->id],
+    ]);
+
+    $blocked->assertStatus(422)
+        ->assertJson(['success' => false]);
+});
+
+test('paginated devices endpoint filters receive sync vs send-only devices', function () {
+    Devices::create([
+        'device_name' => 'Std Sync Dev',
+        'serial_number' => 'SN_STD_SYNC',
+        'ip_address' => '192.168.30.1',
+        'is_active' => 1,
+        'is_hrbliz' => 0,
+        'receiver_by_default' => 1,
+    ]);
+    Devices::create([
+        'device_name' => 'HRBLIZ Sync Dev',
+        'serial_number' => 'SN_HRB_SYNC',
+        'ip_address' => '192.168.30.2',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 1,
+    ]);
+    Devices::create([
+        'device_name' => 'HRBLIZ SendOnly Dev',
+        'serial_number' => 'SN_HRB_SO',
+        'ip_address' => '192.168.30.3',
+        'is_active' => 1,
+        'is_hrbliz' => 1,
+        'receiver_by_default' => 0,
+    ]);
+
+    $syncRes = $this->getJson('/api/devices/paginated?receiver=1&per_page=all');
+    $syncRes->assertStatus(200);
+    $syncNames = collect($syncRes->json('data'))->pluck('device_name');
+    expect($syncNames)->toContain('Std Sync Dev');
+    expect($syncNames)->toContain('HRBLIZ Sync Dev');
+    expect($syncNames)->not->toContain('HRBLIZ SendOnly Dev');
+
+    $soRes = $this->getJson('/api/devices/paginated?receiver=0&per_page=all');
+    $soRes->assertStatus(200);
+    $soNames = collect($soRes->json('data'))->pluck('device_name');
+    expect($soNames)->toContain('HRBLIZ SendOnly Dev');
+    expect($soNames)->not->toContain('Std Sync Dev');
 });
